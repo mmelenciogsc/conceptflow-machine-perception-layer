@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+PYTHONPATH="packages/perception-core/src${PYTHONPATH:+:$PYTHONPATH}" "$(venv_python)" -m conceptflow_mpl_perception.benchmark "$@"

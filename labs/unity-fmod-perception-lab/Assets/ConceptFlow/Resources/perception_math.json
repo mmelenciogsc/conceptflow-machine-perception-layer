@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "coordinateConvention": {
+    "handedness": "Unity left-handed runtime convention",
+    "rightAxis": "+X",
+    "upAxis": "+Y",
+    "forwardAxis": "+Z",
+    "frames": ["body", "head", "sensor", "world"]
+  },
+  "bubbleRadiusMeters": 0.9144,
+  "bodyProfile": {
+    "statureMeters": 1.70,
+    "shoulderWidthMeters": 0.42,
+    "torsoDepthMeters": 0.24,
+    "hipWidthMeters": 0.34,
+    "headRadiusMeters": 0.105
+  },
+  "speakerArray": {
+    "banks": ["left", "right", "superior", "inferior"],
+    "ringAnglesDegrees": [28.0, 56.0, 82.0],
+    "samplesPerRing": 12,
+    "angularConcentration": 8.0,
+    "continuity": 0.30
+  },
+  "freshness": {
+    "tier0GeometryTtlMilliseconds": 220,
+    "tier1SemanticTtlMilliseconds": 900,
+    "tier2SceneTtlMilliseconds": 8000
+  }
+}

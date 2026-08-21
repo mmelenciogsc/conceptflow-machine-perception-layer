@@ -72,3 +72,15 @@ source repository. The Rokid client uses the Android platform directly and has
 no Rokid SDK binary dependency. Model weights, datasets, camera captures, and
 QUICK utility implementations are also external and are not included. Their
 separate terms apply when a downstream build enables them.
+
+The optional Unity/FMOD laboratory commits only original source, project
+metadata, and deterministic configuration. Unity, FMOD Studio, the FMOD Unity
+integration, and Resonance Audio binaries are not redistributed here. Generated
+FMOD audio/banks are ignored.
+
+Ultralytics/YOLOE code and `yoloe-26s-seg.pt` are not dependencies or bundled
+artifacts. The inspected Ultralytics project declares AGPL-3.0 and offers a
+separate enterprise license; either path requires independent compliance. The
+two configured Depth Anything V2 model IDs are also external and no weights are
+downloaded. See [`docs/THIRD_PARTY_LICENSING.md`](docs/THIRD_PARTY_LICENSING.md)
+for the model-specific evidence and unresolved indoor-weight license metadata.

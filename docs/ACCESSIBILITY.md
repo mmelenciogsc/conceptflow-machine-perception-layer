@@ -10,6 +10,29 @@ The repository provides implementation semantics and manual procedures. It
 does not claim completed usability research, accessibility certification, or
 manual validation with TalkBack, JAWS, or NVDA.
 
+## Perception laboratory and training
+
+The Unity visualization is optional developer diagnostics. Keyboard commands
+and every live metric are documented in [the lab guide](UNITY_FMOD_LAB.md), and
+`E` exports a plain UTF-8 status report. Where Unity does not expose reliable
+screenreader semantics, use the fully textual equivalents:
+
+```bash
+./scripts/perception-demo
+./scripts/perception-training --list
+./scripts/perception-training --exercise above-vs-below --answer above
+```
+
+Training contains eight deterministic, gradually harder exercises with explicit
+choices and objective scoring. Preferences use validated, local-only JSON and
+can be written atomically with mode `0600` through the Python API. Live mobility
+is not gamified; scoring belongs only to controlled training.
+
+Audio output has bounded anchor/field gains and voice count. Haptics are brief,
+capability-detected, and explicitly nonspatial on the current default-actuator
+Android adapter. No visual overlay, color, or animation is required to inspect
+operational state.
+
 ## Product principles
 
 - Every state and error has text. Sound, haptics, position, animation, and color

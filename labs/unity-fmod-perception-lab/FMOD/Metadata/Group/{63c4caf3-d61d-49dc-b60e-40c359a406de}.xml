@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="MixerGroup" id="{63c4caf3-d61d-49dc-b60e-40c359a406de}">
+		<property name="name">
+			<value>Accessible Sonification</value>
+		</property>
+		<property name="maxInstances">
+			<value>10</value>
+		</property>
+		<relationship name="effectChain">
+			<destination>{356c951c-e625-4ebe-91bf-188e6203c4ac}</destination>
+		</relationship>
+		<relationship name="panner">
+			<destination>{3cc176d8-77eb-473b-9658-9f88249b9380}</destination>
+		</relationship>
+		<relationship name="output">
+			<destination>{af9d027a-3a1f-49a8-a9ef-4cbe20673632}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusEffectChain" id="{356c951c-e625-4ebe-91bf-188e6203c4ac}">
+		<relationship name="effects">
+			<destination>{8ef2077d-7ec0-4fbc-8d40-37745f439509}</destination>
+			<destination>{8c7edfad-ef73-491e-a811-56ee1b575639}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusPanner" id="{3cc176d8-77eb-473b-9658-9f88249b9380}" />
+	<object class="MixerBusFader" id="{8ef2077d-7ec0-4fbc-8d40-37745f439509}" />
+	<object class="LimiterEffect" id="{8c7edfad-ef73-491e-a811-56ee1b575639}" />
+</objects>

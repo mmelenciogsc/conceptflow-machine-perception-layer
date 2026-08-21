@@ -1,7 +1,19 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-# CONCEPTFlow: Machine Intelligence. Human Architecture.
+# CONCEPTFlow
 
-## Machine Perception Layer — It’s just supplemental awareness.
+Machine Intelligence. Human Architecture.
+
+A suite of tools running in hardware you already own.
+
+Android. Rokid. Windows.
+
+Non-Visual Experience. Gamified. For spatial audio.
+
+## Machine Perception Layer
+
+It's just supplemental awareness.
+
+Map. Morph. Move.
 
 CONCEPTFlow Machine Perception Layer (MPL) is a protocol-first, multi-host
 reference implementation for turning bounded visual context into correlated,
@@ -66,15 +78,33 @@ supersession/cancellation, verbosity, and available modalities.
 Read [Architecture](docs/ARCHITECTURE.md) and [Protocol](docs/PROTOCOL.md) for
 the complete flow and source-level boundaries.
 
+### Map. Morph. Move.
+
+- **Map** fuses timestamped BODY, HEAD, SENSOR, and WORLD transforms with
+  metric geometry, uncertainty, semantic mask/depth samples, and stable tracks
+  into a short-lived local `SpatialMap`.
+- **Morph** converts nearest body-surface contact and bounded surface extent
+  into an Intrusion Anchor, a four-bank concentric Envelopment Field, a haptic
+  transition, sparse auditory icons, and optional scene-description requests.
+- **Move** applies relative-motion activation, stationary restraint, freshness,
+  similarity, capacity, TTL, and priority so output follows relevant change
+  without narrating everything.
+
+The executable reference is in `packages/perception-core`; Unity/FMOD authoring
+and deterministic scenes are in `labs/unity-fmod-perception-lab`. The Sound
+Bubble is a calibrated body-surface offset field with an exact default radius of
+`0.9144` m, not a head-centered sphere.
+
 ## Verified baseline versus planned work
 
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
-| Python | 145 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, and assistive-only cue; three wheels/sdists built and isolated-imported | Real model worker, production serving, physical-device path |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; JVM tests including the shared wire vector; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
+| Python | 197 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker, production serving, physical-device path |
+| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 60 JVM tests including the shared wire vector and haptic capability planner; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
 | Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; Camera2 capture with monotonic frames; explicit stop; no vendor SDK | Physical audio/haptic and sustained camera/thermal validation; project-owned Rokid-to-Poco transport |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
+| Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity EditMode/PlayMode lab and authored FMOD project | Physical open-ear localization, Unity FMOD runtime listening, metric depth on Rokid, target-user validation |
 
 See [`VALIDATION.md`](VALIDATION.md) for the evidence ledger and exact caveats.
 
@@ -103,6 +133,10 @@ Python baseline:
 .venv/bin/python -m conceptflow_mpl_protocol.validation
 ./scripts/demo
 ./scripts/benchmark --iterations 100
+./scripts/perception-demo
+./scripts/perception-benchmark --iterations 100
+./scripts/perception-calibration --json
+./scripts/perception-training --list
 ./scripts/build python
 .venv/bin/python scripts/repository/check_wheels.py
 ```
@@ -139,6 +173,19 @@ MPL_DEVICE=cpu ./scripts/demo
 Success is an exit status of zero with `"ok":true`, serving health, nonzero
 backpressure, and a rendered cue containing `"assistive_only":true`. All input
 and output semantics are synthetic.
+
+The perception-only companion requires neither a server nor device:
+
+```bash
+./scripts/perception-demo
+./scripts/perception-benchmark --iterations 100
+./scripts/perception-training --exercise left-vs-rear-left --answer rear-left
+```
+
+It exercises the three independent layers: metric geometry to synchronized
+audio/haptic commands, depth-associated semantic track to auditory icon, and
+scene state to an on-demand description request. Output is inspectable JSON or
+text; it is not evidence of physical spatial accuracy.
 
 ## Physical Rokid and Poco deployment
 
@@ -293,6 +340,21 @@ creation only. Each product must remain independently operable. See
   CPU/sanitizer/CUDA-aware builds, and missing inference boundary.
 - [Latency benchmarking](docs/LATENCY_BENCHMARKING.md) — honest percentile and
   physical end-to-end measurement rules.
+- [Sound Bubble specification](docs/SOUND_BUBBLE_SPEC.md) and
+  [coordinate frames](docs/COORDINATE_FRAMES.md) — exact body-surface field and
+  BODY/HEAD/SENSOR/WORLD separation.
+- [Spatial audio](docs/SPATIAL_AUDIO_ARCHITECTURE.md) and
+  [virtual speaker array](docs/VIRTUAL_SPEAKER_ARRAY.md) — bounded anchor/field
+  layers and four overlapping concentric banks.
+- [Auditory icons](docs/AUDITORY_ICONS.md), [haptics](docs/HAPTIC_LANGUAGE.md),
+  [motion gating](docs/MOTION_GATING.md), and
+  [scene descriptions](docs/SCENE_DESCRIPTION_POLICY.md) — perceptual policy.
+- [Perception uncertainty](docs/PERCEPTION_UNCERTAINTY.md),
+  [Unity/FMOD lab](docs/UNITY_FMOD_LAB.md), and
+  [research evidence](docs/RESEARCH_EVIDENCE.md) — evidence and executable lab.
+- [YOLOE-26S boundary](docs/YOLOE_26S_INTEGRATION.md) and
+  [perception third-party licensing](docs/THIRD_PARTY_LICENSING.md) — external
+  model identity and licensing constraints.
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — deterministic diagnostics across
   Python, Android, device, .NET, and native targets.
 - [Threat model](docs/THREAT_MODEL.md) — assets, trust boundaries, abuse cases,
@@ -302,7 +364,8 @@ creation only. Each product must remain independently operable. See
 
 Repository policy is in [`CONTRIBUTING.md`](CONTRIBUTING.md), private security
 reporting in [`SECURITY.md`](SECURITY.md), and third-party boundaries in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`docs/THIRD_PARTY_LICENSING.md`](docs/THIRD_PARTY_LICENSING.md).
 
 ## License
 

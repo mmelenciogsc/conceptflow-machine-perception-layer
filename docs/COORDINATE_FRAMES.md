@@ -1,0 +1,33 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+# Coordinate frames
+
+The Python reference uses a right-handed local convention: `+x` right, `+y` up,
+and `+z` forward. Azimuth is `atan2(x,z)` and elevation is measured above the
+horizontal plane. Unity uses its native left-handed `+x` right, `+y` up, `+z`
+forward convention, recorded in `perception_math.json`; a transport adapter must
+perform the explicit handedness conversion before exchanging rotations or
+cross products. Device adapters must record every native-to-canonical mapping.
+
+| Frame | Owns | Must not own |
+| --- | --- | --- |
+| WORLD | Short-lived reconstructed geometry and motion | A claim of geographic-map completeness |
+| BODY | Calibrated body proxy and Sound Bubble | Listener orientation |
+| HEAD | Ears/listener and head orientation | Whole-torso heading |
+| SENSOR | Glasses camera/IMU observations | Body dimensions or world truth |
+
+The transform chain is `WORLD <- BODY <- HEAD <- SENSOR`. Each rigid transform
+has a monotonic timestamp. [`frames.py`](../packages/perception-core/src/conceptflow_mpl_perception/frames.py)
+composes only matching adjacent transforms and rejects a transform/observation
+pair outside its configured age. Points include translation; vectors do not.
+
+Turning the head changes SENSOR and HEAD directions without rotating the BODY
+envelope. Torso heading must come from a calibrated or estimated BODY transform,
+not from camera yaw. Forward walking while looking sideways therefore retains
+body-forward motion and a separately rotated listener. When torso heading is
+uncertain, providers must lower confidence or withhold a direction-sensitive
+cue rather than silently using head heading.
+
+Implemented tests cover head-only yaw, torso yaw, translated walking while the
+head counter-rotates, and stale/rollback timestamps. Crouch and bend are
+represented through future calibrated body-profile/pose updates; the current
+fixed proxy does not claim to infer either state.

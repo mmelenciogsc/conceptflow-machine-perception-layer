@@ -47,6 +47,19 @@ Those values include a loopback gRPC request to the deterministic CPU mock, not
 a physical device or real model. Compare them only within controlled runs on
 the same environment.
 
+The perception-core benchmark measures one honestly named stage—the complete
+headless synthetic Map/Morph/Move demo—and reports nearest-rank p50/p95/p99:
+
+```bash
+./scripts/perception-benchmark --iterations 100
+```
+
+It does not subdivide capture, depth inference, transport, FMOD buffering, or
+haptic actuation because those operations do not occur in that process. Its
+output includes only actual elapsed nanoseconds, Python `tracemalloc` peak bytes,
+and resulting pipeline/entity/audio-voice counters. Memory is sampled in one
+separate invocation so tracing overhead is not folded into latency percentiles.
+
 ## Physical benchmark model
 
 For device work, record distinct monotonic timestamps rather than one aggregate

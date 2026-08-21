@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="ParameterPreset" id="{bb93af01-0fc8-47a3-83e0-99fcadb5e855}">
+		<property name="name">
+			<value>MotionIntensity</value>
+		</property>
+		<relationship name="folder">
+			<destination>{a418e0de-c7d0-05c9-280a-b529dc02e12e}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{d46bedbf-9cb2-454b-a204-1fdcae78918f}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{d46bedbf-9cb2-454b-a204-1fdcae78918f}" />
+</objects>

@@ -85,6 +85,19 @@ Desktop.ini
 *.swp
 *.swo
 
+# Unity and FMOD generated state
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Ll]ogs/
+**/[Uu]ser[Ss]ettings/
+**/MemoryCaptures/
+**/.cache/
+**/.user/
+**/Build/*.bank
+**/Build/**/*.bank
+**/Build/GUIDs.txt
+
 # Logs, reports, and benchmark output
 *.log
 logs/

@@ -2,13 +2,15 @@
 package org.conceptflow.mpl.host.feedback
 
 import android.content.Context
+import android.annotation.TargetApi
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
 import android.view.accessibility.AccessibilityManager
-import org.conceptflow.mpl.v1.HapticPattern
 import org.conceptflow.mpl.v1.PerceptionCue
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -36,23 +38,113 @@ class PlatformHostAudioFeedback : HostAudioFeedback, AutoCloseable {
 }
 
 class PlatformHostHapticFeedback(context: Context) : HostHapticFeedback {
-    private val vibrator = context.getSystemService(Vibrator::class.java)
+    private val applicationContext = context.applicationContext
+    private val vibratorManager: VibratorManager? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        applicationContext.getSystemService(VibratorManager::class.java)
+    } else {
+        null
+    }
+    private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        vibratorManager?.defaultVibrator
+    } else {
+        @Suppress("DEPRECATION")
+        applicationContext.getSystemService(Vibrator::class.java)
+    }
 
     override fun play(cue: PerceptionCue): Boolean {
-        if (!cue.hasHaptic() || vibrator?.hasVibrator() != true) return false
-        val strength = (cue.haptic.intensity.coerceIn(0f, 1f) * 140f).toInt().coerceIn(1, 140)
-        val duration = cue.haptic.durationMs.toLong().coerceIn(20L, 500L)
-        val effect = if (cue.haptic.pattern == HapticPattern.HAPTIC_PATTERN_DOUBLE_PULSE) {
-            VibrationEffect.createWaveform(
-                longArrayOf(0L, duration / 2L, 60L, duration / 2L),
-                intArrayOf(0, strength, 0, strength),
-                -1,
-            )
+        val target = vibrator ?: return false
+        if (!cue.hasHaptic() || !target.hasVibrator()) return false
+        val plan = HapticPlanner.plan(
+            cue.haptic.pattern.number,
+            cue.haptic.intensity,
+            cue.haptic.durationMs,
+            capabilities(target),
+        ) ?: return false
+        return runCatching {
+            target.vibrate(effect(plan))
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun capabilities(vibrator: Vibrator): HapticCapabilities {
+        val api30Capabilities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            capabilitiesAtLeastApi30(vibrator)
         } else {
-            VibrationEffect.createOneShot(duration, strength)
+            Api30HapticCapabilities(booleanArrayOf(false, false), intArrayOf(0, 0, 0))
         }
-        vibrator.vibrate(effect)
-        return true
+        val count = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            vibratorManager?.vibratorIds?.size ?: 0
+        } else {
+            1
+        }
+        return HapticCapabilities(
+            apiLevel = Build.VERSION.SDK_INT,
+            actuatorCount = count,
+            amplitudeControl = vibrator.hasAmplitudeControl(),
+            clickPrimitive = api30Capabilities.primitives.getOrElse(0) { false },
+            quickRisePrimitive = api30Capabilities.primitives.getOrElse(1) { false },
+            clickEffect = api30Capabilities.effectSupported(0),
+            doubleClickEffect = api30Capabilities.effectSupported(1),
+            tickEffect = api30Capabilities.effectSupported(2),
+        )
+    }
+
+    @TargetApi(Build.VERSION_CODES.R)
+    private fun capabilitiesAtLeastApi30(vibrator: Vibrator): Api30HapticCapabilities = Api30HapticCapabilities(
+        primitives = runCatching {
+            vibrator.arePrimitivesSupported(
+                VibrationEffect.Composition.PRIMITIVE_CLICK,
+                VibrationEffect.Composition.PRIMITIVE_QUICK_RISE,
+            )
+        }.getOrDefault(booleanArrayOf(false, false)),
+        effects = runCatching {
+            vibrator.areEffectsSupported(
+                VibrationEffect.EFFECT_CLICK,
+                VibrationEffect.EFFECT_DOUBLE_CLICK,
+                VibrationEffect.EFFECT_TICK,
+            )
+        }.getOrDefault(intArrayOf(0, 0, 0)),
+    )
+
+    private fun effect(plan: HapticPlan): VibrationEffect = when (plan.kind) {
+        HapticPlanKind.PRIMITIVE -> {
+            check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { "primitive plan requires API 30" }
+            primitiveEffectAtLeastApi30(plan)
+        }
+        HapticPlanKind.PREDEFINED -> VibrationEffect.createPredefined(
+            when (plan.predefined) {
+                PredefinedKind.CLICK -> VibrationEffect.EFFECT_CLICK
+                PredefinedKind.DOUBLE_CLICK -> VibrationEffect.EFFECT_DOUBLE_CLICK
+                PredefinedKind.TICK -> VibrationEffect.EFFECT_TICK
+                null -> error("predefined plan requires an effect")
+            },
+        )
+        HapticPlanKind.WAVEFORM -> VibrationEffect.createWaveform(
+            plan.waveformSteps.map { it.durationMs.toLong() }.toLongArray(),
+            plan.waveformSteps.map { it.amplitude }.toIntArray(),
+            -1,
+        )
+    }
+
+    @TargetApi(Build.VERSION_CODES.R)
+    private fun primitiveEffectAtLeastApi30(plan: HapticPlan): VibrationEffect {
+        val composition = VibrationEffect.startComposition()
+        plan.primitiveSteps.forEach { step ->
+            val primitive = when (step.kind) {
+                PrimitiveKind.CLICK -> VibrationEffect.Composition.PRIMITIVE_CLICK
+                PrimitiveKind.QUICK_RISE -> VibrationEffect.Composition.PRIMITIVE_QUICK_RISE
+            }
+            composition.addPrimitive(primitive, step.scale, step.delayMs)
+        }
+        return composition.compose()
+    }
+
+    private data class Api30HapticCapabilities(
+        val primitives: BooleanArray,
+        val effects: IntArray,
+    ) {
+        fun effectSupported(index: Int): Boolean =
+            effects.getOrNull(index) == Vibrator.VIBRATION_EFFECT_SUPPORT_YES
     }
 }
 

@@ -13,7 +13,9 @@ lint_repository() {
     "$python_executable" scripts/repository/secret_scan.py
     "$python_executable" scripts/repository/check_config_examples.py
     bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark \
-        scripts/generate scripts/rokid-install scripts/rokid-control scripts/lib/common.sh scripts/lib/rokid-adb.sh
+        scripts/fmod-lab scripts/generate scripts/perception-benchmark scripts/perception-calibration scripts/perception-demo \
+        scripts/perception-training \
+        scripts/rokid-install scripts/rokid-control scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }
 lint_python() {
     local python_executable
@@ -21,6 +23,7 @@ lint_python() {
     "$python_executable" -m ruff check .
     "$python_executable" -m mypy \
         packages/host-runtime/src \
+        packages/perception-core/src \
         packages/shared-protocol/src/conceptflow_mpl_protocol \
         services/cuda-cluster/src
 }

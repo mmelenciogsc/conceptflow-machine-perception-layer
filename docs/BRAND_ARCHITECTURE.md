@@ -21,6 +21,11 @@ Hashes identify the exact inspected files. They do not prove authorship,
 licensing, trademark clearance, approval for publication, or suitability for a
 particular derivative.
 
+The two 2560 × 900 masters and the rendered SVG candidate were visually
+re-inspected on 2026-08-22. Newer 2560 × 640 files in the same final directory
+are alternate aspect-ratio exports of the same system, not stronger canonical
+replacements. No source asset was copied into this public repository.
+
 ## Visual language
 
 The canonical references use a restrained technical system:
@@ -28,7 +33,8 @@ The canonical references use a restrained technical system:
 - near-black charcoal field;
 - dark blue-gray panels;
 - thin cool-gray or white borders;
-- muted yellow accent, approximately `#e6dc5a`;
+- sparse warm yellow-gold signal accents; dominant full-resolution trace pixels
+  cluster near `#e0d858`, with anti-aliased/downsampled gold near `#a3a06d`;
 - slight purple and yellow glows rather than saturated gradients;
 - strong grid, alignment, and negative space;
 - rounded outer corners around 30 px, inner containers around 24 px, and
@@ -38,6 +44,8 @@ The canonical references use a restrained technical system:
 - descriptor text approximately `#b1bac5`; and
 - panel fields approximately `#0d1118` and `#090b0f`.
 
+Programmatic 16-color sampling also found the dominant graphite near `#171a1d`,
+structural grays near `#3c4045` and `#525458`, and primary type near `#f2f4f7`.
 These values are visual measurements and practical starting points, not a
 formal token export. Check contrast in the final medium; muted text and glow
 effects must not reduce readability.
@@ -57,11 +65,15 @@ height, no condensed body copy, and no information encoded only by font weight.
 
 The release hierarchy is:
 
-1. **CONCEPTFlow: Machine Intelligence. Human Architecture.** — repository and
-   system heading.
-2. **Machine Perception Layer — It’s just supplemental awareness.** — product
-   layer and safety-positioning line.
-3. Component names — Rokid client, Android host, Windows relay, CUDA cluster,
+1. **CONCEPTFlow**
+2. **Machine Intelligence. Human Architecture.**
+3. **A suite of tools running in hardware you already own.**
+4. **Android. Rokid. Windows.**
+5. **Non-Visual Experience. Gamified. For spatial audio.**
+6. **Machine Perception Layer**
+7. **It's just supplemental awareness.**
+8. **Map. Morph. Move.**
+9. Component names — Rokid client, Android host, Windows relay, CUDA cluster,
    protocol, and integrations.
 
 “Supplemental awareness” must remain literal. Avoid wording that implies

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="ParameterPreset" id="{f635194d-c2ae-43b9-85c9-5e85493e40c4}">
+		<property name="name">
+			<value>BubbleProximity</value>
+		</property>
+		<relationship name="folder">
+			<destination>{a418e0de-c7d0-05c9-280a-b529dc02e12e}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{42d1c7be-7e63-42be-983f-e0d208c06477}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{42d1c7be-7e63-42be-983f-e0d208c06477}" />
+</objects>

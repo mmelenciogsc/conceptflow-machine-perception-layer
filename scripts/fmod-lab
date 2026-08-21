@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+readonly lab="labs/unity-fmod-perception-lab/FMOD"
+readonly project="$lab/ConceptFlowMPL.fspro"
+readonly cli="${FMOD_STUDIO_CLI:-/opt/fmodstudio/fmodstudiocl}"
+
+case "${1:-validate}" in
+  bootstrap)
+    [[ ! -e "$project" ]] || fail "FMOD project already exists; refusing to overwrite it"
+    workspace="$(mktemp -d /tmp/conceptflow-fmod-bootstrap.XXXXXX)"
+    unzip -q /opt/fmodstudio/examples/Examples.fspackage -d "$workspace"
+    mv "$workspace/Assets" "$workspace/template-assets-not-imported"
+    python3 "$lab/AuthoringTools/generate_audio.py" --output "$workspace/Assets/SoundBubble"
+    QT_QPA_PLATFORM=minimal "$cli" -script "$REPOSITORY_ROOT/$lab/AuthoringTools/author_project.js" "$workspace/Examples.fspro"
+    mkdir -p "$lab"
+    cp -a "$workspace/Metadata" "$lab/Metadata"
+    cp "$workspace/Examples.fspro" "$project"
+    mkdir -p "$lab/Assets/SoundBubble"
+    cp "$workspace/Assets/SoundBubble/"*.wav "$lab/Assets/SoundBubble/"
+    ;;
+  validate)
+    [[ -f "$project" ]] || fail "run ./scripts/fmod-lab bootstrap first"
+    python3 "$lab/AuthoringTools/generate_audio.py" --output "$lab/Assets/SoundBubble"
+    QT_QPA_PLATFORM=minimal "$cli" -script "$lab/AuthoringTools/validate_project.js" "$project"
+    diagnostic_log="$(mktemp /tmp/conceptflow-fmod-diagnostic.XXXXXX.log)"
+    trap 'rm -f "$diagnostic_log"' EXIT
+    QT_QPA_PLATFORM=minimal "$cli" -diagnostic "$project" 2>&1 | tee "$diagnostic_log"
+    if rg -qi 'Project Error|invalid components' "$diagnostic_log"; then
+      fail "FMOD diagnostic reported invalid project components"
+    fi
+    ;;
+  build)
+    "$0" validate
+    QT_QPA_PLATFORM=minimal "$cli" -build "$project"
+    ;;
+  *) fail "usage: ./scripts/fmod-lab [bootstrap|validate|build]" ;;
+esac

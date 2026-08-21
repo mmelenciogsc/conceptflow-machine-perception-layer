@@ -6,6 +6,47 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Map. Morph. Move. extension — 2026-08-22
+
+The extension was validated on the same Ubuntu host after a full power cycle.
+`nvidia-smi` then reported both expected devices with driver 580.173.02: an RTX
+2080 Ti with 11,264 MiB and an RTX 4060 Ti with 16,380 MiB. CUDA-aware
+compilation below did not execute a kernel or model on either GPU. The local
+coder, vision, Whisper, and Qdrant endpoints were live, but model output was
+used only for bounded review passes—not as test evidence.
+
+The executable additions passed these local gates:
+
+- repository policy, secret scanning, safe configuration checks, Ruff, MyPy,
+  formatting, shell parsing, and diff whitespace;
+- 197 Python tests, deterministic protobuf validation, all three source/wheel
+  builds, byte-identical legal notices, isolated wheel imports, and the
+  synthetic gRPC and perception demonstrations;
+- Android Lint, strict dependency verification, 31 host tests, 28 Rokid tests,
+  one protocol-vector test, and both debug APK assemblies;
+- .NET 8.0.424 warning-free Release cross-build including WPF and all 156 tests;
+- native CPU and CUDA-aware Release builds and their CTest target using NVCC
+  12.0.140;
+- Unity 6000.3.22f1 headless EditMode 6/6 and PlayMode 1/1 tests; and
+- FMOD Studio 2.03.14 project validation plus Desktop and Mobile bank builds.
+  The deterministic FMOD inspection reported two events, bounded voice counts,
+  limiter presence, and two Resonance sources.
+
+The 100-iteration headless `end_to_end_headless_map_morph_move` benchmark
+measured p50 2.920153 ms, p95 3.119432 ms, and p99 3.801060 ms, with a separately
+traced peak of 34,308 bytes. This run starts with synthetic geometry and ends at
+inspectable render commands. It excludes capture, depth inference, networking,
+FMOD output buffering, Android vibration actuation, and human perception.
+
+The FMOD project and generated procedural inputs were physically authored and
+built, but the proprietary FMOD Unity runtime package is not redistributed.
+Unity-to-FMOD playback, listening-based localization, open-ear output,
+TalkBack, JAWS/NVDA, physical haptics, metric depth on Rokid, real YOLOE/Depth
+Anything inference, sustained thermal behavior, and a physical end-to-end
+glasses-to-host-to-cue run were not validated. A Poco install attempt remained
+blocked by `INSTALL_FAILED_USER_RESTRICTED`; no device security control was
+bypassed.
+
 ## Environment discovery
 
 The release host was Ubuntu 24.04 with kernel 7.0.0-29-generic. The relevant

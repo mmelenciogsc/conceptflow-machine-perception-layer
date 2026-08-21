@@ -9,6 +9,27 @@ source frames, and schedules inspectable audio, speech, or haptic cues.
 It is not an autonomous safety authority, navigation system, medical device, or
 replacement for a mobility aid, trained judgment, or an emergency system.
 
+## Map. Morph. Move.
+
+The perception reference enforces three pure boundaries:
+
+```text
+Map:   frames + metric geometry + semantic depth + uncertainty -> SpatialMap
+Morph: SpatialMap -> GeometryCue + AuditoryIconCue + HapticCue + SceneDescriptionRequest
+Move:  motion + relative motion + cue history + freshness -> activation/suppression/priority/expiry
+```
+
+`packages/perception-core` contains the hardware-independent implementation.
+Render adapters remain outside these stages: exact FMOD commands, Android
+vibrator planning, Rokid output, and Windows diagnostics cannot redefine body
+geometry or confidence. Immediate Tier 0 geometry never waits for Tier 1
+segmentation or Tier 2 description.
+
+The body field lives in BODY; the listener lives in HEAD; observations originate
+in SENSOR; mapped geometry lives in a short-lived WORLD. See
+[coordinate frames](COORDINATE_FRAMES.md) and the
+[Sound Bubble specification](SOUND_BUBBLE_SPEC.md).
+
 ## System view
 
 ```text

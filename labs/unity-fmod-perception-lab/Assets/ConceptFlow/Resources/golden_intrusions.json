@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "traces": [
+    {"id":"wall-left-shoulder","pointBody":[-0.55,1.35,0.10],"velocityBody":[0.25,0,0],"expectedBank":"left"},
+    {"id":"post-front-right","pointBody":[0.48,1.00,0.48],"velocityBody":[-0.20,0,-0.20],"expectedBank":"right"},
+    {"id":"overhang-above","pointBody":[0,2.02,0.12],"velocityBody":[0,-0.15,0],"expectedBank":"superior"},
+    {"id":"object-passing-behind","pointBody":[-0.35,1.10,-0.50],"velocityBody":[0.40,0,0],"expectedBank":"left"},
+    {"id":"pedestrian-approaching-stationary-user","pointBody":[0.10,1.05,0.70],"velocityBody":[0,0,-0.80],"expectedBank":"right"},
+    {"id":"walking-parallel-wall","pointBody":[-0.60,1.00,0.05],"velocityBody":[0,0,0],"expectedBank":"left"},
+    {"id":"stopped-beside-wall","pointBody":[-0.60,1.00,0.05],"velocityBody":[0,0,0],"expectedBank":"left"}
+  ]
+}

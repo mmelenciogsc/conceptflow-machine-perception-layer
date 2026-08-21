@@ -6,6 +6,7 @@ testpaths = ["tests"]
 pythonpath = [
   "packages/shared-protocol/src",
   "packages/host-runtime/src",
+  "packages/perception-core/src",
   "services/cuda-cluster/src",
 ]
 

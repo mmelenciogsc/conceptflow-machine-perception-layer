@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="MixerGroup" id="{6ad1399a-d3aa-4503-aa10-66254c2a3905}">
+		<property name="name">
+			<value>Sound Bubble</value>
+		</property>
+		<property name="maxInstances">
+			<value>8</value>
+		</property>
+		<relationship name="effectChain">
+			<destination>{2ef748cc-e1c4-402a-8b2f-fc7339f2d496}</destination>
+		</relationship>
+		<relationship name="panner">
+			<destination>{0667f369-a7f0-4456-87b4-f58f5b0065fe}</destination>
+		</relationship>
+		<relationship name="output">
+			<destination>{63c4caf3-d61d-49dc-b60e-40c359a406de}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusEffectChain" id="{2ef748cc-e1c4-402a-8b2f-fc7339f2d496}">
+		<relationship name="effects">
+			<destination>{a956073e-184e-4cbd-b74f-8a2569b5a954}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusPanner" id="{0667f369-a7f0-4456-87b4-f58f5b0065fe}" />
+	<object class="MixerBusFader" id="{a956073e-184e-4cbd-b74f-8a2569b5a954}" />
+</objects>

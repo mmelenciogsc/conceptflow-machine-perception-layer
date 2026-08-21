@@ -39,6 +39,10 @@ jobs:
       - run: .venv/bin/python -m conceptflow_mpl_protocol.validation
       - run: ./scripts/demo
       - run: ./scripts/benchmark --iterations 100
+      - run: ./scripts/perception-demo
+      - run: ./scripts/perception-benchmark --iterations 100
+      - run: ./scripts/perception-calibration --json
+      - run: ./scripts/perception-training --list
       - run: ./scripts/build python
       - run: .venv/bin/python scripts/repository/check_wheels.py
 
