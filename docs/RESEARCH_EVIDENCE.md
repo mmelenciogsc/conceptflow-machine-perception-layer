@@ -34,9 +34,11 @@ proof of perceptual effectiveness, licensing permission, or device support.
   or CUDA performance measurement is inferred from enumeration.
 - Live Rokid characteristics exposed exact 1920×1080 JPEG and game-rotation,
   gyroscope, and linear-acceleration rates compatible with a 10 ms request. A
-  bounded direct-app run observed 98.8 orientation samples/s and a 10.1 ms
-  maximum gap. A dark test view was rejected rather than transmitted; camera
-  perceptual thresholds and sustained lit-scene throughput remain empirical.
+  bounded direct-app run observed 98.7 orientation samples/s. A preview-only
+  Camera2 3A warm-up followed by a JPEG-only session corrected the vendor
+  HAL's minimum-exposure still-capture behavior; a lit-scene run analyzed 28
+  exact-size frames and emitted 18 after gating. Sustained throughput and
+  perceptual threshold calibration remain empirical.
 
 ## Unresolved hypotheses
 

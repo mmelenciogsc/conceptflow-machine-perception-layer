@@ -28,10 +28,18 @@ data class CaptureGateEvent(
     val emitted: Boolean,
     val dropReason: FrameDropReason?,
     val targetFramesPerSecond: Double,
+    val meanLuma: Double,
+    val darkFraction: Double,
+    val laplacianVariance: Double,
+    val motionScore: Double,
 ) {
     init {
         require(emitted == (dropReason == null))
         require(targetFramesPerSecond.isFinite() && targetFramesPerSecond > 0.0)
+        require(meanLuma.isFinite() && meanLuma in 0.0..255.0)
+        require(darkFraction.isFinite() && darkFraction in 0.0..1.0)
+        require(laplacianVariance.isFinite() && laplacianVariance >= 0.0)
+        require(motionScore.isFinite() && motionScore in 0.0..1.0)
     }
 }
 

@@ -8,8 +8,36 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.conceptflow.mpl.rokid.core.PixelDimensions
 
 class Camera2FrameSourceTest {
+    @Test
+    fun headlessPreviewPrefersExactBoundedSize() {
+        val selected = selectHeadlessPreviewSize(
+            listOf(
+                PixelDimensions(320, 240),
+                PixelDimensions(1_920, 1_080),
+                PixelDimensions(640, 480),
+            ),
+        )
+
+        assertEquals(PixelDimensions(640, 480), selected)
+    }
+
+    @Test
+    fun headlessPreviewRejectsUnboundedSizesAndSelectsClosestArea() {
+        val selected = selectHeadlessPreviewSize(
+            listOf(
+                PixelDimensions(1_920, 1_080),
+                PixelDimensions(320, 240),
+                PixelDimensions(640, 360),
+            ),
+        )
+
+        assertEquals(PixelDimensions(640, 360), selected)
+        assertNull(selectHeadlessPreviewSize(listOf(PixelDimensions(1_920, 1_080))))
+    }
+
     @Test
     fun permissionFailureWithoutFrameworkExceptionUsesStableMessage() {
         val failure = cameraPermissionFailure()

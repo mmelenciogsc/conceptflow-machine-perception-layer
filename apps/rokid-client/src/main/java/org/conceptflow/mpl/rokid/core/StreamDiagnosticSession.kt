@@ -10,6 +10,10 @@ data class StreamDiagnosticSnapshot(
     val cameraFramesDroppedBlurry: Long,
     val cameraFramesDroppedCadence: Long,
     val cameraMotionTierSamples: Long,
+    val cameraMaximumMeanLuma: Double,
+    val cameraMinimumDarkFraction: Double,
+    val cameraMaximumLaplacianVariance: Double,
+    val cameraMaximumMotionScore: Double,
     val imuSamples: Long,
     val imuSignalSamples: Long,
     val imuObservedSamplesPerSecond: Double,
@@ -32,6 +36,10 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private var cameraFramesDroppedBlurry = 0L
     private var cameraFramesDroppedCadence = 0L
     private var cameraMotionTierSamples = 0L
+    private var cameraMaximumMeanLuma = 0.0
+    private var cameraMinimumDarkFraction = 1.0
+    private var cameraMaximumLaplacianVariance = 0.0
+    private var cameraMaximumMotionScore = 0.0
     private var imuSamples = 0L
     private var imuSignalSamples = 0L
     private var firstImuTimestampNanos = 0L
@@ -62,6 +70,10 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
         if (!accepting) return
         cameraFramesAnalyzed += 1L
         if (event.targetFramesPerSecond >= 5.0) cameraMotionTierSamples += 1L
+        cameraMaximumMeanLuma = maxOf(cameraMaximumMeanLuma, event.meanLuma)
+        cameraMinimumDarkFraction = minOf(cameraMinimumDarkFraction, event.darkFraction)
+        cameraMaximumLaplacianVariance = maxOf(cameraMaximumLaplacianVariance, event.laplacianVariance)
+        cameraMaximumMotionScore = maxOf(cameraMaximumMotionScore, event.motionScore)
         when (event.dropReason) {
             FrameDropReason.DARK -> cameraFramesDroppedDark += 1L
             FrameDropReason.BLURRY -> cameraFramesDroppedBlurry += 1L
@@ -119,6 +131,10 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
             cameraFramesDroppedBlurry = cameraFramesDroppedBlurry,
             cameraFramesDroppedCadence = cameraFramesDroppedCadence,
             cameraMotionTierSamples = cameraMotionTierSamples,
+            cameraMaximumMeanLuma = cameraMaximumMeanLuma,
+            cameraMinimumDarkFraction = if (cameraFramesAnalyzed == 0L) 0.0 else cameraMinimumDarkFraction,
+            cameraMaximumLaplacianVariance = cameraMaximumLaplacianVariance,
+            cameraMaximumMotionScore = cameraMaximumMotionScore,
             imuSamples = imuSamples,
             imuSignalSamples = imuSignalSamples,
             imuObservedSamplesPerSecond = observedImuSamplesPerSecond(),

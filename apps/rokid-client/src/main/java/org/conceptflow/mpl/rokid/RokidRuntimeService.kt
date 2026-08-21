@@ -240,9 +240,13 @@ class RokidRuntimeService : Service() {
                 "camera_dropped_blurry=${snapshot.cameraFramesDroppedBlurry} " +
                 "camera_dropped_cadence=${snapshot.cameraFramesDroppedCadence} " +
                 "camera_motion_tier_samples=${snapshot.cameraMotionTierSamples} " +
+                "camera_luma_max=${snapshot.cameraMaximumMeanLuma.formatOneDecimal()} " +
+                "camera_dark_fraction_min=${snapshot.cameraMinimumDarkFraction.formatThreeDecimals()} " +
+                "camera_focus_max=${snapshot.cameraMaximumLaplacianVariance.formatOneDecimal()} " +
+                "camera_motion_max=${snapshot.cameraMaximumMotionScore.formatThreeDecimals()} " +
                 "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
-                "imu_observed_hz=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuObservedSamplesPerSecond)} " +
-                "imu_max_gap_ms=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuMaximumGapMillis)} " +
+                "imu_observed_hz=${snapshot.imuObservedSamplesPerSecond.formatOneDecimal()} " +
+                "imu_max_gap_ms=${snapshot.imuMaximumGapMillis.formatOneDecimal()} " +
                 "microphone_chunks=${snapshot.microphoneChunks} " +
                 "microphone_bytes=${snapshot.microphoneBytes} " +
                 "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +
@@ -462,9 +466,13 @@ class RokidRuntimeService : Service() {
                 "camera_dropped_blurry=${snapshot.cameraFramesDroppedBlurry} " +
                 "camera_dropped_cadence=${snapshot.cameraFramesDroppedCadence} " +
                 "camera_motion_tier_samples=${snapshot.cameraMotionTierSamples} " +
+                "camera_luma_max=${snapshot.cameraMaximumMeanLuma.formatOneDecimal()} " +
+                "camera_dark_fraction_min=${snapshot.cameraMinimumDarkFraction.formatThreeDecimals()} " +
+                "camera_focus_max=${snapshot.cameraMaximumLaplacianVariance.formatOneDecimal()} " +
+                "camera_motion_max=${snapshot.cameraMaximumMotionScore.formatThreeDecimals()} " +
                 "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
-                "imu_observed_hz=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuObservedSamplesPerSecond)} " +
-                "imu_max_gap_ms=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuMaximumGapMillis)} " +
+                "imu_observed_hz=${snapshot.imuObservedSamplesPerSecond.formatOneDecimal()} " +
+                "imu_max_gap_ms=${snapshot.imuMaximumGapMillis.formatOneDecimal()} " +
                 "pose_attached=${run.poseAttached} microphone_chunks=${snapshot.microphoneChunks} " +
                 "microphone_bytes=${snapshot.microphoneBytes} " +
                 "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +
@@ -565,6 +573,10 @@ class RokidRuntimeService : Service() {
             linearAccelerationMetersPerSecondSquared.x != 0.0 ||
             linearAccelerationMetersPerSecondSquared.y != 0.0 ||
             linearAccelerationMetersPerSecondSquared.z != 0.0
+
+    private fun Double.formatOneDecimal(): String = "%.1f".format(java.util.Locale.ROOT, this)
+
+    private fun Double.formatThreeDecimals(): String = "%.3f".format(java.util.Locale.ROOT, this)
 
     companion object {
         private const val TAG = "ConceptFlowRokid"

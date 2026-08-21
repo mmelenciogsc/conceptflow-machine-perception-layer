@@ -344,7 +344,7 @@ glasses acquisition only. The repository does not yet continuously transport
 those samples into Unity/FMOD; the frame RPC carries only a timestamp-matched
 HEAD pose and must not be used as the real-time listener-update path.
 
-A final post-cadence-build run produced 36 exact-size Camera2 buffers and 781
+A post-cadence-build run produced 36 exact-size Camera2 buffers and 781
 orientation snapshots in 8.796 seconds; the IMU again measured 98.8 Hz with a
 10.1 ms maximum gap. The unchanged dark view again caused all 36 camera frames
 to be rejected. `./scripts/lint` passed repository policy, secret scanning,
@@ -359,6 +359,33 @@ The final debug APK installed for that run is 14,857,132 bytes with SHA-256
 `4d2ca1525f50d49aeabf2dabdbc65767b0b5502cdc8d4f0c7e7478934cf9d24d`;
 APK Signature Scheme v2 verification passed. The release APK also assembled;
 it remains unsigned, as expected without release signing material.
+
+A subsequent lit-scene diagnostic established that isolated still requests
+left this vendor HAL at its minimum reported exposure (63,220 ns) and
+sensitivity (ISO 50), despite an `AE_STATE_CONVERGED` result. The brightest of
+36 analyzed frames had mean luma 12.2/255, so lowering the darkness threshold
+would have concealed the capture defect. An exploratory simultaneous YUV plus
+JPEG session produced YUV preview frames but stalled every JPEG request. The
+implemented repair therefore runs a bounded 640×480 preview-only session for
+one second of standard Camera2 3A activity, closes it, and creates a separate
+JPEG-only session without closing the camera device.
+
+The final directly sideloaded build passed the eight-second aggregate-only
+hardware test: 28 exact 1920×1080 JPEG frames were analyzed, 18 were emitted,
+10 were cadence-limited, no frame was rejected as dark or blurry, maximum mean
+luma was 110.3, minimum dark-pixel fraction was 0.039, maximum focus score was
+1497.9, and maximum motion score was 0.138. The motion tier was active for 12
+analyzed samples. Concurrently, 781 orientation samples measured 98.7 Hz with
+a 17.7 ms maximum gap, and 64 microphone chunks contained 119,739 nonzero
+samples with peak absolute amplitude 979. These are aggregate diagnostics;
+the app did not persist or log image, PCM, or raw IMU payloads. It stopped its
+process and service after the bounded run.
+
+The updated Android suite contains 31 host tests, 58 Rokid tests, and one
+protocol-vector test (90 total). Focused Rokid unit tests, Android Lint, and
+debug assembly passed. The installed debug APK is 14,857,132 bytes with
+SHA-256 `4fc48dcb0dc1482a645c894f75e33ee5adac4abe35ffc38462b209f23bae840e`;
+APK Signature Scheme v2 verification passed.
 
 ## Accessibility evidence
 

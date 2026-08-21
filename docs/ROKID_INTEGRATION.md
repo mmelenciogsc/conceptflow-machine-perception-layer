@@ -116,12 +116,17 @@ The implemented hardware boundaries are:
 
 ## Adaptive camera gate
 
-`Camera2FrameSource` submits capture requests at a 200 ms ceiling. Every JPEG
-is processed in memory and discarded after the current decision. Capture-size
-selection prefers an exact 1920×1080 source. If it is unavailable, it chooses
-the closest aspect-compatible source and aspect-fits it inside 1920×1080 using
-one uniform scale; it never crops, stretches, or upscales. A 4:3 source such as
-4032×3024 therefore becomes 1440×1080 rather than distorted 1920×1080.
+`Camera2FrameSource` first runs a bounded 640×480 headless YUV preview for one
+second so the standard Camera2 auto-exposure and white-balance loops can
+settle. It then closes that preview session and creates a JPEG-only session;
+this sequence is required because the tested vendor HAL stalls JPEG output
+when preview and JPEG requests overlap. The client then submits JPEG captures
+at a 200 ms ceiling. Every image is processed in memory and discarded after
+the current decision. Capture-size selection prefers an exact 1920×1080
+source. If it is unavailable, it chooses the closest aspect-compatible source
+and aspect-fits it inside 1920×1080 using one uniform scale; it never crops,
+stretches, or upscales. A 4:3 source such as 4032×3024 therefore becomes
+1440×1080 rather than distorted 1920×1080.
 
 The gate analyzes a bounded luma thumbnail (maximum 160×90):
 
@@ -305,7 +310,9 @@ adb -s "$ROKID_SERIAL" logcat -d -s ConceptFlowRokid:I '*:S'
 ```
 
 Logs contain state, identifiers, counts, sizes, and coarse signal evidence,
-never frame bytes, IMU values, or PCM samples. If Camera2 reports
+including aggregate maximum mean luma, minimum dark-pixel fraction, maximum
+focus score, and maximum motion score; never frame bytes, individual IMU
+values, or PCM samples. If Camera2 reports
 `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, stop this service and record the
 conflict. Do not disable YodaOS security or services.
 

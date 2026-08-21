@@ -41,6 +41,10 @@ class StreamDiagnosticSessionTest {
         assertEquals(1L, snapshot.cameraFramesDroppedBlurry)
         assertEquals(1L, snapshot.cameraFramesDroppedCadence)
         assertEquals(1L, snapshot.cameraMotionTierSamples)
+        assertEquals(120.0, snapshot.cameraMaximumMeanLuma, 0.001)
+        assertEquals(0.1, snapshot.cameraMinimumDarkFraction, 0.001)
+        assertEquals(250.0, snapshot.cameraMaximumLaplacianVariance, 0.001)
+        assertEquals(0.25, snapshot.cameraMaximumMotionScore, 0.001)
         assertEquals(2L, snapshot.imuSamples)
         assertEquals(1L, snapshot.imuSignalSamples)
         assertEquals(100.0, snapshot.imuObservedSamplesPerSecond, 0.001)
@@ -78,5 +82,9 @@ class StreamDiagnosticSessionTest {
         emitted = emitted,
         dropReason = reason,
         targetFramesPerSecond = targetFramesPerSecond,
+        meanLuma = 120.0,
+        darkFraction = 0.1,
+        laplacianVariance = 250.0,
+        motionScore = 0.25,
     )
 }

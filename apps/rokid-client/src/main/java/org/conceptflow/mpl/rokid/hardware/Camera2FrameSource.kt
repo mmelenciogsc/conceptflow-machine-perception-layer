@@ -46,6 +46,7 @@ class Camera2FrameSource(
     private var listener: FrameSource.Listener? = null
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
+    private var previewReader: ImageReader? = null
     private var imageReader: ImageReader? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -109,15 +110,39 @@ class Camera2FrameSource(
         if (!lifecycle.isActive(runId)) return
         val cameraId = selectCameraId()
         val size = selectJpegSize(cameraId)
+        val previewSize = selectHeadlessPreviewSize(
+            cameraManager.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(ImageFormat.YUV_420_888)
+                ?.map { PixelDimensions(it.width, it.height) }
+                .orEmpty(),
+        ) ?: error("Camera has no bounded YUV preview output size")
         val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
-        if (!attachImageReader(runId, reader)) {
+        val preview = try {
+            ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 2)
+        } catch (error: RuntimeException) {
             closeSafely { reader.close() }
+            throw error
+        }
+        if (!attachImageReaders(runId, reader, preview)) {
+            closeSafely { reader.close() }
+            closeSafely { preview.close() }
             return
         }
         reader.setOnImageAvailableListener(
             { source ->
                 try {
                     consumeLatestImage(source, runId)
+                } catch (_: RuntimeException) {
+                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                }
+            },
+            handler,
+        )
+        preview.setOnImageAvailableListener(
+            { source ->
+                try {
+                    source.acquireLatestImage()?.close()
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
@@ -131,7 +156,11 @@ class Camera2FrameSource(
                 ) {
                     throw SecurityException(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
                 }
-                cameraManager.openCamera(cameraId, cameraStateCallback(runId, reader, handler), handler)
+                cameraManager.openCamera(
+                    cameraId,
+                    cameraStateCallback(runId, reader, preview, handler),
+                    handler,
+                )
             }
         }
     }
@@ -139,6 +168,7 @@ class Camera2FrameSource(
     private fun cameraStateCallback(
         runId: Long,
         reader: ImageReader,
+        preview: ImageReader,
         handler: Handler,
     ): CameraDevice.StateCallback = object : CameraDevice.StateCallback() {
         private val callbackCameraCloser = CallbackResourceCloser<CameraDevice> { it.close() }
@@ -151,7 +181,7 @@ class Camera2FrameSource(
             try {
                 synchronized(stateLock) {
                     lifecycle.runIfActive(runId) {
-                        createCaptureSession(runId, camera, reader, handler)
+                        createWarmupSession(runId, camera, reader, preview, handler)
                     }
                 }
             } catch (_: CameraAccessException) {
@@ -200,7 +230,84 @@ class Camera2FrameSource(
     }
 
     @Throws(CameraAccessException::class)
-    private fun createCaptureSession(
+    private fun createWarmupSession(
+        runId: Long,
+        camera: CameraDevice,
+        reader: ImageReader,
+        preview: ImageReader,
+        handler: Handler,
+    ) {
+        val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(preview.surface)
+            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+        }.build()
+        val callback = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) {
+                if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
+                try {
+                    session.setRepeatingRequest(previewRequest, null, handler)
+                    if (!handler.postDelayed(
+                            { finishWarmupAndCreateJpegSession(runId, camera, reader, session, handler) },
+                            THREE_A_WARMUP_MILLIS,
+                        )
+                    ) {
+                        failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                    }
+                } catch (_: CameraAccessException) {
+                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                } catch (_: RuntimeException) {
+                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                }
+            }
+
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                closeSafely { session.close() }
+                failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
+            }
+        }
+        camera.createCaptureSession(
+            SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                listOf(OutputConfiguration(preview.surface)),
+                Executor { command -> handler.post(command) },
+                callback,
+            ),
+        )
+    }
+
+    private fun finishWarmupAndCreateJpegSession(
+        runId: Long,
+        camera: CameraDevice,
+        reader: ImageReader,
+        warmupSession: CameraCaptureSession,
+        handler: Handler,
+    ) {
+        if (!detachCaptureSession(runId, warmupSession)) return
+        try {
+            warmupSession.stopRepeating()
+        } catch (_: CameraAccessException) {
+            closeSafely { warmupSession.close() }
+            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            return
+        } catch (_: RuntimeException) {
+            closeSafely { warmupSession.close() }
+            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            return
+        }
+        closeSafely { warmupSession.close() }
+        try {
+            if (lifecycle.isActive(runId)) {
+                createJpegCaptureSession(runId, camera, reader, handler)
+            }
+        } catch (_: CameraAccessException) {
+            failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
+        } catch (_: RuntimeException) {
+            failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
+        }
+    }
+
+    @Throws(CameraAccessException::class)
+    private fun createJpegCaptureSession(
         runId: Long,
         camera: CameraDevice,
         reader: ImageReader,
@@ -287,6 +394,10 @@ class Camera2FrameSource(
                     emitted = processed.decision.emit,
                     dropReason = processed.decision.reason,
                     targetFramesPerSecond = processed.decision.targetFramesPerSecond,
+                    meanLuma = processed.decision.analysis.meanLuma,
+                    darkFraction = processed.decision.analysis.darkFraction,
+                    laplacianVariance = processed.decision.analysis.laplacianVariance,
+                    motionScore = processed.decision.analysis.motionScore,
                 ),
             )
             val output = processed.jpeg ?: return
@@ -331,9 +442,14 @@ class Camera2FrameSource(
         return true
     }
 
-    private fun attachImageReader(runId: Long, reader: ImageReader): Boolean = synchronized(stateLock) {
+    private fun attachImageReaders(
+        runId: Long,
+        reader: ImageReader,
+        preview: ImageReader,
+    ): Boolean = synchronized(stateLock) {
         if (!lifecycle.isActive(runId)) return@synchronized false
         imageReader = reader
+        previewReader = preview
         true
     }
 
@@ -355,6 +471,13 @@ class Camera2FrameSource(
         true
     }
 
+    private fun detachCaptureSession(runId: Long, session: CameraCaptureSession): Boolean =
+        synchronized(stateLock) {
+            if (!lifecycle.isActive(runId) || captureSession !== session) return@synchronized false
+            captureSession = null
+            true
+        }
+
     private fun listenerFor(runId: Long): FrameSource.Listener? = synchronized(stateLock) {
         listener.takeIf { lifecycle.isActive(runId) }
     }
@@ -362,11 +485,13 @@ class Camera2FrameSource(
     private fun detachResourcesLocked(callbackCamera: CameraDevice? = null): CameraResourceCloser {
         val handler = cameraHandler
         val thread = cameraThread
+        val preview = previewReader
         val reader = imageReader
         val device = cameraDevice
         val session = captureSession
         cameraHandler = null
         cameraThread = null
+        previewReader = null
         imageReader = null
         cameraDevice = null
         captureSession = null
@@ -376,6 +501,7 @@ class Camera2FrameSource(
                 { handler?.removeCallbacksAndMessages(null) },
                 { session?.close() },
                 { if (device !== callbackCamera) device?.close() },
+                { preview?.close() },
                 { reader?.close() },
                 { closeUnownedThread(thread) },
             ),
@@ -487,6 +613,26 @@ private fun closeUnownedThread(thread: HandlerThread?) {
 }
 
 private const val MAX_SOURCE_JPEG_BYTES = 20 * 1_024 * 1_024
+private const val THREE_A_WARMUP_MILLIS = 1_000L
+private const val MAX_PREVIEW_PIXELS = 1_280L * 720L
+
+internal fun selectHeadlessPreviewSize(
+    candidates: Collection<PixelDimensions>,
+    preferred: PixelDimensions = PixelDimensions(640, 480),
+): PixelDimensions? {
+    val bounded = candidates.filter { it.area <= MAX_PREVIEW_PIXELS }
+    bounded.firstOrNull { it == preferred }?.let { return it }
+    return bounded.minWithOrNull(
+        compareBy<PixelDimensions> { kotlin.math.abs(it.area - preferred.area) }
+            .thenBy {
+                kotlin.math.abs(
+                    it.width.toLong() * preferred.height - preferred.width.toLong() * it.height,
+                )
+            }
+            .thenBy { it.width }
+            .thenBy { it.height },
+    )
+}
 
 internal fun shouldJoinCameraThread(
     cameraThread: Thread?,
