@@ -4,9 +4,9 @@
     "net8.0": {
       "Google.Protobuf": {
         "type": "Direct",
-        "requested": "[3.28.3, )",
-        "resolved": "3.28.3",
-        "contentHash": "OewySX3aQCdKfMJsj2DzBMXQJPI+lm0CBzamU9ViFu3CU9tXYrQWqJ1CZ+/UWtkwOjUeIzbXmoOjRc7B8pbMrA=="
+        "requested": "[3.36.0, )",
+        "resolved": "3.36.0",
+        "contentHash": "wDPg8sKlmA8we1bqnC9DYKwLog4PNJ4GYTWV9FkzlGvfs3kNCSt2x0Qe31SBOeBPS2JGEZ/lNfil/Bkwx18Ufg=="
       },
       "Grpc.Net.Client": {
         "type": "Direct",
