@@ -11,14 +11,27 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 data class FrameLimits(
-    val maxWidth: Int = 1280,
-    val maxHeight: Int = 720,
-    val maxJpegBytes: Int = 768 * 1024,
+    val maxWidth: Int = 1_920,
+    val maxHeight: Int = 1_080,
+    val maxJpegBytes: Int = 2 * 1_024 * 1_024,
 ) {
     init {
         require(maxWidth in 1..4096)
         require(maxHeight in 1..4096)
         require(maxJpegBytes in 1..8 * 1024 * 1024)
+    }
+}
+
+data class CaptureGateEvent(
+    val inputDimensions: PixelDimensions,
+    val outputDimensions: PixelDimensions,
+    val emitted: Boolean,
+    val dropReason: FrameDropReason?,
+    val targetFramesPerSecond: Double,
+) {
+    init {
+        require(emitted == (dropReason == null))
+        require(targetFramesPerSecond.isFinite() && targetFramesPerSecond > 0.0)
     }
 }
 
@@ -93,6 +106,7 @@ private data class FrameHighWater(val frameId: Long, val timestampNanos: Long)
 interface FrameSource : AutoCloseable {
     interface Listener {
         fun onFrame(frame: FramePayload)
+        fun onCaptureGate(event: CaptureGateEvent) = Unit
         fun onError(message: String)
     }
 

@@ -31,3 +31,21 @@ Implemented tests cover head-only yaw, torso yaw, translated walking while the
 head counter-rotates, and stale/rollback timestamps. Crouch and bend are
 represented through future calibrated body-profile/pose updates; the current
 fixed proxy does not claim to infer either state.
+
+## Rokid head-motion sampling
+
+The direct glasses adapter prefers Android's game-rotation vector and requests
+an unbatched 10,000-microsecond period (nominal 100 Hz). It emits one HEAD
+snapshot per rotation-vector event with a monotonic sensor timestamp, sequence
+ID, quaternion, accuracy, and the latest three-axis angular velocity and
+gravity-compensated linear acceleration together with their own timestamps.
+Those timestamps let a receiver reject or down-weight stale component vectors.
+The Android period is a request rather than a delivery guarantee; the bounded
+device diagnostic measures observed rate and maximum gap.
+
+The current adapter labels the rigidly worn glasses orientation as HEAD, but a
+future calibration still must establish the fixed `HEAD <- SENSOR` mounting
+offset. It must not infer BODY or torso yaw from head rotation. Rendering in
+Unity/FMOD requires a separate ordered low-latency IMU transport and receiver
+interpolation; the current unary frame request carries only its nearest HEAD
+pose and is deliberately not presented as a 100 Hz renderer feed.

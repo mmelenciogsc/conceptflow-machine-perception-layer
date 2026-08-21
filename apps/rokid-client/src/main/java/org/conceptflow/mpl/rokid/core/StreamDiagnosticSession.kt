@@ -5,8 +5,15 @@ data class StreamDiagnosticSnapshot(
     val durationMillis: Long,
     val cameraFrames: Long,
     val cameraBytes: Long,
+    val cameraFramesAnalyzed: Long,
+    val cameraFramesDroppedDark: Long,
+    val cameraFramesDroppedBlurry: Long,
+    val cameraFramesDroppedCadence: Long,
+    val cameraMotionTierSamples: Long,
     val imuSamples: Long,
     val imuSignalSamples: Long,
+    val imuObservedSamplesPerSecond: Double,
+    val imuMaximumGapMillis: Double,
     val microphoneChunks: Long,
     val microphoneBytes: Long,
     val microphoneNonZeroSamples: Long,
@@ -20,8 +27,17 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private var accepting = true
     private var cameraFrames = 0L
     private var cameraBytes = 0L
+    private var cameraFramesAnalyzed = 0L
+    private var cameraFramesDroppedDark = 0L
+    private var cameraFramesDroppedBlurry = 0L
+    private var cameraFramesDroppedCadence = 0L
+    private var cameraMotionTierSamples = 0L
     private var imuSamples = 0L
     private var imuSignalSamples = 0L
+    private var firstImuTimestampNanos = 0L
+    private var lastImuTimestampNanos = 0L
+    private var maximumImuGapNanos = 0L
+    private var timedImuSamples = 0L
     private var microphoneChunks = 0L
     private var microphoneBytes = 0L
     private var microphoneNonZeroSamples = 0L
@@ -42,10 +58,35 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     }
 
     @Synchronized
-    fun recordImuSample(hasNonZeroSignal: Boolean): Boolean {
+    fun recordCaptureGate(event: CaptureGateEvent) {
+        if (!accepting) return
+        cameraFramesAnalyzed += 1L
+        if (event.targetFramesPerSecond >= 5.0) cameraMotionTierSamples += 1L
+        when (event.dropReason) {
+            FrameDropReason.DARK -> cameraFramesDroppedDark += 1L
+            FrameDropReason.BLURRY -> cameraFramesDroppedBlurry += 1L
+            FrameDropReason.CADENCE_SIMILAR -> cameraFramesDroppedCadence += 1L
+            null -> Unit
+        }
+    }
+
+    @Synchronized
+    fun recordImuSample(hasNonZeroSignal: Boolean, timestampNanos: Long = 0L): Boolean {
+        require(timestampNanos >= 0L)
         if (!accepting) return false
         imuSamples += 1L
         if (hasNonZeroSignal) imuSignalSamples += 1L
+        if (timestampNanos > 0L) {
+            if (firstImuTimestampNanos == 0L) {
+                firstImuTimestampNanos = timestampNanos
+                lastImuTimestampNanos = timestampNanos
+                timedImuSamples = 1L
+            } else if (timestampNanos > lastImuTimestampNanos) {
+                timedImuSamples += 1L
+                maximumImuGapNanos = maxOf(maximumImuGapNanos, timestampNanos - lastImuTimestampNanos)
+                lastImuTimestampNanos = timestampNanos
+            }
+        }
         return imuSamples == 1L
     }
 
@@ -73,12 +114,24 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
             durationMillis = ((finishedMonotonicNs - startedMonotonicNs).coerceAtLeast(0L)) / 1_000_000L,
             cameraFrames = cameraFrames,
             cameraBytes = cameraBytes,
+            cameraFramesAnalyzed = cameraFramesAnalyzed,
+            cameraFramesDroppedDark = cameraFramesDroppedDark,
+            cameraFramesDroppedBlurry = cameraFramesDroppedBlurry,
+            cameraFramesDroppedCadence = cameraFramesDroppedCadence,
+            cameraMotionTierSamples = cameraMotionTierSamples,
             imuSamples = imuSamples,
             imuSignalSamples = imuSignalSamples,
+            imuObservedSamplesPerSecond = observedImuSamplesPerSecond(),
+            imuMaximumGapMillis = maximumImuGapNanos / 1_000_000.0,
             microphoneChunks = microphoneChunks,
             microphoneBytes = microphoneBytes,
             microphoneNonZeroSamples = microphoneNonZeroSamples,
             microphonePeakAbsolute = microphonePeakAbsolute,
         ).also { finalSnapshot = it }
+    }
+
+    private fun observedImuSamplesPerSecond(): Double {
+        if (timedImuSamples < 2L || lastImuTimestampNanos <= firstImuTimestampNanos) return 0.0
+        return (timedImuSamples - 1L) * 1_000_000_000.0 / (lastImuTimestampNanos - firstImuTimestampNanos)
     }
 }

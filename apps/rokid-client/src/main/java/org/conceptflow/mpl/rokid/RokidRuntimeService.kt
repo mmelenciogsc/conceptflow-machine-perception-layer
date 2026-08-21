@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import org.conceptflow.mpl.rokid.core.AudioInputSource
+import org.conceptflow.mpl.rokid.core.CaptureGateEvent
 import org.conceptflow.mpl.rokid.core.CueEnvelope
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.FrameSource
@@ -106,7 +107,11 @@ class RokidRuntimeService : Service() {
         source.start(object : FrameSource.Listener {
             override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
                 if (frameSources.isCurrent(source)) {
-                    Log.i(TAG, "state=capturing frame_id=${frame.frameId}")
+                    Log.i(
+                        TAG,
+                        "state=capturing frame_id=${frame.frameId} " +
+                            "width=${frame.image.width} height=${frame.image.height}",
+                    )
                 }
             }
 
@@ -152,7 +157,7 @@ class RokidRuntimeService : Service() {
         poseSource = sensor
         runCatching {
             sensor.start { sample ->
-                if (diagnostic.recordImuSample(sample.hasNonZeroSignal())) {
+                if (diagnostic.recordImuSample(sample.hasNonZeroSignal(), sample.pose.monotonicTimestampNs)) {
                     Log.i(TAG, "stream=imu status=active")
                 }
             }
@@ -189,9 +194,17 @@ class RokidRuntimeService : Service() {
         val camera = Camera2FrameSource(this)
         if (frameSources.attach(camera)) {
             camera.start(object : FrameSource.Listener {
+                override fun onCaptureGate(event: CaptureGateEvent) {
+                    diagnostic.recordCaptureGate(event)
+                }
+
                 override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
                     if (frameSources.isCurrent(camera) && diagnostic.recordCameraFrame(frame.frameData.size())) {
-                        Log.i(TAG, "stream=camera status=active first_frame_id=${frame.frameId}")
+                        Log.i(
+                            TAG,
+                            "stream=camera status=active first_frame_id=${frame.frameId} " +
+                                "width=${frame.image.width} height=${frame.image.height}",
+                        )
                     }
                 }
 
@@ -222,7 +235,14 @@ class RokidRuntimeService : Service() {
             TAG,
             "state=stream_test_complete result=${if (snapshot.passed) "pass" else "fail"} " +
                 "camera_frames=${snapshot.cameraFrames} camera_bytes=${snapshot.cameraBytes} " +
+                "camera_analyzed=${snapshot.cameraFramesAnalyzed} " +
+                "camera_dropped_dark=${snapshot.cameraFramesDroppedDark} " +
+                "camera_dropped_blurry=${snapshot.cameraFramesDroppedBlurry} " +
+                "camera_dropped_cadence=${snapshot.cameraFramesDroppedCadence} " +
+                "camera_motion_tier_samples=${snapshot.cameraMotionTierSamples} " +
                 "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
+                "imu_observed_hz=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuObservedSamplesPerSecond)} " +
+                "imu_max_gap_ms=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuMaximumGapMillis)} " +
                 "microphone_chunks=${snapshot.microphoneChunks} " +
                 "microphone_bytes=${snapshot.microphoneBytes} " +
                 "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +
@@ -270,7 +290,7 @@ class RokidRuntimeService : Service() {
         runCatching {
             sensor.start { sample ->
                 if (isActivePhysicalTrace(run)) {
-                    if (run.diagnostic.recordImuSample(sample.hasNonZeroSignal())) {
+                    if (run.diagnostic.recordImuSample(sample.hasNonZeroSignal(), sample.pose.monotonicTimestampNs)) {
                         Log.i(TAG, "state=physical_trace stream=imu status=active")
                     }
                     run.inputGate.recordPose(sample)
@@ -323,6 +343,10 @@ class RokidRuntimeService : Service() {
             return
         }
         camera.start(object : FrameSource.Listener {
+            override fun onCaptureGate(event: CaptureGateEvent) {
+                run.diagnostic.recordCaptureGate(event)
+            }
+
             override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
                 if (!isActivePhysicalTrace(run) || !run.inputGate.recordFrame(frame)) return
                 run.diagnostic.recordCameraFrame(frame.frameData.size())
@@ -433,7 +457,14 @@ class RokidRuntimeService : Service() {
             TAG,
             "state=physical_trace_complete result=$finalOutcome " +
                 "camera_frames=${snapshot.cameraFrames} camera_bytes=${snapshot.cameraBytes} " +
+                "camera_analyzed=${snapshot.cameraFramesAnalyzed} " +
+                "camera_dropped_dark=${snapshot.cameraFramesDroppedDark} " +
+                "camera_dropped_blurry=${snapshot.cameraFramesDroppedBlurry} " +
+                "camera_dropped_cadence=${snapshot.cameraFramesDroppedCadence} " +
+                "camera_motion_tier_samples=${snapshot.cameraMotionTierSamples} " +
                 "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
+                "imu_observed_hz=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuObservedSamplesPerSecond)} " +
+                "imu_max_gap_ms=${"%.1f".format(java.util.Locale.ROOT, snapshot.imuMaximumGapMillis)} " +
                 "pose_attached=${run.poseAttached} microphone_chunks=${snapshot.microphoneChunks} " +
                 "microphone_bytes=${snapshot.microphoneBytes} " +
                 "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +

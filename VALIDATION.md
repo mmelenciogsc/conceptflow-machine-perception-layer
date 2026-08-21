@@ -316,6 +316,50 @@ The final physical-trace debug APK was 14,857,132 bytes with SHA-256
 APK Signature Scheme v2 verification passed. The release build was also
 inspected and contained only a cleartext-denying base network policy.
 
+### Adaptive Rokid capture and IMU gate — 2026-08-22
+
+The updated direct-sideload app selected the device's exact 1920×1080 JPEG
+output, submitted bounded captures on a 200 ms schedule, and analyzed frames
+only in memory. Deterministic JVM tests covered aspect-fit behavior, capture
+size selection, unsigned luma, dark/blur classification, exposure-change
+suppression, localized-motion sensitivity, 2/5 FPS cadence and hysteresis,
+timestamp rollback, and reset. Android unit tests, Android Lint, and debug
+assembly passed before installation.
+
+The first physical run exposed that scheduling the next request after capture
+completion analyzed only 12 frames in 8.779 seconds. All 12 were correctly
+classified dark. After moving scheduling to request-submission time, a second
+bounded run analyzed 35 frames in 8.798 seconds; all 35 were still classified
+dark, so no image left the gate and the overall three-stream diagnostic
+truthfully reported failure. This demonstrates the dark gate and a roughly
+5 FPS acquisition ceiling after camera startup, not valid lit-scene output or
+a sustained performance benchmark.
+
+The same second run delivered 782 game-rotation snapshots, measured 98.8 Hz
+between source timestamps, and observed a 10.1 ms maximum gap. Each emitted
+snapshot contains quaternion orientation plus the latest three-axis gyroscope
+and gravity-compensated linear-acceleration vectors, individual vector
+timestamps, sensor accuracy, and a monotonic sequence ID. This validates local
+glasses acquisition only. The repository does not yet continuously transport
+those samples into Unity/FMOD; the frame RPC carries only a timestamp-matched
+HEAD pose and must not be used as the real-time listener-update path.
+
+A final post-cadence-build run produced 36 exact-size Camera2 buffers and 781
+orientation snapshots in 8.796 seconds; the IMU again measured 98.8 Hz with a
+10.1 ms maximum gap. The unchanged dark view again caused all 36 camera frames
+to be rejected. `./scripts/lint` passed repository policy, secret scanning,
+configuration validation, Ruff, and mypy. `./scripts/test all` passed 197
+Python tests, the native test target, and all 88 Android JVM tests plus both
+debug APK builds. Its final WPF solution step could not run because this Ubuntu
+installation's .NET 8.0.130 SDK lacks the Windows Desktop SDK targets. The
+cross-platform desktop-relay core was therefore run separately: all 156 xUnit
+tests passed. This toolchain limitation is not recorded as a WPF pass.
+
+The final debug APK installed for that run is 14,857,132 bytes with SHA-256
+`4d2ca1525f50d49aeabf2dabdbc65767b0b5502cdc8d4f0c7e7478934cf9d24d`;
+APK Signature Scheme v2 verification passed. The release APK also assembled;
+it remains unsigned, as expected without release signing material.
+
 ## Accessibility evidence
 
 Android host source and lint cover labeled controls, logical focus, live-region

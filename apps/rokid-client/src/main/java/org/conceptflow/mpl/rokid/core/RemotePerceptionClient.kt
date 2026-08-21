@@ -176,9 +176,9 @@ internal fun buildNegotiationRequest(clientId: String, deadlineMillis: Long): Ne
                 .addImageEncodings(ImageEncoding.IMAGE_ENCODING_JPEG)
                 .addCueModalities(CueModality.CUE_MODALITY_EARCON)
                 .addCueModalities(CueModality.CUE_MODALITY_HAPTIC)
-                .setMaxWidth(1_280)
-                .setMaxHeight(720)
-                .setMaxFrameBytes(768L * 1_024L)
+                .setMaxWidth(1_920)
+                .setMaxHeight(1_080)
+                .setMaxFrameBytes(2L * 1_024L * 1_024L)
                 .setSupportsCancellation(true)
                 .setSupportsSupersession(true)
                 .setSupportsPose(true),
@@ -186,7 +186,7 @@ internal fun buildNegotiationRequest(clientId: String, deadlineMillis: Long): Ne
         .setRequestedQos(
             QualityOfService.newBuilder()
                 .setMaxInFlight(1)
-                .setTargetFramesPerSecond(1)
+                .setTargetFramesPerSecond(5)
                 .setResultDeadline(protobufDuration(deadlineMillis))
                 .setAllowFrameDrop(true)
                 .setMaxCuesPerResult(MAX_CUES_PER_RESULT),

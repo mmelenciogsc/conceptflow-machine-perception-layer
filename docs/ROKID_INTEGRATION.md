@@ -34,8 +34,11 @@ Sources checked on 2026-08-21:
   documents Ubuntu `plugdev` membership and packaged udev rules; its
   [command-line build guide](https://developer.android.com/build/building-cmdline)
   defines Gradle `assembleDebug`; and its
-  [Camera2 guide](https://developer.android.com/media/camera/camera2) defines
-  the camera API used here.
+  [Camera2 guide](https://developer.android.com/media/camera/camera2) and
+  [capture-session/request guide](https://developer.android.com/media/camera/camera2/capture-sessions-requests)
+  define the camera API used here. Android's
+  [motion-sensor guide](https://developer.android.com/develop/sensors-and-location/sensors/sensors_motion)
+  defines the rotation-vector, gyroscope, and linear-acceleration sources.
 - The Linux kernel's official
   [USB error-code documentation](https://docs.kernel.org/driver-api/usb/error-codes.html)
   defines `-EPROTO` as a protocol-level failure such as no response or a
@@ -72,6 +75,16 @@ human perception remain separate empirical tests. The physical button and
 right-arm touch surface mappings below were measured directly with Linux
 `getevent`.
 
+Live Camera2 characteristics report an exact 1920×1080 JPEG output on this
+unit, so the normal path transmits that native size without a resize/re-encode.
+The camera also reports 16.67 ms minimum frame duration and 13.48 ms JPEG stall
+duration for that stream; these are capability metadata, not a sustained
+throughput claim. The game-rotation, gyroscope, and linear-acceleration sensors
+all accept a 10,000-microsecond sampling request. A bounded 2026-08-22 run
+observed 98.8 fused orientation samples/s and a 10.1 ms maximum orientation
+gap. Android sensor periods are requests, so runtime measurements remain the
+authority.
+
 ## Non-display application model
 
 `apps/rokid-client` has no launcher entry or visual layout.
@@ -89,7 +102,9 @@ background and CameraService rejects access.
 The implemented hardware boundaries are:
 
 - `Camera2FrameSource`: bounded latest-only JPEG capture and monotonic frame IDs;
-- `SensorManagerPoseSource`: rotation-vector, gyroscope, and acceleration data;
+- `SensorManagerPoseSource`: unbatched nominal 100 Hz game-rotation snapshots,
+  each carrying the latest three-axis gyroscope and gravity-compensated linear
+  acceleration values plus their source timestamps and sensor accuracy;
 - `AudioRecordInputSource`: bounded 16-kHz mono PCM input with monotonic chunk
   IDs and no persistence;
 - `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
@@ -98,6 +113,42 @@ The implemented hardware boundaries are:
   and deadlines;
 - Android stereo audio and optional vibrator output; and
 - deterministic, package-scoped commands for capture and development cues.
+
+## Adaptive camera gate
+
+`Camera2FrameSource` submits capture requests at a 200 ms ceiling. Every JPEG
+is processed in memory and discarded after the current decision. Capture-size
+selection prefers an exact 1920×1080 source. If it is unavailable, it chooses
+the closest aspect-compatible source and aspect-fits it inside 1920×1080 using
+one uniform scale; it never crops, stretches, or upscales. A 4:3 source such as
+4032×3024 therefore becomes 1440×1080 rather than distorted 1920×1080.
+
+The gate analyzes a bounded luma thumbnail (maximum 160×90):
+
+- mean luma below 18 or more than 92% of pixels at luma 16 or below is rejected
+  as dark;
+- four-neighbour Laplacian variance below 60 is rejected as blurred or lacking
+  usable spatial detail; and
+- an exposure-compensated temporal residual combines whole-frame change,
+  changed-pixel fraction, and the strongest cell in an 8×6 grid. The local
+  cell term preserves small moving actions that would be diluted by a highly
+  similar full frame.
+
+Usable stable imagery is emitted at approximately 2 FPS. Material temporal
+change raises the target to approximately 5 FPS for a 1.5-second hysteresis
+window, which is extended by continued change. The 5 FPS value is a ceiling,
+not a guarantee: exposure time, Camera2 scheduling, processing load, and
+thermal policy can reduce the observed rate. Thresholds are deterministic
+engineering defaults and still require representative indoor/outdoor
+calibration; they are not evidence that a rejected frame contains nothing
+important.
+
+The current gRPC request advertises the 1920×1080, 2 MiB, 5 FPS maximum. It
+still carries one timestamp-matched HEAD pose per emitted image. Continuous
+100 Hz IMU transport to Unity/FMOD is not yet implemented; treating the
+2–5 FPS frame pose as an audio-listener update would be incorrect. The next
+transport slice must deliver bounded, ordered IMU samples independently from
+semantic frames and interpolate them at the renderer.
 
 There is no screen, launcher, or wearer-facing visual state. The right arm does
 have a capacitive touch surface; it reports firmware-recognized key events, not
@@ -198,9 +249,11 @@ sensor.
 
 `stream-test` concurrently samples camera, IMU, and microphone input for eight
 seconds and then stops automatically. Its pass criterion requires at least one
-item from every stream. It reports only counts, aggregate byte totals, and
-aggregate PCM nonzero/peak evidence; it neither logs nor writes images, sensor
-values, or audio samples. `cue-left` and `cue-right` emit short development
+item from every stream after quality gates. It reports only dimensions, counts,
+aggregate byte totals, camera drop-reason counts, requested-tier counts,
+observed IMU rate/maximum gap, and aggregate PCM nonzero/peak evidence; it
+neither logs nor writes images, sensor values, or audio samples. `cue-left` and
+`cue-right` emit short development
 audio/haptic cues and must be used only when the wearer expects them.
 `capture-start` fails closed when camera permission is absent or Camera2 cannot
 acquire the device. `stop` finishes the nonvisual activity; unbinding then
@@ -265,8 +318,9 @@ scheduling, and real glasses audio dispatch. This does not include the Poco in
 the data path and does not run a trained model or CUDA kernel. It also does not
 establish production authentication, reconnect/roaming behavior, open-ear
 localization quality, or sustained thermal behavior. The next transport slice
-is the project-owned authenticated glasses-to-Poco relay, preserving TLS,
-cancellation, reconnect, message limits, and cue TTL.
+is the project-owned authenticated glasses-to-Poco relay with a distinct
+low-latency IMU lane, preserving TLS, cancellation, reconnect, message limits,
+sensor/frame correlation, and cue TTL.
 
 Verified and unverified physical behavior is recorded without inference in
 [`VALIDATION.md`](../VALIDATION.md). No vendor SDK, client secret, proprietary

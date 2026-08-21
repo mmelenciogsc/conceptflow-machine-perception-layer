@@ -8,7 +8,30 @@ data class ImuSample(
     val pose: Pose,
     val angularVelocityRadiansPerSecond: Vector3,
     val linearAccelerationMetersPerSecondSquared: Vector3,
-)
+    val sequenceId: Long = 0L,
+    val orientationAccuracy: Int = 0,
+    val angularVelocityTimestampNanos: Long = 0L,
+    val linearAccelerationTimestampNanos: Long = 0L,
+) {
+    init {
+        require(sequenceId >= 0L)
+        require(orientationAccuracy in 0..3)
+        require(angularVelocityTimestampNanos >= 0L)
+        require(linearAccelerationTimestampNanos >= 0L)
+    }
+}
+
+data class ImuSamplingProfile(
+    val samplingPeriodMicros: Int = 10_000,
+    val maximumReportLatencyMicros: Int = 0,
+) {
+    init {
+        require(samplingPeriodMicros in 5_000..200_000)
+        require(maximumReportLatencyMicros in 0..1_000_000)
+    }
+
+    val nominalSamplesPerSecond: Double get() = 1_000_000.0 / samplingPeriodMicros
+}
 
 interface PoseSource : AutoCloseable {
     val isRunning: Boolean

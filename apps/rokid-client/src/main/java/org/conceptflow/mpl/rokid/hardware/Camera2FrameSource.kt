@@ -20,24 +20,28 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
+import org.conceptflow.mpl.rokid.core.CaptureGateEvent
 import org.conceptflow.mpl.rokid.core.FrameLimits
 import org.conceptflow.mpl.rokid.core.FrameSource
 import org.conceptflow.mpl.rokid.core.MonotonicFrameSequence
+import org.conceptflow.mpl.rokid.core.PixelDimensions
 import org.conceptflow.mpl.rokid.core.SystemWallClock
 import org.conceptflow.mpl.rokid.core.buildJpegFrame
+import org.conceptflow.mpl.rokid.core.selectClosestCaptureSize
 import java.util.UUID
 import java.util.concurrent.Executor
 
 class Camera2FrameSource(
     context: Context,
     private val limits: FrameLimits = FrameLimits(),
-    private val captureIntervalMillis: Long = 400L,
+    private val captureIntervalMillis: Long = 200L,
 ) : FrameSource {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
     private val stateLock = Any()
     private val lifecycle = CameraRunLifecycle()
     private val sequence = MonotonicFrameSequence()
+    private val processor = AdaptiveJpegProcessor(limits)
     private val sessionId = "camera-${UUID.randomUUID()}"
     private var listener: FrameSource.Listener? = null
     private var cameraThread: HandlerThread? = null
@@ -61,6 +65,7 @@ class Camera2FrameSource(
 
         val runId = synchronized(stateLock) {
             val id = lifecycle.begin()
+            processor.reset()
             this.listener = listener
             id
         }
@@ -112,7 +117,7 @@ class Camera2FrameSource(
         reader.setOnImageAvailableListener(
             { source ->
                 try {
-                    consumeLatestImage(source, runId, size)
+                    consumeLatestImage(source, runId)
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
@@ -188,10 +193,10 @@ class Camera2FrameSource(
         val map = cameraManager.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: error("Camera has no stream configuration map")
-        return map.getOutputSizes(ImageFormat.JPEG)
-            .filter { it.width <= limits.maxWidth && it.height <= limits.maxHeight }
-            .maxByOrNull { it.width.toLong() * it.height.toLong() }
-            ?: error("Camera has no JPEG output within configured dimensions")
+        val candidates = map.getOutputSizes(ImageFormat.JPEG).map { PixelDimensions(it.width, it.height) }
+        val selected = selectClosestCaptureSize(candidates, PixelDimensions(limits.maxWidth, limits.maxHeight))
+            ?: error("Camera has no JPEG output sizes")
+        return Size(selected.width, selected.height)
     }
 
     @Throws(CameraAccessException::class)
@@ -240,13 +245,7 @@ class Camera2FrameSource(
                     session: CameraCaptureSession,
                     request: CaptureRequest,
                     result: TotalCaptureResult,
-                ) {
-                    if (lifecycle.isActive(runId) &&
-                        !handler.postDelayed({ captureNext(runId, handler) }, captureIntervalMillis)
-                    ) {
-                        failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
-                    }
-                }
+                ) = Unit
 
                 override fun onCaptureFailed(
                     session: CameraCaptureSession,
@@ -256,6 +255,11 @@ class Camera2FrameSource(
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
             }, handler)
+            if (lifecycle.isActive(runId) &&
+                !handler.postDelayed({ captureNext(runId, handler) }, captureIntervalMillis)
+            ) {
+                failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            }
         } catch (_: CameraAccessException) {
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
         } catch (_: RuntimeException) {
@@ -263,22 +267,30 @@ class Camera2FrameSource(
         }
     }
 
-    private fun consumeLatestImage(reader: ImageReader, runId: Long, outputSize: Size) {
+    private fun consumeLatestImage(reader: ImageReader, runId: Long) {
         val image = reader.acquireLatestImage() ?: return
         image.use {
             if (!lifecycle.isActive(runId)) return
             val buffer = image.planes.singleOrNull()?.buffer ?: return
             val size = buffer.remaining()
-            if (size <= 0 || size > limits.maxJpegBytes) {
-                listenerFor(runId)?.onError("JPEG frame was rejected by the byte limit")
-                return
-            }
+            if (size <= 0 || size > MAX_SOURCE_JPEG_BYTES) return
             val bytes = ByteArray(size)
             buffer.get(bytes)
-            val frameId = sequence.nextId()
             val sensorTimestamp = if (image.timestamp > 0L) image.timestamp else ElapsedRealtimeClock.nowNanos()
             val timestamp = sequence.normalizeTimestamp(sensorTimestamp)
             val target = listenerFor(runId) ?: return
+            val processed = processor.process(bytes, timestamp) ?: return
+            target.onCaptureGate(
+                CaptureGateEvent(
+                    inputDimensions = processed.inputDimensions,
+                    outputDimensions = processed.dimensions,
+                    emitted = processed.decision.emit,
+                    dropReason = processed.decision.reason,
+                    targetFramesPerSecond = processed.decision.targetFramesPerSecond,
+                ),
+            )
+            val output = processed.jpeg ?: return
+            val frameId = sequence.nextId()
             target.onFrame(
                 buildJpegFrame(
                     requestId = "camera-$frameId",
@@ -287,9 +299,9 @@ class Camera2FrameSource(
                     frameId = frameId,
                     timestampNanos = timestamp,
                     wallTimeMillis = SystemWallClock.nowMillis(),
-                    width = outputSize.width,
-                    height = outputSize.height,
-                    bytes = bytes,
+                    width = processed.dimensions.width,
+                    height = processed.dimensions.height,
+                    bytes = output,
                     synthetic = false,
                 ),
             )
@@ -302,6 +314,7 @@ class Camera2FrameSource(
             listener = null
             detachResourcesLocked()
         }
+        processor.reset()
         closeResources(resources)
     }
 
@@ -312,6 +325,7 @@ class Camera2FrameSource(
             listener = null
             target to detachResourcesLocked(callbackCamera)
         }
+        processor.reset()
         closeResources(stopped.second)
         stopped.first?.onError(message)
         return true
@@ -471,6 +485,8 @@ private fun closeUnownedThread(thread: HandlerThread?) {
         }
     }
 }
+
+private const val MAX_SOURCE_JPEG_BYTES = 20 * 1_024 * 1_024
 
 internal fun shouldJoinCameraThread(
     cameraThread: Thread?,
