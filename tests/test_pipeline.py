@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -87,17 +88,18 @@ async def test_pipeline_rejects_correlation_capacity_before_dispatch(frame_facto
 
 @pytest.mark.asyncio
 async def test_pipeline_does_not_render_accepted_pending_cue(frame_factory, cue_factory) -> None:
-    accepted_ns = time.monotonic_ns() + 1_000_000
+    accepted_ns = time.monotonic_ns()
     frame = frame_factory()
     active = cue_factory("active", now_ns=accepted_ns - 1, priority=90)
     queued = cue_factory("queued", now_ns=accepted_ns - 1, priority=10, description="wall")
     scheduler = CueScheduler(capacity=3, cooldown_ms=0)
 
-    outcome = await _pipeline(_result(frame, [active, queued]), scheduler).process(
-        frame,
-        route_context=RouteContext(local_available=False, cluster_available=True),
-        now_ns=accepted_ns,
-    )
+    with patch("conceptflow_mpl_host.pipeline.time.monotonic_ns", return_value=accepted_ns - 1):
+        outcome = await _pipeline(_result(frame, [active, queued]), scheduler).process(
+            frame,
+            route_context=RouteContext(local_available=False, cluster_available=True),
+            now_ns=accepted_ns,
+        )
 
     assert len(outcome.schedules) == 2
     assert outcome.schedules[0].dispatched_cue.cue_id == "active"
@@ -116,7 +118,7 @@ async def test_pipeline_processes_multi_cue_cancellation_and_priority_in_order(
     frame_factory,
     cue_factory,
 ) -> None:
-    accepted_ns = time.monotonic_ns() + 1_000_000
+    accepted_ns = time.monotonic_ns()
     frame = frame_factory()
     active = cue_factory("active", now_ns=accepted_ns - 1, priority=60)
     queued = cue_factory("queued", now_ns=accepted_ns - 1, priority=20, description="wall")
@@ -125,11 +127,12 @@ async def test_pipeline_processes_multi_cue_cancellation_and_priority_in_order(
     high = cue_factory("high", now_ns=accepted_ns - 1, priority=100, description="stop")
     scheduler = CueScheduler(capacity=4, cooldown_ms=0)
 
-    outcome = await _pipeline(_result(frame, [active, queued, cancellation, high]), scheduler).process(
-        frame,
-        route_context=RouteContext(local_available=False, cluster_available=True),
-        now_ns=accepted_ns,
-    )
+    with patch("conceptflow_mpl_host.pipeline.time.monotonic_ns", return_value=accepted_ns - 1):
+        outcome = await _pipeline(_result(frame, [active, queued, cancellation, high]), scheduler).process(
+            frame,
+            route_context=RouteContext(local_available=False, cluster_available=True),
+            now_ns=accepted_ns,
+        )
 
     assert len(outcome.schedules) == 4
     assert outcome.schedules[1].dispatched_cue is None
@@ -144,18 +147,19 @@ async def test_pipeline_processes_multi_cue_cancellation_and_priority_in_order(
 
 @pytest.mark.asyncio
 async def test_pipeline_drops_cues_from_a_different_frame_before_scheduling(frame_factory, cue_factory) -> None:
-    accepted_ns = time.monotonic_ns() + 1_000_000
+    accepted_ns = time.monotonic_ns()
     frame = frame_factory()
     mismatched = cue_factory("wrong-frame", now_ns=accepted_ns - 1, priority=100)
     mismatched.frame_id = frame.frame_id + 1
     matching = cue_factory("matching", now_ns=accepted_ns - 1, priority=50, description="matching")
     scheduler = CueScheduler(capacity=3, cooldown_ms=0)
 
-    outcome = await _pipeline(_result(frame, [mismatched, matching]), scheduler).process(
-        frame,
-        route_context=RouteContext(local_available=False, cluster_available=True),
-        now_ns=accepted_ns,
-    )
+    with patch("conceptflow_mpl_host.pipeline.time.monotonic_ns", return_value=accepted_ns - 1):
+        outcome = await _pipeline(_result(frame, [mismatched, matching]), scheduler).process(
+            frame,
+            route_context=RouteContext(local_available=False, cluster_available=True),
+            now_ns=accepted_ns,
+        )
 
     assert [schedule.cue.cue_id for schedule in outcome.schedules] == ["matching"]
     assert _rendered_ids(outcome.rendered_cues) == ["matching"]
