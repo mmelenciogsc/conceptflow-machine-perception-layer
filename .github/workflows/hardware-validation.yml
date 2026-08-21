@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           command -v adb >/dev/null || { echo "adb is required on the Rokid runner" >&2; exit 1; }
           device_count="$(adb devices | awk 'NR > 1 && $2 == "device" { count++ } END { print count + 0 }')"
-          test "$device_count" -eq 1 || { echo "Expected exactly one authorized Android/Rokid device; found $device_count" >&2; adb devices -l; exit 1; }
+          test "$device_count" -eq 1 || { echo "Expected exactly one authorized Android/Rokid device; found $device_count" >&2; exit 1; }
           adb get-state
           adb shell getprop ro.product.manufacturer
           adb shell getprop ro.product.model
@@ -56,5 +56,4 @@ jobs:
           set -euo pipefail
           apk="apps/rokid-client/build/outputs/apk/debug/rokid-client-debug.apk"
           test -f "$apk" || { echo "Expected APK was not produced: $apk" >&2; exit 1; }
-          adb install -r "$apk"
-          adb shell am start -W -n org.conceptflow.mpl.rokidclient/org.conceptflow.mpl.rokid.MainActivity
+          ./scripts/rokid-install --no-build

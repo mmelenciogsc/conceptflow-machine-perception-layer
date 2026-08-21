@@ -29,9 +29,12 @@ must be configured separately.
 ## Capture and consent
 
 The Rokid client requests Android camera permission and starts capture only from
-the visible button or `C` key. `Camera2FrameSource` uses `acquireLatestImage`, a
-two-image reader, a configured byte limit, and a 400 ms default capture
-interval. Stopping or pausing the activity closes the capture resources.
+the focused control, camera key, or external `C` key. On a YodaOS device without
+an operable permission dialog, the direct-sideload helper can grant only the
+declared camera permission after an explicit `--grant-camera` operator action.
+`Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
+byte limit, and a 400 ms default capture interval. Stopping or pausing the
+activity closes the capture resources.
 
 The current Android host demo generates a synthetic frame after the user
 connects and presses Process. Its activity does not receive real glasses frames
@@ -61,7 +64,7 @@ duration, and a local kill path. Zero-touch cannot mean invisible capture.
   `EphemeralIdentityFactory` generate per-session values; they are not stable
   account or device identifiers.
 - The public test/demo inputs are synthetic. No camera captures, datasets,
-  private brand media, proprietary model weights, or vendor SDK AARs are
+  private brand media, proprietary model weights, or vendor SDK binaries are
   included.
 
 ## Transport
@@ -89,8 +92,8 @@ frame content.
 The .NET `SafeStatus` and `StatusRedactor` remove common credential shapes,
 sanitize correlation IDs, and reduce endpoints to a redacted origin. WPF status
 history is bounded to a short text window. Operators must apply the same policy
-to reverse proxies, mobile logs, crash reporting, GPU profilers, and vendor
-bridges.
+to reverse proxies, mobile logs, crash reporting, GPU profilers, and future
+device transports.
 
 ## Deployment requirements
 

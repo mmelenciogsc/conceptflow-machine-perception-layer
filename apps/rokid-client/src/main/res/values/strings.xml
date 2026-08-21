@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <resources>
     <string name="app_name">CONCEPTFlow glasses client</string>
-    <string name="ready_status">Ready. Press C to start capture, L for a left cue, or R for a right cue.</string>
+    <string name="ready_status">Ready. Swipe the touchpad to choose and tap to activate. The camera key toggles capture.</string>
     <string name="start_capture">Start camera capture</string>
     <string name="stop_capture">Stop camera capture</string>
     <string name="capture_started_status">Camera capture started.</string>

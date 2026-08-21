@@ -41,11 +41,22 @@ REQUIRED = (
     "scripts/format",
     "scripts/demo",
     "scripts/benchmark",
+    "scripts/rokid-install",
     "scripts/repository/secret_scan.py",
 )
 SOURCE_SUFFIXES = {".py", ".sh", ".kt", ".kts", ".java", ".cs", ".cpp", ".hpp", ".proto"}
 SOURCE_NAMES = {"CMakeLists.txt", "Makefile"}
-SCRIPT_NAMES = {"bootstrap", "build", "test", "lint", "format", "demo", "benchmark", "generate"}
+SCRIPT_NAMES = {
+    "benchmark",
+    "bootstrap",
+    "build",
+    "demo",
+    "format",
+    "generate",
+    "lint",
+    "rokid-install",
+    "test",
+}
 FORBIDDEN_SUFFIXES = {
     ".aab",
     ".apk",
@@ -88,6 +99,7 @@ ABSOLUTE_USER_PATH = re.compile(r"(?:/home/[^/\s]+/|/Users/[^/\s]+/|[A-Za-z]:\\U
 ANDROID_NAMESPACE = "{http://schemas.android.com/apk/res/android}"
 ROKID_BUILD_FILE = Path("apps/rokid-client/build.gradle.kts")
 ROKID_MANIFEST = Path("apps/rokid-client/src/main/AndroidManifest.xml")
+ROKID_INSTALL_SCRIPT = Path("scripts/rokid-install")
 HARDWARE_WORKFLOW = Path(".github/workflows/hardware-validation.yml")
 
 
@@ -124,9 +136,11 @@ def check_rokid_workflow_component() -> list[str]:
     failures: list[str] = []
     build_text = read_text(ROKID_BUILD_FILE) or ""
     workflow_text = read_text(HARDWARE_WORKFLOW) or ""
+    install_text = read_text(ROKID_INSTALL_SCRIPT) or ""
     namespace_match = re.search(r'(?m)^\s*namespace\s*=\s*"([^"]+)"\s*$', build_text)
     application_id_match = re.search(r'(?m)^\s*applicationId\s*=\s*"([^"]+)"\s*$', build_text)
-    component_match = re.search(r"\badb\s+shell\s+am\s+start\b[^\n]*\s-n\s+(\S+)", workflow_text)
+    install_package_match = re.search(r'(?m)^readonly PACKAGE_NAME="([^"]+)"$', install_text)
+    install_activity_match = re.search(r'(?m)^readonly ACTIVITY_NAME="([^"]+)"$', install_text)
 
     try:
         manifest = ET.parse(ROOT / ROKID_MANIFEST).getroot()
@@ -150,9 +164,17 @@ def check_rokid_workflow_component() -> list[str]:
         failures.append(f"cannot determine applicationId from {ROKID_BUILD_FILE}")
     if launcher_activity is None:
         failures.append(f"cannot determine MAIN/LAUNCHER activity from {ROKID_MANIFEST}")
-    if component_match is None:
-        failures.append(f"cannot determine adb launch component from {HARDWARE_WORKFLOW}")
-    if namespace_match is None or application_id_match is None or launcher_activity is None or component_match is None:
+    if "./scripts/rokid-install --no-build" not in workflow_text:
+        failures.append(f"Rokid workflow does not invoke the direct-sideload helper: {HARDWARE_WORKFLOW}")
+    if install_package_match is None or install_activity_match is None:
+        failures.append(f"cannot determine launch component from {ROKID_INSTALL_SCRIPT}")
+    if (
+        namespace_match is None
+        or application_id_match is None
+        or launcher_activity is None
+        or install_package_match is None
+        or install_activity_match is None
+    ):
         return failures
 
     namespace = namespace_match.group(1)
@@ -162,7 +184,7 @@ def check_rokid_workflow_component() -> list[str]:
     elif "." not in launcher_activity:
         launcher_activity = f"{namespace}.{launcher_activity}"
     expected_component = f"{application_id}/{launcher_activity}"
-    actual_component = component_match.group(1)
+    actual_component = f"{install_package_match.group(1)}/{install_activity_match.group(1)}"
     if actual_component != expected_component:
         failures.append(f"Rokid workflow component mismatch: expected {expected_component}, found {actual_component}")
     return failures

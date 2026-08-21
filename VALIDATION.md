@@ -27,7 +27,7 @@ toolchain-aware compilation only.
 | Repository | format, policy, secret, config-example, shell, Ruff, and MyPy gates passed | `actionlint` was unavailable; workflows received parser and repository-policy checks |
 | Python | 145 tests passed; protocol generation valid; all three source/wheel packages built and isolated-imported | no production worker or non-loopback deployment |
 | Synthetic slice | real loopback gRPC demo passed reconnect, cancellation, timeout, stale rejection, worker error, overload, recovery, and cue rendering | deterministic CPU mock and synthetic frames only |
-| Android | 50 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
+| Android | 49 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
 | .NET | locked restore, formatter, warning-free Release build including WPF cross-target, 156 tests, and consent-gated demo passed | WPF was not executed on Windows |
 | Native | strict Release build, 15-case test executable, JSON-lines demo, ASan/UBSan build/tests, and CUDA-aware build/tests passed | no CUDA kernel or model inference exists |
 | Dependencies | Python and .NET vulnerability queries found no known vulnerability in resolved third-party packages | local editable Python distributions were correctly excluded from the index audit |
@@ -154,26 +154,42 @@ WebRTC implementation is claimed.
 
 ## Rokid and Poco evidence
 
-The attached consumer glasses previously reported ADB model `RG_glasses`,
+The attached consumer glasses reported manufacturer `Rokid`, model `RG-glasses`,
 Android 12/API 32, YodaOS Sprite assist service 0.3.5, and CXR service package
 `com.rokid.cxrservice` version 12. Direct ADB over the magnetic 5-pin data cable
-was verified. The debug Rokid APK was installed, granted camera permission, and
-launched successfully; its process remained live. The system Sprite service
-retained the camera, so this did not prove physical frame capture or cue output.
+was verified. The current debug Rokid APK was installed directly, camera
+permission was explicitly granted for development, and `am start -W` accepted
+its activity; its process remained live. The 480x640 built-in display reported
+`OFF`, so Android kept the activity sleeping and the key/camera test did not
+execute. The system Sprite assist service still held camera 0. This proves the
+direct build/install/start boundary, not foreground rendering, frame capture,
+touchpad input, or cue output.
 
 The Poco F7 Ultra rejected the debug host APK through ADB with
 `INSTALL_FAILED_USER_RESTRICTED`. No device-security setting was bypassed or
 left modified. The host APK itself builds and tests successfully, but phone
 installation remains a user-confirmation/device-policy gate.
 
-Official public SDK evidence was checked in
-[`RokidSuuport/glass3_sdk_demo`](https://github.com/RokidSuuport/glass3_sdk_demo)
-at commit `16380658`. That revision separates glasses-side
-`glass3.open.sdk:2.2.0-E` from phone-side `phone.sdk:2.2.0-E` and demonstrates
-`GlassSdk`/`PSecuritySDK` roles. The attached consumer YodaOS/CXR device is not
-claimed to be Glass3-compatible. CXR-L is treated as the Hi Rokid phone bridge;
-CXR-S and Glass3 remain optional proprietary adapter seams. No vendor AAR,
-invented vendor API, or proprietary binary is included.
+The canonical development route is now the standalone standard-Android app and
+direct ADB sideload. `./scripts/rokid-install --serial ... --inspect-only`
+verified the current authorized target properties without changing the device.
+The repository has no Hi Rokid runtime dependency, Rokid client secret, vendor
+Maven repository, or vendor SDK adapter. Official Android and Rokid cable
+sources plus pinned community implementation references are recorded in
+[`docs/ROKID_INTEGRATION.md`](docs/ROKID_INTEGRATION.md).
+
+The direct-sideload pass executed these command forms with locally selected,
+unpublished serials:
+
+```bash
+./scripts/rokid-install --serial "$ROKID_SERIAL" --inspect-only
+./scripts/rokid-install --serial "$POCO_SERIAL" --inspect-only  # refused as non-Rokid
+./scripts/rokid-install --inspect-only                           # refused as ambiguous
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-camera
+```
+
+The installed debug APK was 13,408,278 bytes with SHA-256
+`a46272478ebdb0beb30f3bc666cae9b22cca14fd6455bf846d3000411db1113f`.
 
 ## Accessibility evidence
 
@@ -245,7 +261,8 @@ actually execute.
 ## Unvalidated release gates
 
 - real phone-to-glasses or WebRTC transport;
-- licensed CXR-S/Glass3 adapters on their intended hardware;
+- project-owned authenticated Rokid-to-Poco transport and its physical-device
+  reconnect, cancellation, stale-result, and latency behavior;
 - a registered production worker, model weights, real CUDA kernel/inference,
   and multi-GPU correctness, failover, load, thermal, and performance tests;
 - physical glass-to-cue latency and long-duration reconnect/roaming tests;

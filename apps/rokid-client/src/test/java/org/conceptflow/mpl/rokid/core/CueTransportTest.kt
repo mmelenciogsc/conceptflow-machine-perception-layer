@@ -7,7 +7,6 @@ import org.conceptflow.mpl.v1.PerceptionCue
 import org.conceptflow.mpl.v1.PerceptionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,14 +42,6 @@ class CueTransportTest {
         transport.disconnect()
         assertTrue(transport.deliver(result).isEmpty())
         assertNull(transport.deliver(CueEnvelope("result-session", "result-stream", cue)))
-    }
-
-    @Test
-    fun proprietaryBoundariesFailClearlyAndRemainDistinct() {
-        val cxr = assertThrows(IllegalArgumentException::class.java) { CxrSpriteAdapter.attach(null) }
-        val glass3 = assertThrows(IllegalArgumentException::class.java) { Glass3EnterpriseAdapter.attach(null) }
-        assertTrue(cxr.message.orEmpty().contains("CXR-S"))
-        assertTrue(glass3.message.orEmpty().contains("separate SDK family"))
     }
 
     @Test

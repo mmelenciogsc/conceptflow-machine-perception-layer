@@ -105,12 +105,22 @@ that can conceal backpressure or cancellation defects.
   restart only the ADB client if needed.
 - APK not found: build the specific module and verify its
   `build/outputs/apk/debug/` directory.
+- If both the Poco and glasses are connected, pass the glasses serial to
+  `./scripts/rokid-install --serial SERIAL`; the helper refuses ambiguous or
+  non-Rokid targets.
+- A 3-pin charging lead does not provide the required ADB data path. Use the
+  magnetic 5-pin development cable.
 - Camera remains stopped: grant Android camera permission and confirm the app is
-  foregrounded. Capture stops on pause by design.
+  foregrounded. On a non-touch YodaOS build, the explicit development command
+  is `./scripts/rokid-install --serial SERIAL --no-build --grant-camera`.
+  Capture stops on pause by design.
+- `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`: another YodaOS service owns the
+  camera. Record the conflict; do not disable system security or services as an
+  installation shortcut.
 - No phone/glasses exchange: expected in the public baseline. Both activities
   use local/in-process flows and there is no real inter-device transport.
-- Missing CXR/Glass3 class: expected unless a licensed private adapter is
-  supplied. Do not substitute APIs from a different Rokid SDK family.
+- No Rokid client secret or SDK class is required. This project intentionally
+  builds and sideloads a standalone standard-Android APK.
 
 See [ROKID_INTEGRATION.md](ROKID_INTEGRATION.md) for the verified device and SDK
 boundaries.

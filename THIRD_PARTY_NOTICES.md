@@ -67,7 +67,8 @@ dependencies.
 
 ## External platforms and optional integrations
 
-Android, .NET, CUDA, Rokid hardware/firmware and vendor SDKs are not
-redistributed by this source repository. Model weights, datasets, camera
-captures, and QUICK utility implementations are also external and are not
-included. Their separate terms apply when a downstream build enables them.
+Android, .NET, CUDA, and Rokid hardware/firmware are not redistributed by this
+source repository. The Rokid client uses the Android platform directly and has
+no Rokid SDK binary dependency. Model weights, datasets, camera captures, and
+QUICK utility implementations are also external and are not included. Their
+separate terms apply when a downstream build enables them.

@@ -11,7 +11,7 @@ an engineering review aid, not a security certification.
 - user consent and capture state;
 - session, request, result, stream, and frame integrity;
 - cue ordering, urgency, modality, and accessible presentation;
-- TLS keys, vendor credentials, signing material, and provider credentials;
+- TLS keys, signing material, and optional model-provider credentials;
 - worker health, capacity, model selection, and provenance;
 - CI artifacts, release packages, dependency integrity, and brand assets.
 
@@ -19,7 +19,7 @@ an engineering review aid, not a security certification.
 
 | Boundary | Untrusted or failure-prone input | Primary controls | Remaining work |
 | --- | --- | --- | --- |
-| Glasses | Camera/sensor data, permissions, vendor services, local cue output | Android permission gate, bounds, monotonic IDs, TTL/dedup renderer, adapter seams | Physical device, lifecycle, and proprietary bridge validation |
+| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounds, monotonic IDs, TTL/dedup renderer, direct-ADB target check | Physical device, lifecycle, camera ownership, and cue validation |
 | Android host | Frames, network state, transport callbacks, accessibility services | Capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, TLS client | Real phone-to-glasses transport and end-to-end device testing |
 | Windows relay | Endpoint text, user approval, future screen/region content, status UI | Consent gate, content bounds, HTTPS policy, cancellation, bounded queues, redaction, stock accessible controls | Manual Windows, JAWS, and NVDA acceptance; real capture adapters |
 | Network | Eavesdropping, tampering, replay, downgrade, delay, reordering, flooding | TLS-required production config, loopback-only plaintext, ephemeral sessions, correlation, deadlines, message limits | Deployment authentication, certificate lifecycle, optional mTLS, WebRTC security design |
@@ -31,7 +31,7 @@ an engineering review aid, not a security certification.
 
 ### Unintended or covert capture
 
-An application, vendor bridge, or future integration could start capture without
+An application or future transport integration could start capture without
 the user understanding the state, continue after backgrounding, or broaden a
 selected region. Current controls require visible actions in the sample apps,
 close glasses capture on pause, require one-shot Windows consent, and validate a
@@ -79,14 +79,14 @@ duplicating TTS when an accessibility service is enabled. TalkBack, keyboard,
 JAWS, and NVDA acceptance remains release-blocking and is not yet validated on
 the target combinations.
 
-### Proprietary adapter confusion
+### Wrong-device ADB mutation
 
-CXR-S, the Hi Rokid CXR-L phone bridge, and the modern Glass3 SDK line are
-distinct. Treating them as interchangeable could cause unsafe installation,
-permissions, or transport assumptions. The public code exposes separate
-`CxrSpriteBridge` and `Glass3EnterpriseBridge` interfaces and includes neither
-SDK. Private adapters must be version-pinned and tested only against their
-intended hardware/firmware family.
+The Poco and Rokid glasses can be attached to one workstation simultaneously.
+An unqualified `adb install`, permission grant, or shell command could mutate
+the wrong device. The direct-sideload helper requires an explicit serial when
+more than one authorized device exists and refuses targets whose Android product
+properties do not identify as Rokid glasses. Manual procedures must use `-s` on
+every mutating ADB command.
 
 ### Supply-chain or CI compromise
 

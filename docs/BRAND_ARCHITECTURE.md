@@ -108,7 +108,7 @@ approved final asset exists.
 
 ## Repository state
 
-No proprietary model weights, SDK AARs, camera captures, or private brand media
+No proprietary model weights, third-party SDK binaries, camera captures, or private brand media
 are included. Documentation records only source-relative evidence, hashes, and
 design rationale. The code license (`MIT OR Apache-2.0`) does not automatically
 license external trademarks or media; see

@@ -29,15 +29,15 @@ It is:
 - reusable validation, routing, correlation, scheduling, redaction, consent,
   and accessibility-oriented components across Python, Kotlin, C#, and C++;
 - buildable Android, .NET, native, and Python baselines with explicit hardware
-  and proprietary integration seams.
+  and transport boundaries.
 
 It is not:
 
 - a trained perception model, GPU inference engine, production service, or
   benchmark claim about physical hardware;
 - a completed phone-to-glasses transport or WebRTC implementation;
-- a redistribution of Rokid SDK AARs, proprietary weights, camera captures, or
-  private brand media;
+- a dependency on Rokid companion apps, client secrets, vendor SDK AARs, or a
+  redistribution of proprietary weights, camera captures, or private media;
 - evidence of Windows/JAWS/NVDA, TalkBack, physical cue, or safety validation.
 
 ## Architecture
@@ -71,8 +71,8 @@ the complete flow and source-level boundaries.
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
 | Python | 145 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, and assistive-only cue; three wheels/sdists built and isolated-imported | Real model worker, production serving, physical-device path |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 50 JVM tests including the shared wire vector; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
-| Rokid | Standard Camera2/SensorManager and synthetic/hardware adapters; inspectable cue rendering; direct ADB over the attached consumer device’s magnetic 5-pin cable | Licensed CXR-S implementation, Glass3 adapter, Rokid-to-Poco frame/cue flow |
+| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 49 JVM tests including the shared wire vector; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
+| Rokid | Standalone standard-Android APK; Camera2/SensorManager hardware adapters; inspectable cue rendering; serial-safe direct build/install/activity-start over the magnetic 5-pin cable | Foreground camera/audio/touchpad validation with the display awake; project-owned Rokid-to-Poco frame/cue transport |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 
@@ -152,26 +152,25 @@ Build both applications:
 adb devices -l
 ```
 
-With explicit serials selected from that list:
+With explicit serials selected from that list, directly sideload the glasses
+app without Hi Rokid, a client secret, or a proprietary SDK:
 
 ```bash
 read -r -p "Rokid ADB serial: " ROKID_SERIAL
 read -r -p "Poco ADB serial: " POCO_SERIAL
-adb -s "$ROKID_SERIAL" install -r apps/rokid-client/build/outputs/apk/debug/rokid-client-debug.apk
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build
 adb -s "$POCO_SERIAL" install -r apps/android-host/build/outputs/apk/debug/android-host-debug.apk
-adb -s "$ROKID_SERIAL" shell am start -W \
-  -n org.conceptflow.mpl.rokidclient/org.conceptflow.mpl.rokid.MainActivity
 adb -s "$POCO_SERIAL" shell am start -W \
   -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity
 ```
 
-The attached consumer device has reported `RG_glasses`, Android 12/API 32,
+The attached consumer device has reported `RG-glasses`, Android 12/API 32,
 YodaOS Sprite assist service 0.3.5, and `com.rokid.cxrservice` v12 target 32;
-direct ADB over its magnetic 5-pin cable is verified. The public app uses
-standard Android APIs and separate CXR-S/Glass3 adapter seams. It includes no
-proprietary AAR. Installation exercises the two apps independently: their
-current activities use in-process flows and do not provide real Rokid/Poco
-transport. See [Rokid integration](docs/ROKID_INTEGRATION.md) and
+direct ADB over its magnetic 5-pin cable is verified. The glasses app is a
+standalone Android APK using standard platform APIs and no vendor SDK. The two
+apps currently exercise independent in-process flows; a real authenticated
+Rokid/Poco transport is not yet implemented. See
+[direct Rokid development](docs/ROKID_INTEGRATION.md) and
 [Android host](docs/ANDROID_HOST.md).
 
 ## Windows relay
@@ -266,8 +265,8 @@ creation only. Each product must remain independently operable. See
   minimization, consent, transport, logs, and retention.
 - [Brand architecture](docs/BRAND_ARCHITECTURE.md) — canonical external source
   hashes, visual system, typography evidence, and rights boundary.
-- [Rokid integration](docs/ROKID_INTEGRATION.md) — attached-device evidence,
-  standard Android implementation, CXR-S/CXR-L/Glass3 separation, and install.
+- [Direct Rokid development](docs/ROKID_INTEGRATION.md) — 5-pin cable, direct
+  ADB sideload, standard Android APIs, permissions, and device diagnostics.
 - [Windows relay](docs/WINDOWS_RELAY.md) — .NET Core/WPF/headless operation and
   Windows acceptance boundary.
 - [Android host](docs/ANDROID_HOST.md) — host policy, build, install, and real

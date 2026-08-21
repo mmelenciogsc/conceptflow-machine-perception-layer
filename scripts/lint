@@ -12,7 +12,8 @@ lint_repository() {
     "$python_executable" scripts/repository/check_policy.py
     "$python_executable" scripts/repository/secret_scan.py
     "$python_executable" scripts/repository/check_config_examples.py
-    bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark scripts/generate scripts/lib/common.sh
+    bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark \
+        scripts/generate scripts/rokid-install scripts/lib/common.sh
 }
 lint_python() {
     local python_executable

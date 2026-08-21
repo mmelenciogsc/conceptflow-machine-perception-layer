@@ -44,6 +44,7 @@ run_gradle() {
     if [[ -z "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" && ! -f "$REPOSITORY_ROOT/local.properties" ]]; then
         local sdk_candidate
         for sdk_candidate in \
+            "$REPOSITORY_ROOT/../android-sdk" \
             "${HOME:-}/Android/Sdk" \
             "${HOME:-}/Library/Android/sdk" \
             "${LOCALAPPDATA:-}/Android/Sdk"; do

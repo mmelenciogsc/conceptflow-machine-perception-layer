@@ -48,7 +48,7 @@ See [PROTOCOL.md](PROTOCOL.md).
 | Python cluster service | configuration, capability discovery, bounded admission, timeout/cancellation, worker health, TLS binding, and redacted logs | `services/cuda-cluster/src/conceptflow_mpl_cluster/` |
 | Android protocol | Java-lite protobuf and gRPC bindings generated from the canonical schema | `packages/android-protocol/` |
 | Android host | capability detection, preprocessing/routing, session and correlation state, cue scheduling, platform feedback, and transport abstractions | `apps/android-host/` |
-| Rokid client | Camera2 capture, SensorManager pose, bounded frames, inspectable cue rendering, and proprietary adapter seams | `apps/rokid-client/` |
+| Rokid client | Standalone Android Camera2 capture, SensorManager pose, bounded frames, inspectable cue rendering, and direct ADB deployment | `apps/rokid-client/` |
 | Windows relay | cross-platform .NET Core, gRPC client, bounded consented submission, WPF shell, headless demo, and QUICK example adapters | `apps/desktop-relay/` |
 | Native worker primitives | C++20 worker selection, health transitions, bounded admission, cancellation state, demo, and tests | `services/cuda-cluster/native/` |
 
@@ -85,9 +85,10 @@ cue that the scheduler dispatches as active. `PipelineOutcome.schedules` and
 The glasses app uses `Camera2FrameSource` and `SensorManagerPoseSource`, with
 `SyntheticFrameSource` and `SyntheticPoseSource` available for deterministic
 tests. `InspectableCueRenderer` rejects invalid, expired, duplicate, and older
-cues before invoking bounded stereo and haptic outputs. `CxrSpriteAdapter` and
-`Glass3EnterpriseAdapter` are interfaces around externally supplied bridges;
-neither vendor implementation nor vendor AAR is included.
+cues before invoking bounded stereo and haptic outputs. It is installed as a
+standalone APK through the 5-pin ADB cable and contains no Rokid companion-SDK
+or client-secret integration. `CueTransport` remains transport-neutral for the
+future project-owned authenticated data plane.
 
 The host app includes `AndroidCapabilityDetector`, `BoundedFramePreprocessor`,
 `RoutingPolicy`, `BoundedFrameQueue`, `SessionStateMachine`, `ResultCorrelator`,
@@ -149,12 +150,12 @@ debug builds and JVM tests, the .NET solution and headless demo on Ubuntu, and
 the strict native build/test/demo including CUDA-aware compilation. Exact
 evidence is recorded in [`VALIDATION.md`](../VALIDATION.md).
 
-Still requiring hardware or vendor work are the phone-to-glasses transport,
-private CXR-S adapter, distinct Glass3 adapter, Windows UI and JAWS/NVDA manual
-acceptance, real CUDA kernels and model execution, WebRTC media plane, physical
-latency characterization, and safety/usability validation. “Near-real-time” and
-“zero-touch” are experience goals, not claims of zero physical latency or
-safety guarantees.
+Still requiring hardware work are the project-owned phone-to-glasses transport,
+current-firmware Camera2/audio/touchpad validation, Windows UI and JAWS/NVDA
+manual acceptance, real CUDA kernels and model execution, WebRTC media plane,
+physical latency characterization, and safety/usability validation.
+“Near-real-time” and “zero-touch” are experience goals, not claims of zero
+physical latency or safety guarantees.
 
 ## Design-change rules
 

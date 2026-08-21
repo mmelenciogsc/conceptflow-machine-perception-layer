@@ -115,7 +115,7 @@ cleartext globally.
 
 ## Verified status
 
-The 2026-08-21 validation record reports 50 JVM tests across the two Android
+The 2026-08-21 validation record reports 49 JVM tests across the Android
 apps and shared protocol module, including a byte-exact Python/Java protocol
 vector. Both debug APK builds succeeded using JDK 17 and an installed Android
 SDK. The host source includes the capability, preprocessing, routing, session,

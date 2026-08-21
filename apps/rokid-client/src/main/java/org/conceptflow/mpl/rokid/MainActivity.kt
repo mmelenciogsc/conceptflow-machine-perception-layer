@@ -57,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         captureButton.setOnClickListener { toggleCapture() }
         findViewById<Button>(R.id.cue_left).setOnClickListener { deliverTestCue(Direction.DIRECTION_LEFT) }
         findViewById<Button>(R.id.cue_right).setOnClickListener { deliverTestCue(Direction.DIRECTION_RIGHT) }
+        captureButton.requestFocus()
         updateStatus(getString(R.string.ready_status))
     }
 
@@ -82,7 +83,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
-        KeyEvent.KEYCODE_C -> true.also { toggleCapture() }
+        KeyEvent.KEYCODE_C, KeyEvent.KEYCODE_CAMERA -> true.also { toggleCapture() }
         KeyEvent.KEYCODE_L -> true.also { deliverTestCue(Direction.DIRECTION_LEFT) }
         KeyEvent.KEYCODE_R -> true.also { deliverTestCue(Direction.DIRECTION_RIGHT) }
         else -> super.onKeyUp(keyCode, event)
