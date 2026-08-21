@@ -52,10 +52,12 @@ system reports a 480×640 Android display object in state `OFF`; this is not a
 physical display and has no product interaction role.
 
 The vendor Sprite assist service held camera 0 during the first inspection.
-CONCEPTFlow did not disable or modify that system service. A later explicit
-capture test acquired camera 0 through Camera2 and produced monotonic frames;
-the result is recorded in `VALIDATION.md`. Physical speaker output, haptics,
-microphones, and hardware button mappings remain separate empirical tests.
+CONCEPTFlow did not disable or modify that system service. Later explicit tests
+acquired camera 0 through Camera2 and concurrently received game-rotation,
+gyroscope/linear-acceleration, and 16-kHz mono PCM microphone data through
+standard Android APIs. The bounded results are recorded in `VALIDATION.md`.
+Physical speaker output, haptics, microphone-array beam selection, acoustic
+quality, and hardware button mappings remain separate empirical tests.
 
 ## Non-display application model
 
@@ -75,15 +77,17 @@ The implemented hardware boundaries are:
 
 - `Camera2FrameSource`: bounded latest-only JPEG capture and monotonic frame IDs;
 - `SensorManagerPoseSource`: rotation-vector, gyroscope, and acceleration data;
+- `AudioRecordInputSource`: bounded 16-kHz mono PCM input with monotonic chunk
+  IDs and no persistence;
 - `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
 - Android stereo audio and optional vibrator output; and
 - deterministic, package-scoped commands for capture and development cues.
 
-There is no microphone capture implementation yet. There is no touchpad,
-screen, launcher, or wearer-facing visual state. Development state is
-inspectable through safe ADB status/log commands. A product release must expose
-capture state and stop control through the accessible phone host, distinctive
-nonvisual feedback, and verified physical controls; ADB is not a user control.
+There is no touchpad, screen, launcher, or wearer-facing visual state.
+Development state is inspectable through safe ADB status/log commands. A
+product release must expose capture state and stop control through the
+accessible phone host, distinctive nonvisual feedback, and verified physical
+controls; ADB is not a user control.
 
 ## Cable and authorization
 
@@ -114,28 +118,35 @@ read -r -p "Rokid ADB serial: " ROKID_SERIAL
 ```
 
 Installation never starts capture. On a controlled development unit whose lack
-of display prevents an operable runtime permission dialog, camera permission is
-an explicit and separately logged action:
+of display prevents an operable runtime permission dialog, camera and
+microphone permissions are explicit and separately logged actions:
 
 ```bash
-./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-camera
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build \
+  --grant-camera --grant-microphone
 ```
 
-The option grants only the APK's declared `android.permission.CAMERA`.
+Each option grants only its named APK permission. Neither option starts a
+sensor.
 
 ## Nonvisual development controls
 
 ```bash
 ./scripts/rokid-control --serial "$ROKID_SERIAL" status
 ./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
+./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
-`cue-left` and `cue-right` emit short development audio/haptic cues and must be
-used only when the wearer expects them. `capture-start` fails closed when camera
-permission is absent or Camera2 cannot acquire the device. `stop` finishes the
-nonvisual activity; unbinding then closes the frame source, pose source, cue
-transport, and audio output.
+`stream-test` concurrently samples camera, IMU, and microphone input for eight
+seconds and then stops automatically. Its pass criterion requires at least one
+item from every stream. It reports only counts, aggregate byte totals, and
+aggregate PCM nonzero/peak evidence; it neither logs nor writes images, sensor
+values, or audio samples. `cue-left` and `cue-right` emit short development
+audio/haptic cues and must be used only when the wearer expects them.
+`capture-start` fails closed when camera permission is absent or Camera2 cannot
+acquire the device. `stop` finishes the nonvisual activity; unbinding then
+closes camera, pose, microphone, cue-transport, and audio-output resources.
 
 Equivalent nonvisual command:
 
@@ -154,9 +165,10 @@ Use the bounded helper first:
 adb -s "$ROKID_SERIAL" logcat -d -s ConceptFlowRokid:I '*:S'
 ```
 
-Logs contain state and monotonic frame IDs, never frame bytes. If Camera2
-reports `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, stop this service and record
-the conflict. Do not disable YodaOS security or services.
+Logs contain state, identifiers, counts, sizes, and coarse signal evidence,
+never frame bytes, IMU values, or PCM samples. If Camera2 reports
+`CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, stop this service and record the
+conflict. Do not disable YodaOS security or services.
 
 ## Current boundary
 

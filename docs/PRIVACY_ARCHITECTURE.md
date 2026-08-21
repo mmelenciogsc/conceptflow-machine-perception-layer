@@ -30,13 +30,16 @@ must be configured separately.
 
 The non-display Rokid client has no launcher UI. Installation leaves its
 nonvisual runtime stopped. On a controlled development unit, the direct-sideload
-helper can grant only the declared camera permission after an explicit
-`--grant-camera` operator action, and `rokid-control capture-start` is a separate
-authorized-ADB command.
+helper can grant only the declared camera and microphone permissions after
+explicit `--grant-camera` and `--grant-microphone` operator actions.
+`rokid-control capture-start` and the bounded eight-second `stream-test` are
+separate authorized-ADB commands.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
 byte limit, and a 400 ms default capture interval. Stopping the nonvisual
-activity unbinds the service and closes capture resources. This development
-control is not the intended product consent interface.
+activity unbinds the service and closes camera, IMU, and microphone resources.
+`stream-test` computes only aggregate PCM activity evidence and never writes or
+logs the captured samples. This development control is not the intended product
+consent interface.
 
 The current Android host demo generates a synthetic frame after the user
 connects and presses Process. Its activity does not receive real glasses frames

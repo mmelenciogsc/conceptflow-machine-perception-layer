@@ -23,6 +23,7 @@ Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
 
 Commands:
   capture-start  Explicitly start camera capture (CAMERA must already be granted).
+  stream-test    Run an eight-second camera, IMU, and microphone input test.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
   stop           Stop capture, cue output, and the runtime service.
@@ -45,7 +46,7 @@ while (($# > 0)); do
             usage
             exit 0
             ;;
-        capture-start|cue-left|cue-right|stop|status)
+        capture-start|stream-test|cue-left|cue-right|stop|status)
             [[ -z "$command_name" ]] || fail "only one command may be supplied"
             command_name="$1"
             shift
@@ -66,6 +67,11 @@ case "$command_name" in
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.START_CAPTURE"
         printf 'Requested explicit nonvisual camera capture.\n'
+        ;;
+    stream-test)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.START_STREAM_TEST"
+        printf 'Requested bounded camera, IMU, and microphone stream test; it stops automatically.\n'
         ;;
     cue-left)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
@@ -89,9 +95,13 @@ case "$command_name" in
             printf 'package: not installed\n'
             exit 0
         fi
-        permission_state="$(adb -s "$ROKID_SERIAL" shell dumpsys package "$PACKAGE_NAME" | \
+        package_dump="$(adb -s "$ROKID_SERIAL" shell dumpsys package "$PACKAGE_NAME")"
+        permission_state="$(printf '%s\n' "$package_dump" | \
             awk '/android.permission.CAMERA: granted=/{if ($0 ~ /granted=true/) print "granted"; else print "denied"; exit}')"
         printf 'camera permission: %s\n' "${permission_state:-unknown}"
+        microphone_permission="$(printf '%s\n' "$package_dump" | \
+            awk '/android.permission.RECORD_AUDIO: granted=/{if ($0 ~ /granted=true/) print "granted"; else print "denied"; exit}')"
+        printf 'microphone permission: %s\n' "${microphone_permission:-unknown}"
         process_running=false
         if adb -s "$ROKID_SERIAL" shell pidof "$PACKAGE_NAME" >/dev/null 2>&1; then
             process_running=true

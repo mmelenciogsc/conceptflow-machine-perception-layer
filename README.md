@@ -169,6 +169,18 @@ Installation leaves the nonvisual glasses runtime stopped. Camera permission and
 capture are separate, explicit development actions documented in
 [direct Rokid development](docs/ROKID_INTEGRATION.md).
 
+On a controlled non-display development unit, the optional bounded hardware
+diagnostic is explicit and stops all inputs automatically:
+
+```bash
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build \
+  --grant-camera --grant-microphone
+./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
+```
+
+It retains no image, IMU, or audio payload and reports only stream counts and
+aggregate microphone signal evidence through ADB logs.
+
 The attached non-display consumer device has reported `RG-glasses`, Android
 12/API 32,
 YodaOS Sprite assist service 0.3.5, and `com.rokid.cxrservice` v12 target 32;

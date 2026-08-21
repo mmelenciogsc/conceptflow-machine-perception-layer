@@ -15,6 +15,7 @@ serial=""
 apk_path="$DEFAULT_APK"
 build_apk=true
 grant_camera=false
+grant_microphone=false
 inspect_only=false
 
 usage() {
@@ -29,6 +30,7 @@ Options:
   --apk PATH        Install PATH instead of the default debug APK; implies --no-build.
   --no-build        Use the existing default debug APK.
   --grant-camera    Grant only android.permission.CAMERA after installation.
+  --grant-microphone Grant only android.permission.RECORD_AUDIO after installation.
   --inspect-only    Identify and validate the target without changing it.
   -h, --help        Show this help.
 EOF
@@ -53,6 +55,10 @@ while (($# > 0)); do
             ;;
         --grant-camera)
             grant_camera=true
+            shift
+            ;;
+        --grant-microphone)
+            grant_microphone=true
             shift
             ;;
         --inspect-only)
@@ -88,6 +94,11 @@ adb -s "$ROKID_SERIAL" install -r "$apk_path"
 if [[ "$grant_camera" == true ]]; then
     adb -s "$ROKID_SERIAL" shell pm grant "$PACKAGE_NAME" android.permission.CAMERA
     printf 'Granted android.permission.CAMERA at the operator request.\n'
+fi
+
+if [[ "$grant_microphone" == true ]]; then
+    adb -s "$ROKID_SERIAL" shell pm grant "$PACKAGE_NAME" android.permission.RECORD_AUDIO
+    printf 'Granted android.permission.RECORD_AUDIO at the operator request.\n'
 fi
 
 printf 'Direct sideload completed for %s on the selected Rokid target.\n' "$PACKAGE_NAME"

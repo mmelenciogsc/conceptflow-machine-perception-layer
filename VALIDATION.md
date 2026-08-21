@@ -27,7 +27,7 @@ toolchain-aware compilation only.
 | Repository | format, policy, secret, config-example, shell, Ruff, and MyPy gates passed | `actionlint` was unavailable; workflows received parser and repository-policy checks |
 | Python | 145 tests passed; protocol generation valid; all three source/wheel packages built and isolated-imported | no production worker or non-loopback deployment |
 | Synthetic slice | real loopback gRPC demo passed reconnect, cancellation, timeout, stale rejection, worker error, overload, recovery, and cue rendering | deterministic CPU mock and synthetic frames only |
-| Android | 52 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
+| Android | 55 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
 | .NET | locked restore, formatter, warning-free Release build including WPF cross-target, 156 tests, and consent-gated demo passed | WPF was not executed on Windows |
 | Native | strict Release build, 15-case test executable, JSON-lines demo, ASan/UBSan build/tests, and CUDA-aware build/tests passed | no CUDA kernel or model inference exists |
 | Dependencies | Python and .NET vulnerability queries found no known vulnerability in resolved third-party packages | local editable Python distributions were correctly excluded from the index audit |
@@ -63,7 +63,7 @@ Android baseline:
 ```
 
 The build used JDK 17 and the installed Android SDK. Test totals were 26 for
-`android-host`, 25 for `rokid-client`, and one cross-language protocol-vector
+`android-host`, 28 for `rokid-client`, and one cross-language protocol-vector
 test in `android-protocol`.
 
 .NET baseline:
@@ -169,8 +169,19 @@ Device logs recorded `state=capturing` followed by monotonic frame IDs 1 through
 5, while CameraService identified `org.conceptflow.mpl.rokidclient` as camera
 0's active client. The explicit stop command left both process and runtime
 service stopped. No vendor service was disabled. A temporary app-op diagnostic
-was restored to the original foreground mode. Physical audio/haptic quality was
-not tested.
+was restored to the original foreground mode.
+
+A subsequent exact-APK test ran camera, IMU, and microphone input concurrently
+for a bounded eight-second interval. The final repeat reported `result=pass`, 9
+camera frames (2,175,819 transient JPEG bytes), 1,170 IMU samples, and 65
+microphone chunks (266,240 transient PCM bytes). Aggregate signal inspection
+found nonzero data in all 1,170 IMU samples, plus 126,204 nonzero microphone
+samples and peak absolute PCM amplitude 358. No image, IMU, or audio payload was
+written or logged. After automatic shutdown, the package process and runtime
+service were stopped, camera ownership was released, and no package audio
+recorder was reported. This verifies standard Android acquisition on this unit;
+it does not validate array beam selection, acoustic fidelity, long-duration
+thermal behavior, or physical audio/haptic output.
 
 The Poco F7 Ultra rejected the debug host APK through ADB with
 `INSTALL_FAILED_USER_RESTRICTED`. No device-security setting was bypassed or
@@ -194,11 +205,13 @@ unpublished serials:
 ./scripts/rokid-install --inspect-only                           # refused as ambiguous
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-camera
 ./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-microphone
+./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
-The final clean-built debug APK was 6,951,992 bytes with SHA-256
-`de7a01b2f4d4b2b35c31aece05daad675d06c42ccf8db89c468b668bbf1216c2`.
+The camera/IMU/microphone test APK was 7,020,604 bytes with SHA-256
+`eaf6f805476c93399a298ea2a3423f17038d98b2fdd62977fe5e0fc59e0a45f3`.
 
 ## Accessibility evidence
 
