@@ -75,6 +75,39 @@ class DeterministicMockWorker:
             distance_meters=2.0,
             provenance=provenance,
         )
+        direction = pb.DIRECTION_AHEAD
+        if azimuth < -8.0:
+            direction = pb.DIRECTION_LEFT
+        elif azimuth > 8.0:
+            direction = pb.DIRECTION_RIGHT
+        cue = pb.PerceptionCue(
+            cue_id=f"synthetic-cue-{frame.frame_id}",
+            frame_id=frame.frame_id,
+            created_monotonic_timestamp_ns=frame.capture_monotonic_timestamp_ns,
+            ttl_ms=2_500,
+            category=pb.CUE_CATEGORY_OBSTACLE,
+            description="Synthetic obstacle for transport validation",
+            confidence=0.875,
+            priority=5,
+            coordinate_frame=pb.COORDINATE_FRAME_CAMERA_OPTICAL,
+            azimuth_degrees=azimuth,
+            elevation_degrees=0.0,
+            distance_meters=2.0,
+            direction=direction,
+            urgency=pb.URGENCY_NORMAL,
+            earcon=pb.Earcon(
+                earcon_id="synthetic-obstacle",
+                gain=0.4,
+                pitch=1.0,
+                spatialized=True,
+            ),
+            haptic=pb.Haptic(
+                pattern=pb.HAPTIC_PATTERN_PULSE,
+                intensity=0.3,
+                duration_ms=60,
+            ),
+            provenance=provenance,
+        )
         return pb.PerceptionResult(
             result_id=f"result-{frame.request_id}",
             request_id=frame.request_id,
@@ -84,5 +117,6 @@ class DeterministicMockWorker:
             capture_monotonic_timestamp_ns=frame.capture_monotonic_timestamp_ns,
             completed_monotonic_timestamp_ns=finished,
             observations=[observation],
+            cues=[cue],
             provenance=provenance,
         )

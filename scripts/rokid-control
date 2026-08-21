@@ -24,6 +24,7 @@ Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
 Commands:
   capture-start  Explicitly start camera capture (CAMERA must already be granted).
   stream-test    Run an eight-second camera, IMU, and microphone input test.
+  physical-trace Capture once and use the ADB-reverse loopback gRPC development path.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
   stop           Stop capture, cue output, and the runtime service.
@@ -46,7 +47,7 @@ while (($# > 0)); do
             usage
             exit 0
             ;;
-        capture-start|stream-test|cue-left|cue-right|stop|status)
+        capture-start|stream-test|physical-trace|cue-left|cue-right|stop|status)
             [[ -z "$command_name" ]] || fail "only one command may be supplied"
             command_name="$1"
             shift
@@ -72,6 +73,24 @@ case "$command_name" in
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.START_STREAM_TEST"
         printf 'Requested bounded camera, IMU, and microphone stream test; it stops automatically.\n'
+        ;;
+    physical-trace)
+        require_command ss "iproute2 is required to verify the loopback backend"
+        mapfile -t listener_addresses < <(ss -H -ltn 'sport = :50051' | awk '{print $4}')
+        if ((${#listener_addresses[@]} == 0)); then
+            fail "no local backend is listening on TCP 50051; start the development cluster first"
+        fi
+        for listener_address in "${listener_addresses[@]}"; do
+            case "$listener_address" in
+                "127.0.0.1:50051"|"[::1]:50051"|"[::ffff:127.0.0.1]:50051") ;;
+                *) fail "TCP 50051 must listen only on loopback; found $listener_address" ;;
+            esac
+        done
+        adb -s "$ROKID_SERIAL" reverse tcp:50051 tcp:50051 >/dev/null
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.START_PHYSICAL_TRACE"
+        printf 'Requested one bounded physical trace over the authorized ADB reverse tunnel.\n'
+        printf 'Raw microphone audio remains on the glasses; only aggregate activity is reported.\n'
         ;;
     cue-left)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \

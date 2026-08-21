@@ -15,11 +15,17 @@ import org.conceptflow.mpl.rokid.core.CueEnvelope
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.FrameSource
 import org.conceptflow.mpl.rokid.core.FrameSourceStateController
+import org.conceptflow.mpl.rokid.core.GrpcRemotePerceptionClient
 import org.conceptflow.mpl.rokid.core.InProcessCueTransport
 import org.conceptflow.mpl.rokid.core.InspectableCueRenderer
 import org.conceptflow.mpl.rokid.core.PcmAudioChunk
+import org.conceptflow.mpl.rokid.core.PhysicalTraceInputGate
+import org.conceptflow.mpl.rokid.core.RemoteCall
+import org.conceptflow.mpl.rokid.core.RemotePerceptionClient
+import org.conceptflow.mpl.rokid.core.RenderDisposition
 import org.conceptflow.mpl.rokid.core.RuntimeCommand
 import org.conceptflow.mpl.rokid.core.StreamDiagnosticSession
+import org.conceptflow.mpl.rokid.core.TraceCallback
 import org.conceptflow.mpl.rokid.hardware.AudioRecordInputSource
 import org.conceptflow.mpl.rokid.hardware.Camera2FrameSource
 import org.conceptflow.mpl.rokid.hardware.PlatformHapticOutput
@@ -30,6 +36,8 @@ import org.conceptflow.mpl.v1.Earcon
 import org.conceptflow.mpl.v1.Haptic
 import org.conceptflow.mpl.v1.HapticPattern
 import org.conceptflow.mpl.v1.PerceptionCue
+import org.conceptflow.mpl.v1.PerceptionResult
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 class RokidRuntimeService : Service() {
@@ -40,6 +48,8 @@ class RokidRuntimeService : Service() {
     private var poseSource: SensorManagerPoseSource? = null
     private var microphoneSource: AudioRecordInputSource? = null
     private var diagnosticSession: StreamDiagnosticSession? = null
+    private val physicalTraceLock = Any()
+    private var physicalTrace: PhysicalTraceRun? = null
     private val cueIds = AtomicLong(0L)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val binder = RuntimeBinder()
@@ -58,6 +68,7 @@ class RokidRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        abandonPhysicalTrace()
         stopSensorInputs()
         if (::transport.isInitialized) transport.close()
         if (::audioOutput.isInitialized) audioOutput.close()
@@ -128,7 +139,9 @@ class RokidRuntimeService : Service() {
             mainHandler.post(onTerminal)
             return
         }
-        if (frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true) {
+        if (frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
+            hasActivePhysicalTrace()
+        ) {
             Log.i(TAG, "state=stream_test result=already_active")
             return
         }
@@ -219,6 +232,237 @@ class RokidRuntimeService : Service() {
         mainHandler.post(onTerminal)
     }
 
+    private fun startPhysicalTrace(onTerminal: () -> Unit) {
+        val missingPermissions = buildList {
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) add("camera")
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                add("microphone")
+            }
+        }
+        if (missingPermissions.isNotEmpty()) {
+            Log.w(TAG, "state=physical_trace_rejected reason=${missingPermissions.joinToString("_")}_permission_denied")
+            mainHandler.post(onTerminal)
+            return
+        }
+        if (frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
+            hasActivePhysicalTrace()
+        ) {
+            Log.w(TAG, "state=physical_trace_rejected reason=input_busy")
+            mainHandler.post(onTerminal)
+            return
+        }
+
+        val run = PhysicalTraceRun(
+            inputGate = PhysicalTraceInputGate(),
+            diagnostic = StreamDiagnosticSession(ElapsedRealtimeClock.nowNanos()),
+            client = GrpcRemotePerceptionClient.adbReverseLoopback(
+                port = PHYSICAL_TRACE_PORT,
+                deadlineMillis = PHYSICAL_TRACE_RPC_DEADLINE_MS,
+            ),
+            onTerminal = onTerminal,
+        )
+        synchronized(physicalTraceLock) { physicalTrace = run }
+        run.timeout = Runnable { finishPhysicalTrace(run, outcome = "timeout") }
+        mainHandler.postDelayed(run.timeout, PHYSICAL_TRACE_TIMEOUT_MS)
+
+        val sensor = SensorManagerPoseSource(this)
+        poseSource = sensor
+        runCatching {
+            sensor.start { sample ->
+                if (isActivePhysicalTrace(run)) {
+                    if (run.diagnostic.recordImuSample(sample.hasNonZeroSignal())) {
+                        Log.i(TAG, "state=physical_trace stream=imu status=active")
+                    }
+                    run.inputGate.recordPose(sample)
+                    dispatchPhysicalTraceIfReady(run)
+                }
+            }
+        }.onFailure {
+            sensor.close()
+            if (poseSource === sensor) poseSource = null
+            failPhysicalTrace(run, "imu_unavailable")
+            return
+        }
+
+        val microphone = AudioRecordInputSource(this)
+        microphoneSource = microphone
+        runCatching {
+            microphone.start(object : AudioInputSource.Listener {
+                override fun onAudioChunk(chunk: PcmAudioChunk) {
+                    if (!isActivePhysicalTrace(run)) return
+                    if (run.diagnostic.recordMicrophoneChunk(chunk.pcm16LittleEndian)) {
+                        Log.i(
+                            TAG,
+                            "state=physical_trace stream=microphone status=active " +
+                                "sample_rate_hz=${chunk.sampleRateHz} channels=${chunk.channelCount}",
+                        )
+                    }
+                    run.inputGate.recordMicrophoneActivity(
+                        payloadBytes = chunk.pcm16LittleEndian.size,
+                        hasNonZeroSignal = chunk.pcm16LittleEndian.any { it.toInt() != 0 },
+                    )
+                    dispatchPhysicalTraceIfReady(run)
+                }
+
+                override fun onError(message: String) {
+                    if (microphoneSource === microphone) microphoneSource = null
+                    failPhysicalTrace(run, "microphone_${safeReason(message)}")
+                }
+            })
+        }.onFailure {
+            microphone.close()
+            if (microphoneSource === microphone) microphoneSource = null
+            failPhysicalTrace(run, "microphone_${safeReason(it.message ?: "start_failed")}")
+            return
+        }
+
+        val camera = Camera2FrameSource(this)
+        if (!frameSources.attach(camera)) {
+            camera.close()
+            failPhysicalTrace(run, "camera_busy")
+            return
+        }
+        camera.start(object : FrameSource.Listener {
+            override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
+                if (!isActivePhysicalTrace(run) || !run.inputGate.recordFrame(frame)) return
+                run.diagnostic.recordCameraFrame(frame.frameData.size())
+                frameSources.stopIfCurrent(camera)
+                Log.i(TAG, "state=physical_trace stream=camera status=active frame_id=${frame.frameId}")
+                dispatchPhysicalTraceIfReady(run)
+            }
+
+            override fun onError(message: String) {
+                frameSources.stopIfCurrent(camera)
+                failPhysicalTrace(run, "camera_${safeReason(message)}")
+            }
+        })
+        if (!camera.isRunning) {
+            frameSources.stopIfCurrent(camera)
+            failPhysicalTrace(run, "camera_start_failed")
+            return
+        }
+
+        Log.i(
+            TAG,
+            "state=physical_trace_started transport=adb_reverse_loopback port=$PHYSICAL_TRACE_PORT " +
+                "raw_microphone_transmitted=false timeout_ms=$PHYSICAL_TRACE_TIMEOUT_MS",
+        )
+    }
+
+    private fun dispatchPhysicalTraceIfReady(run: PhysicalTraceRun) {
+        if (!isActivePhysicalTrace(run)) return
+        val frame = run.inputGate.takeReadyFrame()
+        if (frame == null || !run.dispatchStarted.compareAndSet(false, true)) return
+        run.poseAttached = frame.hasPose()
+        run.uplinkStartedMonotonicNs = ElapsedRealtimeClock.nowNanos()
+        Log.i(
+            TAG,
+            "state=physical_trace_transport frame_id=${frame.frameId} frame_bytes=${frame.frameData.size()} " +
+                "pose_attached=${run.poseAttached}",
+        )
+        val call = run.client.execute(frame, object : TraceCallback {
+            override fun onSuccess(value: PerceptionResult) {
+                mainHandler.post { completePhysicalTrace(run, value) }
+            }
+
+            override fun onFailure(error: Throwable) {
+                failPhysicalTrace(run, "transport_${safeReason(error.message ?: error.javaClass.simpleName)}")
+            }
+        })
+        synchronized(physicalTraceLock) {
+            if (physicalTrace === run) run.remoteCall = call else call.cancel()
+        }
+    }
+
+    private fun completePhysicalTrace(run: PhysicalTraceRun, result: PerceptionResult) {
+        if (!isActivePhysicalTrace(run)) return
+        val events = transport.deliver(result)
+        val rendered = events.count { it.disposition == RenderDisposition.RENDERED }
+        val audioPlayed = events.count { it.audioPlayed }
+        val hapticPlayed = events.count { it.hapticPlayed }
+        finishPhysicalTrace(
+            run = run,
+            outcome = if (rendered > 0) "pass" else "no_renderable_cue",
+            cueCount = result.cuesCount,
+            renderedCount = rendered,
+            audioCount = audioPlayed,
+            hapticCount = hapticPlayed,
+        )
+    }
+
+    private fun failPhysicalTrace(run: PhysicalTraceRun, reason: String) {
+        mainHandler.post {
+            finishPhysicalTrace(run, outcome = safeReason(reason))
+        }
+    }
+
+    private fun finishPhysicalTrace(
+        run: PhysicalTraceRun,
+        outcome: String,
+        cueCount: Int = 0,
+        renderedCount: Int = 0,
+        audioCount: Int = 0,
+        hapticCount: Int = 0,
+    ) {
+        val removed = synchronized(physicalTraceLock) {
+            if (physicalTrace !== run) false else {
+                physicalTrace = null
+                true
+            }
+        }
+        if (!removed) return
+        mainHandler.removeCallbacks(run.timeout)
+        run.inputGate.clear()
+        run.remoteCall?.cancel()
+        run.client.close()
+        stopSensorInputs()
+        val finishedMonotonicNs = ElapsedRealtimeClock.nowNanos()
+        val snapshot = run.diagnostic.finish(finishedMonotonicNs)
+        val inputsPassed = snapshot.passed && run.poseAttached
+        val finalOutcome = if (outcome == "pass" && inputsPassed) "pass" else if (outcome == "pass") {
+            "input_incomplete"
+        } else {
+            outcome
+        }
+        val uplinkLatencyMillis = if (run.uplinkStartedMonotonicNs > 0L) {
+            (finishedMonotonicNs - run.uplinkStartedMonotonicNs).coerceAtLeast(0L) / 1_000_000L
+        } else {
+            0L
+        }
+        Log.i(
+            TAG,
+            "state=physical_trace_complete result=$finalOutcome " +
+                "camera_frames=${snapshot.cameraFrames} camera_bytes=${snapshot.cameraBytes} " +
+                "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
+                "pose_attached=${run.poseAttached} microphone_chunks=${snapshot.microphoneChunks} " +
+                "microphone_bytes=${snapshot.microphoneBytes} " +
+                "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +
+                "microphone_peak_absolute=${snapshot.microphonePeakAbsolute} " +
+                "cues=$cueCount rendered=$renderedCount audio=$audioCount haptic=$hapticCount " +
+                "transport_ms=$uplinkLatencyMillis duration_ms=${snapshot.durationMillis}",
+        )
+        mainHandler.postDelayed(
+            run.onTerminal,
+            if (audioCount > 0) CUE_SERVICE_LIFETIME_MS else 0L,
+        )
+    }
+
+    private fun isActivePhysicalTrace(run: PhysicalTraceRun): Boolean =
+        synchronized(physicalTraceLock) { physicalTrace === run }
+
+    private fun hasActivePhysicalTrace(): Boolean =
+        synchronized(physicalTraceLock) { physicalTrace != null }
+
+    private fun abandonPhysicalTrace() {
+        val run = synchronized(physicalTraceLock) {
+            physicalTrace.also { physicalTrace = null }
+        } ?: return
+        mainHandler.removeCallbacks(run.timeout)
+        run.inputGate.clear()
+        run.remoteCall?.cancel()
+        run.client.close()
+    }
+
     private fun stopSensorInputs() {
         frameSources.stopCurrent()
         poseSource?.close()
@@ -262,9 +506,11 @@ class RokidRuntimeService : Service() {
             when (command) {
                 RuntimeCommand.START_CAPTURE -> startCapture(onTerminal)
                 RuntimeCommand.START_STREAM_TEST -> startStreamTest(onTerminal)
+                RuntimeCommand.START_PHYSICAL_TRACE -> startPhysicalTrace(onTerminal)
                 RuntimeCommand.PLAY_LEFT_CUE -> playCue(Direction.DIRECTION_LEFT, onTerminal)
                 RuntimeCommand.PLAY_RIGHT_CUE -> playCue(Direction.DIRECTION_RIGHT, onTerminal)
                 RuntimeCommand.STOP -> {
+                    abandonPhysicalTrace()
                     stopSensorInputs()
                     diagnosticSession = null
                     Log.i(TAG, "state=stop_requested")
@@ -293,6 +539,22 @@ class RokidRuntimeService : Service() {
         private const val TAG = "ConceptFlowRokid"
         private const val CUE_SERVICE_LIFETIME_MS = 1_500L
         private const val STREAM_TEST_DURATION_MS = 8_000L
+        private const val PHYSICAL_TRACE_TIMEOUT_MS = 8_000L
+        private const val PHYSICAL_TRACE_RPC_DEADLINE_MS = 2_000L
+        private const val PHYSICAL_TRACE_PORT = 50_051
         private const val MAX_REASON_LENGTH = 80
     }
+}
+
+private class PhysicalTraceRun(
+    val inputGate: PhysicalTraceInputGate,
+    val diagnostic: StreamDiagnosticSession,
+    val client: RemotePerceptionClient,
+    val onTerminal: () -> Unit,
+) {
+    val dispatchStarted = AtomicBoolean(false)
+    @Volatile var remoteCall: RemoteCall? = null
+    @Volatile var poseAttached = false
+    @Volatile var uplinkStartedMonotonicNs = 0L
+    lateinit var timeout: Runnable
 }

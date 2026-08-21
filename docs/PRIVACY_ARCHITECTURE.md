@@ -11,7 +11,7 @@ privacy failures.
 
 | Data | Current use | Default persistence |
 | --- | --- | --- |
-| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture in the glasses app | None implemented |
+| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture and one-shot development transport from the glasses app | None implemented |
 | Pose and intrinsics | Optional frame context in the protocol; Android pose sampling | None implemented |
 | Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
@@ -32,14 +32,16 @@ The non-display Rokid client has no launcher UI. Installation leaves its
 nonvisual runtime stopped. On a controlled development unit, the direct-sideload
 helper can grant only the declared camera and microphone permissions after
 explicit `--grant-camera` and `--grant-microphone` operator actions.
-`rokid-control capture-start` and the bounded eight-second `stream-test` are
-separate authorized-ADB commands.
+`rokid-control capture-start`, the bounded eight-second `stream-test`, and the
+one-shot `physical-trace` are separate authorized-ADB commands.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
 byte limit, and a 400 ms default capture interval. Stopping the nonvisual
 activity unbinds the service and closes camera, IMU, and microphone resources.
 `stream-test` computes only aggregate PCM activity evidence and never writes or
-logs the captured samples. This development control is not the intended product
-consent interface.
+logs the captured samples. `physical-trace` sends one bounded JPEG and matched
+HEAD pose; microphone samples never enter its wire message and only nonzero
+local signal gates dispatch. This development control is not the intended
+product consent interface.
 
 The current Android host demo generates a synthetic frame after the user
 connects and presses Process. Its activity does not receive real glasses frames
@@ -77,11 +79,13 @@ mean covert capture.
 ## Transport
 
 Production Python configuration requires TLS and rejects insecure binding.
-Plaintext development/test binding is accepted only on loopback. Android
-network-security configurations disable cleartext traffic, and
-`GrpcPerceptionTransport.secure` uses TLS. The .NET endpoint policy requires
-HTTPS except when a visible development setting explicitly allows loopback
-HTTP; it does not bypass certificate validation.
+Plaintext development/test binding is accepted only on loopback. Android host
+and Rokid release network-security configurations disable cleartext traffic,
+and their secure gRPC factories use TLS. The Rokid debug variant has a narrow
+cleartext exception for literal `localhost`/`127.0.0.1`, used only through an
+authorized ADB reverse tunnel. The .NET endpoint policy requires HTTPS except
+when a visible development setting explicitly allows loopback HTTP; it does not
+bypass certificate validation.
 
 TLS is necessary but not sufficient. A deployment must provision and rotate
 certificates outside the repository, authenticate authorized clients and

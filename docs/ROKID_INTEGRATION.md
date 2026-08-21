@@ -8,8 +8,10 @@ system and must never be treated as a HUD, user interface, or acceptance target.
 CONCEPTFlow installs a standalone Android APK directly on the glasses through
 the magnetic 5-pin data cable and authorized ADB. The runtime does not use Hi
 Rokid, CXR-L, CXR-S, Glasses SDK/Phone SDK, client secrets, or a phone-mediated
-installer. The Poco application is a separate CONCEPTFlow host; the planned
-glasses/phone link is a project-owned authenticated transport.
+installer. The Poco application is a separate CONCEPTFlow host. The implemented
+development data path connects the glasses directly to an Ubuntu loopback
+service through authorized ADB reverse; the future glasses/phone link remains a
+project-owned authenticated transport.
 
 ## Evidence and confidence
 
@@ -61,10 +63,14 @@ The vendor Sprite assist service held camera 0 during the first inspection.
 CONCEPTFlow did not disable or modify that system service. Later explicit tests
 acquired camera 0 through Camera2 and concurrently received game-rotation,
 gyroscope/linear-acceleration, and 16-kHz mono PCM microphone data through
-standard Android APIs. The bounded results are recorded in `VALIDATION.md`.
-Physical speaker output, haptics, microphone-array beam selection, and acoustic
-quality remain separate empirical tests. The physical button and right-arm
-touch surface mappings below were measured directly with Linux `getevent`.
+standard Android APIs. A later exact-APK trace sent one frame with a
+timestamp-matched HEAD pose to the loopback gRPC service and dispatched the
+returned synthetic cue through the glasses audio path. The bounded results are
+recorded in `VALIDATION.md`. The device exposes no Android vibrator service;
+microphone-array beam selection, acoustic quality, spatial localization, and
+human perception remain separate empirical tests. The physical button and
+right-arm touch surface mappings below were measured directly with Linux
+`getevent`.
 
 ## Non-display application model
 
@@ -87,6 +93,9 @@ The implemented hardware boundaries are:
 - `AudioRecordInputSource`: bounded 16-kHz mono PCM input with monotonic chunk
   IDs and no persistence;
 - `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
+- `GrpcRemotePerceptionClient`: v1 capability negotiation, ephemeral session
+  identity, bounded frame submission, strict result correlation, cancellation,
+  and deadlines;
 - Android stereo audio and optional vibrator output; and
 - deterministic, package-scoped commands for capture and development cues.
 
@@ -183,6 +192,7 @@ sensor.
 ./scripts/rokid-control --serial "$ROKID_SERIAL" status
 ./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
+./scripts/rokid-control --serial "$ROKID_SERIAL" physical-trace
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
@@ -195,6 +205,34 @@ audio/haptic cues and must be used only when the wearer expects them.
 `capture-start` fails closed when camera permission is absent or Camera2 cannot
 acquire the device. `stop` finishes the nonvisual activity; unbinding then
 closes camera, pose, microphone, cue-transport, and audio-output resources.
+
+`physical-trace` additionally requires the repository's development service to
+be listening on Ubuntu loopback port 50051:
+
+```bash
+MPL_PROFILE=development MPL_BIND_HOST=127.0.0.1 MPL_BIND_PORT=50051 \
+  MPL_INSECURE=true MPL_DEVICE=cuda MPL_ALLOW_CPU_FALLBACK=false \
+  MPL_RUNNER_COUNT=2 .venv/bin/python -m conceptflow_mpl_cluster.server
+./scripts/rokid-control --serial "$ROKID_SERIAL" physical-trace
+```
+
+The helper refuses to start without a local listener and creates
+`adb reverse tcp:50051 tcp:50051` only on the selected authorized Rokid. The
+debug variant permits cleartext solely for `localhost`/`127.0.0.1`; the main
+and release network-security configuration denies cleartext. Production
+endpoints use the TLS client factory and require a separate authenticated
+deployment design. ADB host authorization protects this local USB test path,
+but it is not application-layer peer authentication.
+
+The one-shot gate retains at most one JPEG and bounded pose history, requires a
+HEAD pose within 250 ms of Camera2's monotonic capture timestamp, and requires
+nonzero microphone signal before transmission. Raw microphone bytes are
+counted locally and immediately discarded; they are not put in the protobuf
+request. The request advertises one in-flight frame and a two-second RPC
+deadline. The client caps inbound messages at 1 MiB and rejects results with
+more than four cues or identifiers that do not match the issued session,
+request, stream, and frame. The renderer then applies cue TTL and ordering
+checks.
 
 Equivalent nonvisual command:
 
@@ -220,11 +258,15 @@ conflict. Do not disable YodaOS security or services.
 
 ## Current boundary
 
-The client currently captures locally and routes local development cues through
-`InProcessCueTransport`. Direct sideload and nonvisual component execution do
-not constitute a phone/glasses data plane. The next slice is an authenticated,
-bounded protobuf transport between this service and the Android host, retaining
-explicit capture state, TLS, cancellation, reconnect, size limits, and cue TTL.
+The client now has a physically exercised, bounded glasses-to-Ubuntu development
+slice: real Camera2/IMU/microphone activity, canonical protobuf negotiation and
+frame/result correlation, deterministic mock processing, stale-aware cue
+scheduling, and real glasses audio dispatch. This does not include the Poco in
+the data path and does not run a trained model or CUDA kernel. It also does not
+establish production authentication, reconnect/roaming behavior, open-ear
+localization quality, or sustained thermal behavior. The next transport slice
+is the project-owned authenticated glasses-to-Poco relay, preserving TLS,
+cancellation, reconnect, message limits, and cue TTL.
 
 Verified and unverified physical behavior is recorded without inference in
 [`VALIDATION.md`](../VALIDATION.md). No vendor SDK, client secret, proprietary

@@ -38,5 +38,6 @@ android {
 
 dependencies {
     implementation(project(":packages:android-protocol"))
+    implementation(libs.grpc.okhttp)
     testImplementation(libs.junit)
 }

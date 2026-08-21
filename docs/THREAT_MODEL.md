@@ -19,7 +19,7 @@ an engineering review aid, not a security certification.
 
 | Boundary | Untrusted or failure-prone input | Primary controls | Remaining work |
 | --- | --- | --- | --- |
-| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounds, monotonic IDs, TTL/dedup renderer, direct-ADB target check | Physical device, lifecycle, camera ownership, and cue validation |
+| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounds, monotonic IDs, result correlation, TTL/dedup renderer, direct-ADB target check | Sustained lifecycle, production transport, localization, and BVI acceptance |
 | Android host | Frames, network state, transport callbacks, accessibility services | Capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, TLS client | Real phone-to-glasses transport and end-to-end device testing |
 | Windows relay | Endpoint text, user approval, future screen/region content, status UI | Consent gate, content bounds, HTTPS policy, cancellation, bounded queues, redaction, stock accessible controls | Manual Windows, JAWS, and NVDA acceptance; real capture adapters |
 | Network | Eavesdropping, tampering, replay, downgrade, delay, reordering, flooding | TLS-required production config, loopback-only plaintext, ephemeral sessions, correlation, deadlines, message limits | Deployment authentication, certificate lifecycle, optional mTLS, WebRTC security design |
@@ -43,9 +43,11 @@ status, distinctive nonvisual glasses feedback, and an immediate stop control.
 
 Frame bytes could leak through plaintext transport, logs, crash reports,
 telemetry, temporary files, model providers, or issue attachments. Production
-Python rejects plaintext; Android cleartext is disabled; logs redact payload
-fields; no retention store exists. Deployments must also secure certificates,
-proxies, swap/crash collection, GPU tools, and third-party providers.
+Python and Android configurations reject plaintext. The Rokid debug build
+permits it only for literal loopback through an authorized ADB reverse tunnel;
+this is not production peer authentication. Logs redact payload fields and no
+retention store exists. Deployments must also secure certificates, proxies,
+swap/crash collection, GPU tools, and third-party providers.
 
 ### Cue spoofing or mis-correlation
 

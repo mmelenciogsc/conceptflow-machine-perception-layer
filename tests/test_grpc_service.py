@@ -240,6 +240,10 @@ async def test_successful_service_round_trip(service_client, frame_factory) -> N
     result = await service_client.ProcessFrame(frame)
     assert result.request_id == frame.request_id
     assert result.observations[0].description == "synthetic object"
+    assert result.cues[0].frame_id == frame.frame_id
+    assert result.cues[0].description == "Synthetic obstacle for transport validation"
+    assert result.cues[0].ttl_ms == 2_500
+    assert result.cues[0].provenance.synthetic
     assert result.provenance.synthetic
 
 

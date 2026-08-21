@@ -108,8 +108,11 @@ The glasses app uses `Camera2FrameSource` and `SensorManagerPoseSource`, with
 tests. `InspectableCueRenderer` rejects invalid, expired, duplicate, and older
 cues before invoking bounded stereo and haptic outputs. It is installed as a
 standalone APK through the 5-pin ADB cable and contains no Rokid companion-SDK
-or client-secret integration. `CueTransport` remains transport-neutral for the
-future project-owned authenticated data plane.
+or client-secret integration. A bounded development adapter negotiates and
+submits one physical frame through canonical gRPC over an authorized ADB
+reverse loopback tunnel; release/non-loopback transport remains TLS-only.
+`CueTransport` remains transport-neutral for the future project-owned
+authenticated phone data plane.
 
 The host app includes `AndroidCapabilityDetector`, `BoundedFramePreprocessor`,
 `RoutingPolicy`, `BoundedFrameQueue`, `SessionStateMachine`, `ResultCorrelator`,

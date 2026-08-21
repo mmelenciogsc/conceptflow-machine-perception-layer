@@ -22,7 +22,7 @@ The executable additions passed these local gates:
 - 197 Python tests, deterministic protobuf validation, all three source/wheel
   builds, byte-identical legal notices, isolated wheel imports, and the
   synthetic gRPC and perception demonstrations;
-- Android Lint, strict dependency verification, 31 host tests, 28 Rokid tests,
+- Android Lint, strict dependency verification, 31 host tests, 41 Rokid tests,
   one protocol-vector test, and both debug APK assemblies;
 - .NET 8.0.424 warning-free Release cross-build including WPF and all 156 tests;
 - native CPU and CUDA-aware Release builds and their CTest target using NVCC
@@ -40,12 +40,18 @@ FMOD output buffering, Android vibration actuation, and human perception.
 
 The FMOD project and generated procedural inputs were physically authored and
 built, but the proprietary FMOD Unity runtime package is not redistributed.
-Unity-to-FMOD playback, listening-based localization, open-ear output,
-TalkBack, JAWS/NVDA, physical haptics, metric depth on Rokid, real YOLOE/Depth
-Anything inference, sustained thermal behavior, and a physical end-to-end
-glasses-to-host-to-cue run were not validated. A Poco install attempt remained
-blocked by `INSTALL_FAILED_USER_RESTRICTED`; no device security control was
-bypassed.
+Unity-to-FMOD playback, listening-based localization, open-ear perceptual
+quality, JAWS/NVDA, metric depth on Rokid, real YOLOE/Depth Anything inference,
+and sustained thermal behavior were not validated. The bounded physical trace
+and Poco dispatch evidence added below are hardware execution checks, not BVI
+human-factors acceptance or production-model validation.
+
+During the post-reboot physical-trace pass, FMOD Studio validation and Desktop/
+Mobile bank builds passed again. A fresh Unity headless run could not start
+because the local Unity licensing client reported no valid Editor license; it
+produced no test result. The 6/6 EditMode and 1/1 PlayMode results above are from
+the immediately preceding implementation pass on the same branch, not this
+post-reboot rerun.
 
 ## Environment discovery
 
@@ -56,10 +62,11 @@ tools found were Git 2.43.0, authenticated GitHub CLI 2.45.0, OpenJDK/Javac
 CUDA compiler 12.0.140, ADB 1.0.41, Node 22.22.3, pnpm 11.5.1, ImageMagick
 6.9.12-98, and `file` 5.45.
 
-`nvidia-smi` reported an unavailable device handle for one GPU and identified
-an RTX 2080 Ti with driver 580.173.02. No service, driver, GPU, or device state
-was reset to work around that machine condition. CUDA validation below is
-toolchain-aware compilation only.
+Initial inspection reported an unavailable device handle for one GPU. After the
+user shut down, power-cycled, and rebooted the host, `nvidia-smi` reported both
+the RTX 2080 Ti (11,264 MiB) and RTX 4060 Ti (16,380 MiB) with driver
+580.173.02. CUDA validation below is toolchain-aware compilation only; the
+physical trace's deterministic worker did not execute a CUDA kernel or model.
 
 ## Release validation summary
 
@@ -68,7 +75,7 @@ toolchain-aware compilation only.
 | Repository | format, policy, secret, config-example, shell, Ruff, and MyPy gates passed | `actionlint` was unavailable; workflows received parser and repository-policy checks |
 | Python | 145 tests passed; protocol generation valid; all three source/wheel packages built and isolated-imported | no production worker or non-loopback deployment |
 | Synthetic slice | real loopback gRPC demo passed reconnect, cancellation, timeout, stale rejection, worker error, overload, recovery, and cue rendering | deterministic CPU mock and synthetic frames only |
-| Android | 55 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
+| Android | 73 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or phone-to-glasses transport |
 | .NET | locked restore, formatter, warning-free Release build including WPF cross-target, 156 tests, and consent-gated demo passed | WPF was not executed on Windows |
 | Native | strict Release build, 15-case test executable, JSON-lines demo, ASan/UBSan build/tests, and CUDA-aware build/tests passed | no CUDA kernel or model inference exists |
 | Dependencies | Python and .NET vulnerability queries found no known vulnerability in resolved third-party packages | local editable Python distributions were correctly excluded from the index audit |
@@ -103,8 +110,8 @@ Android baseline:
   lintDebug testDebugUnitTest assembleDebug
 ```
 
-The build used JDK 17 and the installed Android SDK. Test totals were 26 for
-`android-host`, 28 for `rokid-client`, and one cross-language protocol-vector
+The build used JDK 17 and the installed Android SDK. Current test totals are 31
+for `android-host`, 41 for `rokid-client`, and one cross-language protocol-vector
 test in `android-protocol`.
 
 .NET baseline:
@@ -246,10 +253,38 @@ was added. Temporary on-device event logs were removed, the glasses stay-awake
 setting was restored to `0`, and host USB autosuspend/legacy-order settings were
 restored to `2`/`N`.
 
-The Poco F7 Ultra rejected the debug host APK through ADB with
-`INSTALL_FAILED_USER_RESTRICTED`. No device-security setting was bypassed or
-left modified. The host APK itself builds and tests successfully, but phone
-installation remains a user-confirmation/device-policy gate.
+The Poco F7 Ultra initially rejected the debug host APK with
+`INSTALL_FAILED_USER_RESTRICTED`. After the user approved Xiaomi's named
+**Install via USB** confirmation, the same package installed and launched. A
+hardware `P` key event exercised the in-process synthetic path. Android logs
+showed an accessibility-sonification `AudioTrack`; `dumpsys vibrator_manager`
+recorded a finished 66 ms predefined `CLICK` for
+`org.conceptflow.mpl.androidhost`. UI Automator exposed named text for Connect,
+Process, Cancel, Disconnect, capabilities, state, and cue output. This validates
+Poco output dispatch and inspectable semantics, not a glasses-to-Poco data
+plane, directional haptics, audio quality, or manual TalkBack acceptance.
+
+On the directly sideloaded Rokid app, a rebuilt one-shot physical trace used an
+authorized per-device ADB reverse tunnel to the Python service bound only to
+`127.0.0.1:50051`. The final run reported one 247,909-byte transient JPEG, 141
+IMU samples with nonzero signal, a timestamp-matched HEAD pose, and eight
+16-kHz mono microphone chunks (32,768 transient bytes, 14,562 nonzero samples,
+peak absolute amplitude 521). It negotiated an ephemeral v1 session, received
+one strictly correlated synthetic cue from the deterministic worker, and
+reported `rendered=1 audio=1 haptic=0`, 798 ms from gRPC dispatch to input and
+transport cleanup and 1,692 ms from input start to that cleanup. The service
+then retained its binding for a bounded 1.5 seconds so the 120 ms static
+`AudioTrack` was not released immediately. Raw microphone audio was not
+transmitted; no frame, PCM, or sensor payload was logged or written. The glasses
+expose no vibrator service, so the haptic adapter correctly returned unavailable.
+
+The service configuration used `MPL_DEVICE=cuda`, disabled CPU fallback, and
+created workers named for both discovered GPU devices. The bundled worker is
+still deterministic Python logic: this run did not execute a CUDA kernel,
+trained model, Depth Anything, or YOLOE, and the timing is a single engineering
+sample rather than a benchmark distribution. Audio dispatch was observed in
+Android logs; audibility, binaural position, and wearer perception were not
+measured.
 
 The canonical development route is now the standalone standard-Android app and
 direct ADB sideload. `./scripts/rokid-install --serial ... --inspect-only`
@@ -270,11 +305,16 @@ unpublished serials:
 ./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-microphone
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
+./scripts/rokid-control --serial "$ROKID_SERIAL" physical-trace
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
 The camera/IMU/microphone test APK was 7,020,604 bytes with SHA-256
 `eaf6f805476c93399a298ea2a3423f17038d98b2fdd62977fe5e0fc59e0a45f3`.
+The final physical-trace debug APK was 14,857,132 bytes with SHA-256
+`a7b906ec2bce55e89626a312fe87233c634556e09bce2be002ee52b745518665`;
+APK Signature Scheme v2 verification passed. The release build was also
+inspected and contained only a cleartext-denying base network policy.
 
 ## Accessibility evidence
 
@@ -288,10 +328,12 @@ names/help text, live status, predictable focus restoration, and optional
 speech output. Core behavior is independently available through textual status
 and the headless demo.
 
-Manual TalkBack, Windows UI Automation, high-contrast/scaling, JAWS, NVDA,
-physical earcon/haptic output, and BVI human-factors acceptance were not
-performed. Those checks remain release-blocking for any supported-device or
-assistive-use claim beyond this engineering baseline.
+Poco UI semantics were inspected with UI Automator while TalkBack was enabled,
+and physical Android audio/haptic dispatch was observed in system logs. Manual
+TalkBack task completion, Windows UI Automation, high-contrast/scaling, JAWS,
+NVDA, perceived glasses audio localization, and BVI human-factors acceptance
+were not performed. Those checks remain release-blocking for any
+supported-device or assistive-use claim beyond this engineering baseline.
 
 ## Privacy, security, and packaging evidence
 
@@ -350,7 +392,8 @@ actually execute.
   reconnect, cancellation, stale-result, and latency behavior;
 - a registered production worker, model weights, real CUDA kernel/inference,
   and multi-GPU correctness, failover, load, thermal, and performance tests;
-- physical glass-to-cue latency and long-duration reconnect/roaming tests;
+- production-model glass-to-cue latency distributions and long-duration
+  reconnect/roaming tests;
 - manual TalkBack, Windows 11, UI Automation, JAWS, NVDA, and BVI usability;
 - authenticated deployment, certificate rotation, Android/Windows signing,
   installer/package distribution, external penetration testing, and a

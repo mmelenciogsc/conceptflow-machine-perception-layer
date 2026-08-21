@@ -49,7 +49,10 @@ class PlatformStereoAudioOutput : AudioCueOutput, AutoCloseable {
             .setTransferMode(AudioTrack.MODE_STATIC)
             .setBufferSizeInBytes(pcm.size * Short.SIZE_BYTES)
             .build()
-        if (track.state != AudioTrack.STATE_INITIALIZED) {
+        // MODE_STATIC is expected to report STATE_NO_STATIC_DATA until its first
+        // successful write. Rejecting that state prevented valid Rokid tracks
+        // from ever receiving their samples.
+        if (!audioTrackStateCanAcceptStaticData(track.state)) {
             track.release()
             return false
         }
@@ -75,6 +78,9 @@ class PlatformStereoAudioOutput : AudioCueOutput, AutoCloseable {
         while (activeTracks.isNotEmpty()) activeTracks.removeFirst().release()
     }
 }
+
+internal fun audioTrackStateCanAcceptStaticData(state: Int): Boolean =
+    state == AudioTrack.STATE_INITIALIZED || state == AudioTrack.STATE_NO_STATIC_DATA
 
 class PlatformHapticOutput(context: Context) : HapticCueOutput {
     private val vibrator = context.getSystemService(Vibrator::class.java)

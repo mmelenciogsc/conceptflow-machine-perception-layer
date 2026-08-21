@@ -50,7 +50,8 @@ It is not:
 - a completed phone-to-glasses transport or WebRTC implementation;
 - a dependency on Rokid companion apps, client secrets, vendor SDK AARs, or a
   redistribution of proprietary weights, camera captures, or private media;
-- evidence of Windows/JAWS/NVDA, TalkBack, physical cue, or safety validation.
+- evidence of Windows/JAWS/NVDA, BVI usability, localization accuracy, or safety
+  validation.
 
 ## Architecture
 
@@ -99,9 +100,9 @@ Bubble is a calibrated body-surface offset field with an exact default radius of
 
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
-| Python | 197 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker, production serving, physical-device path |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 60 JVM tests including the shared wire vector and haptic capability planner; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
-| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; Camera2 capture with monotonic frames; explicit stop; no vendor SDK | Physical audio/haptic and sustained camera/thermal validation; project-owned Rokid-to-Poco transport |
+| Python | 197 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
+| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 73 JVM tests including the shared wire vector, Rokid gRPC correlation/input gates, and haptic capability planner; Android Lint; both debug APKs built; Poco installation plus keyboard-triggered audio/haptic dispatch | Phone-to-glasses transport, instrumentation, and manual TalkBack/BVI acceptance |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; Camera2/IMU/microphone acquisition; bounded ADB-reverse gRPC development trace; correlated cue and physical audio dispatch; no vendor SDK | Production TLS deployment, Poco relay, open-ear localization/listening tests, on-glasses haptics, and sustained thermal validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 | Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity EditMode/PlayMode lab and authored FMOD project | Physical open-ear localization, Unity FMOD runtime listening, metric depth on Rokid, target-user validation |
@@ -228,13 +229,37 @@ diagnostic is explicit and stops all inputs automatically:
 It retains no image, IMU, or audio payload and reports only stream counts and
 aggregate microphone signal evidence through ADB logs.
 
+For the bounded physical development trace, start the deterministic service on
+the Ubuntu loopback interface, then ask the directly sideloaded Rokid app for
+one frame. ADB reverse is configured only for that selected, authorized device:
+
+```bash
+MPL_PROFILE=development MPL_BIND_HOST=127.0.0.1 MPL_BIND_PORT=50051 \
+  MPL_INSECURE=true MPL_DEVICE=cuda MPL_ALLOW_CPU_FALLBACK=false \
+  MPL_RUNNER_COUNT=2 .venv/bin/python -m conceptflow_mpl_cluster.server
+
+./scripts/rokid-control --serial "$ROKID_SERIAL" physical-trace
+```
+
+The development worker returns an explicitly synthetic cue; `MPL_DEVICE=cuda`
+selects workers named for discovered GPUs but does not run a CUDA kernel or a
+trained model. The glasses send one bounded JPEG plus a timestamp-matched HEAD
+pose. Microphone PCM never leaves the glasses: only local nonzero-signal
+evidence gates dispatch. The app rejects mismatched results and stale cues,
+enforces RPC and whole-run timeouts, then closes every input and transport.
+Plaintext is permitted only in the debug build for literal loopback reached
+through the host-authorized ADB tunnel; release configuration remains
+cleartext-denying. This is a USB development path, not production network
+authentication.
+
 The attached non-display consumer device has reported `RG-glasses`, Android
 12/API 32,
 YodaOS Sprite assist service 0.3.5, and `com.rokid.cxrservice` v12 target 32;
 direct ADB over its magnetic 5-pin cable is verified. The glasses app is a
-standalone Android APK using standard platform APIs and no vendor SDK. The two
-apps currently exercise independent in-process flows; a real authenticated
-Rokid/Poco transport is not yet implemented. See
+standalone Android APK using standard platform APIs and no vendor SDK. A direct
+glasses-to-Ubuntu development trace is implemented and physically exercised;
+the Poco host remains an independent app and no glasses-to-Poco data plane is
+claimed. See
 [direct non-display Rokid development](docs/ROKID_INTEGRATION.md) and
 [Android host](docs/ANDROID_HOST.md).
 

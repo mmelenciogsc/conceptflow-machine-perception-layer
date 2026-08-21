@@ -87,6 +87,12 @@ async def test_deterministic_worker_returns_stable_semantics(frame_factory) -> N
     second = await worker.process(frame)
     assert first.result_id == second.result_id
     assert first.observations == second.observations
+    assert first.cues == second.cues
+    assert len(first.cues) == 1
+    assert first.cues[0].description == "Synthetic obstacle for transport validation"
+    assert first.cues[0].provenance.synthetic
+    assert first.cues[0].HasField("earcon")
+    assert first.cues[0].HasField("haptic")
     assert first.provenance.synthetic
 
 

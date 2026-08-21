@@ -5,7 +5,9 @@ The Android host is the phone-side policy and cue-dispatch reference. It detects
 available platform capabilities, validates and queues frames, chooses a local
 or remote route, tracks session and result state, schedules cues, and exposes
 accessible feedback. Its current activity runs an in-process synthetic
-vertical slice; it does not yet exchange frames or cues with the Rokid app.
+vertical slice; it does not yet exchange frames or cues with the Rokid app. A
+separate direct Rokid-to-Ubuntu development trace now exercises the shared
+protobuf contract without changing this boundary.
 
 ## Build baseline
 
@@ -94,6 +96,16 @@ Expected current behavior:
 
 This does not validate phone-to-glasses transport or the Python service.
 
+On 2026-08-22 the current debug APK was installed and launched on the attached
+Poco F7 Ultra after the user approved Xiaomi's **Install via USB** prompt. The
+hardware `P` shortcut ran the synthetic frame path. Android's vibrator service
+recorded a completed 66 ms predefined `CLICK` attributed to
+`org.conceptflow.mpl.androidhost`, and the audio service recorded the app's
+accessibility-sonification track. A UI Automator inspection found named text for
+all four controls and the cue/status output. This proves device dispatch and
+machine-readable labels, not haptic directionality, audio quality, or manual
+TalkBack/BVI usability.
+
 ## Transport integration contract
 
 A real host integration should:
@@ -115,8 +127,8 @@ cleartext globally.
 
 ## Verified status
 
-The 2026-08-21 validation record reports 52 JVM tests across the Android
-apps and shared protocol module, including a byte-exact Python/Java protocol
+The current validation record reports 73 JVM tests across the Android apps and
+shared protocol module, including a byte-exact Python/Java protocol
 vector. Both debug APK builds succeeded using JDK 17 and an installed Android
 SDK. The host source includes the capability, preprocessing, routing, session,
 correlation, scheduler, gRPC, and TalkBack-aware semantics described above.
