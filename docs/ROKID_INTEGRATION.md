@@ -1,207 +1,171 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-# Direct Rokid/YodaOS-Sprite development
+# Direct non-display Rokid AI Glasses Style development
 
-The canonical CONCEPTFlow path is a standalone Android APK running directly on
-the Rokid glasses. Development deployment is over the magnetic 5-pin USB data
-cable and ADB. The runtime does not use Hi Rokid, CXR-L, CXR-S, Glass3 SDKs,
-Rokid client secrets, access keys, or a phone-mediated APK installer.
+The target is **Rokid AI Glasses Style (Non-Display)**. It has no wearer-facing
+display. The Android-reported framebuffer is a compatibility surface inside the
+system and must never be treated as a HUD, user interface, or acceptance target.
 
-The Poco app is a separate CONCEPTFlow host. It will exchange bounded frames,
-metadata, and cues with the glasses app through a project-owned authenticated
-network transport. It is not a Rokid companion-SDK bridge.
+CONCEPTFlow installs a standalone Android APK directly on the glasses through
+the magnetic 5-pin data cable and authorized ADB. The runtime does not use Hi
+Rokid, CXR-L, CXR-S, Glasses SDK/Phone SDK, client secrets, or a phone-mediated
+installer. The Poco application is a separate CONCEPTFlow host; the planned
+glasses/phone link is a project-owned authenticated transport.
 
 ## Evidence and confidence
 
-The following sources were checked on 2026-08-21:
+Sources checked on 2026-08-21:
 
 - Rokid's official
-  [Rokid Glasses Prototype product page](https://global.rokid.com/products/rokid-glasses-prototype)
-  states that the developer cable enables ADB debugging. This is the strongest
-  product-specific evidence for the cable's intended development function.
+  [AI Glasses Style product page](https://global.rokid.com/products/rokid-ai-glasses-style)
+  identifies this product as “Non-Display” and lists a 12 MP first-person
+  camera, four-microphone array, dual open-ear speakers, Wi-Fi 6, Bluetooth
+  5.3, and 32 GB storage. These are product specifications, not proof that
+  every Android API is exposed to sideloaded applications.
+- Rokid's official
+  [prototype/developer cable page](https://global.rokid.com/products/rokid-glasses-prototype)
+  states that its developer cable enables ADB debugging. Live inspection of
+  this Style unit establishes that its seated 5-pin cable also exposes an
+  authorized ADB transport.
 - Android's official [ADB documentation](https://developer.android.com/tools/adb)
-  documents selecting one of multiple devices with `-s`, installing an APK
-  with `adb install`, and issuing shell commands.
-- Android's official
-  [command-line build documentation](https://developer.android.com/build/building-cmdline)
-  documents Gradle wrapper builds with `assembleDebug` and the resulting
-  installable, debug-signed APK.
-- Android's official [Camera2 documentation](https://developer.android.com/media/camera/camera2)
-  defines the platform camera API used by this app.
-- The community-maintained GlassKit
-  [setup reference](https://github.com/RealComputer/GlassKit/blob/246de4790a007f9b9be180eba5e92a6965da3b2a/skills/glasskit/references/rokid-setup.md)
+  defines serial-selected installation and shell commands; its
+  [command-line build guide](https://developer.android.com/build/building-cmdline)
+  defines Gradle `assembleDebug`; and its
+  [Camera2 guide](https://developer.android.com/media/camera/camera2) defines
+  the camera API used here.
+- The independent `aimindseye/rokid-ai-glasses` research repository documents
+  the same non-display device class in its pinned
+  [architecture notes](https://github.com/aimindseye/rokid-ai-glasses/blob/c2483fae87d637ebf12bd1bf643365d80bf2438d/docs/architecture/non-display-system-architecture.md),
+  [ADB notes](https://github.com/aimindseye/rokid-ai-glasses/blob/c2483fae87d637ebf12bd1bf643365d80bf2438d/docs/developer/adb-and-developer-mode/README.md),
   and
-  [input reference](https://github.com/RealComputer/GlassKit/blob/246de4790a007f9b9be180eba5e92a6965da3b2a/skills/glasskit/references/rokid-inputs.md)
-  corroborate direct ADB build/install/launch, standard Android camera and
-  microphone APIs, portrait presentation, and touchpad key-event mappings.
-  These are useful community findings, not official Rokid guarantees.
-- Marcin Miazga's independent
-  [development-cable guide](https://marcinmiazga.com/rokid-development-cable)
-  reports that the ordinary 3-pin charging lead has no ADB data path, while
-  the 5-pin development cable supports `adb devices` and `adb install`.
+  [on-glasses application notes](https://github.com/aimindseye/rokid-ai-glasses/blob/c2483fae87d637ebf12bd1bf643365d80bf2438d/docs/developer/on-glasses-app/README.md).
+  These are useful corroboration, not official API guarantees.
 
-The project decision to exclude credentialed vendor SDKs is a deliberate scope
-constraint. Public sources can change and do not establish vendor eligibility
-rules for every region or account, so this repository does not make broader
-claims about Rokid's commercial program.
+Display-glasses SDKs and community HUD/touchpad guidance are intentionally
+excluded: they describe a different product category.
 
-## Verified attached-device evidence
+## Verified attached-device facts
 
-Read-only inspection on 2026-08-21 reported:
+Read-only inspection on 2026-08-21 reported manufacturer `Rokid`, model
+`RG-glasses`, product/device `glasses`, Android 12/API 32, and YodaOS Sprite
+assist service 0.3.5. Direct authorized ADB works over the magnetic cable. The
+system reports a 480×640 Android display object in state `OFF`; this is not a
+physical display and has no product interaction role.
 
-- manufacturer `Rokid`;
-- model `RG-glasses` (ADB's device listing rendered it as `RG_glasses`);
-- product and device `glasses`;
-- Android 12 / API 32;
-- YodaOS Sprite assist service 0.3.5; and
-- direct authorized ADB over the magnetic 5-pin cable.
+The vendor Sprite assist service held camera 0 during the first inspection.
+CONCEPTFlow did not disable or modify that system service. A later explicit
+capture test acquired camera 0 through Camera2 and produced monotonic frames;
+the result is recorded in `VALIDATION.md`. Physical speaker output, haptics,
+microphones, and hardware button mappings remain separate empirical tests.
 
-The current debug APK has been installed and its activity started by direct
-ADB. The vendor assist service held the camera during that check, so physical
-frame capture and audio/cue quality remain unverified. The application fails
-closed when Camera2 cannot acquire the device; this repository does not stop or
-disable a system service to seize the camera.
+## Non-display application model
 
-## Application model
+`apps/rokid-client` has no launcher entry or visual layout.
+`RokidRuntimeService` is a private bound Android service. Explicit development
+commands enter through a nonvisual `RokidCommandActivity`, protected by the
+shell-held `android.permission.DUMP` permission. The activity has no content
+view, controls, text, launcher entry, or user interaction. It owns the service
+binding because the observed YodaOS build blocks third-party background service
+and broadcast starts. Android still requires an activity window on its internal
+compatibility surface; no physical display exists and no visual interface is
+part of the product. The activity keeps that logical surface awake while
+capture runs because Android 12 otherwise classifies the non-display process as
+background and CameraService rejects access.
 
-`apps/rokid-client` is a normal Kotlin/Android application. It has no Rokid
-Maven repository, vendor AAR, vendor credential, or reflection against hidden
-Rokid APIs. Its current hardware-facing code uses:
+The implemented hardware boundaries are:
 
-- Camera2 for bounded JPEG frames;
-- `SensorManager` for rotation vector, gyroscope, and linear acceleration;
-- ordinary Android key/focus behavior for touchpad navigation;
-- Android audio output with accessibility usage; and
-- the platform vibrator when present.
+- `Camera2FrameSource`: bounded latest-only JPEG capture and monotonic frame IDs;
+- `SensorManagerPoseSource`: rotation-vector, gyroscope, and acceleration data;
+- `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
+- Android stereo audio and optional vibrator output; and
+- deterministic, package-scoped commands for capture and development cues.
 
-The module has `minSdk = 29`, so the observed API-32 device satisfies its
-runtime minimum. `compileSdk` and `targetSdk` are 36; those values select build
-and compatibility behavior and do not require the device itself to run API 36.
-The activity is portrait-locked. It gives the capture control initial focus so
-the usual Rokid `DPAD_UP`, `DPAD_DOWN`, `ENTER`, and `DPAD_CENTER` events can
-navigate and activate standard Android buttons. The camera hardware key also
-toggles capture.
+There is no microphone capture implementation yet. There is no touchpad,
+screen, launcher, or wearer-facing visual state. Development state is
+inspectable through safe ADB status/log commands. A product release must expose
+capture state and stop control through the accessible phone host, distinctive
+nonvisual feedback, and verified physical controls; ADB is not a user control.
 
-`Camera2FrameSource` assigns monotonic frame identifiers, uses a two-image
-`ImageReader`, consumes only the latest image, bounds frame size, and closes
-camera resources on stop or activity pause. `SensorManagerPoseSource` emits
-monotonic motion samples. `InspectableCueRenderer` rejects expired, duplicate,
-and older cues before bounded stereo/haptic output.
+## Cable and authorization
 
-## Cable setup
-
-1. Use the Rokid magnetic **5-pin development/data cable**. The ordinary 3-pin
-   charging lead is not an ADB cable.
-2. Enable USB debugging on the glasses once through the device-supported setup
-   path. A companion application may be needed for this one-time firmware
-   setting; it is not part of the CONCEPTFlow build, installation, or runtime.
-3. Connect the cable directly to the Ubuntu machine and run:
+1. Use the magnetic **5-pin data/development cable**, not a charge-only lead.
+2. Enable USB debugging through the device-supported setup path and authorize
+   this Ubuntu host. Preserve that authorization because the glasses have no
+   display on which to operate a conventional prompt.
+3. Confirm state `device`:
 
    ```bash
    adb devices -l
    ```
 
-4. The device must be listed with state `device`. `unauthorized` means the ADB
-   host key has not been accepted; `offline` is not a usable connection. Because
-   this hardware has no conventional touch UI, preserve an already-authorized
-   development host. This repository does not bypass ADB authorization.
+4. With multiple attached devices, pass the glasses serial on every command.
+   The scripts refuse an ambiguous target and validate Rokid product properties.
 
-When the Poco and glasses are both attached, never run an unqualified install
-command. Every ADB mutation must use the glasses serial.
+The repository does not bypass Android Debug Bridge authorization.
 
-## Build, install, and launch
-
-The serial-safe helper identifies the target as Rokid glasses before it changes
-anything:
-
-```bash
-read -r -p "Rokid ADB serial: " ROKID_SERIAL
-./scripts/rokid-install --serial "$ROKID_SERIAL" --inspect-only
-./scripts/rokid-install --serial "$ROKID_SERIAL"
-```
-
-The second command builds the debug APK, installs it with `adb -s ... install
--r`, and starts the explicit activity. Always use the serial printed by your
-own `adb devices -l`.
-
-Equivalent manual commands are:
+## Build and direct sideload
 
 ```bash
 ./gradlew --no-daemon --dependency-verification strict \
   :apps:rokid-client:testDebugUnitTest \
   :apps:rokid-client:assembleDebug
-adb devices -l
 read -r -p "Rokid ADB serial: " ROKID_SERIAL
-adb -s "$ROKID_SERIAL" install -r \
-  apps/rokid-client/build/outputs/apk/debug/rokid-client-debug.apk
-adb -s "$ROKID_SERIAL" shell am start -W \
-  -n org.conceptflow.mpl.rokidclient/org.conceptflow.mpl.rokid.MainActivity
+./scripts/rokid-install --serial "$ROKID_SERIAL" --inspect-only
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build
 ```
 
-For a prebuilt debug APK, use `./scripts/rokid-install --serial SERIAL
---no-build`. `--no-launch` installs without starting it.
-
-## Permission provisioning on a non-touch device
-
-The app declares only camera and vibration permissions. It requests camera
-permission through the standard Android runtime API and keeps capture stopped
-when permission is denied. If the YodaOS build cannot present an operable
-runtime permission dialog, the developer may explicitly provision the declared
-camera permission through the already-authorized ADB connection:
+Installation never starts capture. On a controlled development unit whose lack
+of display prevents an operable runtime permission dialog, camera permission is
+an explicit and separately logged action:
 
 ```bash
-./scripts/rokid-install --serial "$ROKID_SERIAL" --grant-camera
+./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-camera
 ```
 
-That option grants only `android.permission.CAMERA` to this package after
-installation. It is opt-in, prints what it changed, and is intended for a
-controlled development device. Verify the current state without exposing other
-package data:
+The option grants only the APK's declared `android.permission.CAMERA`.
+
+## Nonvisual development controls
 
 ```bash
-adb -s "$ROKID_SERIAL" shell dumpsys package \
-  org.conceptflow.mpl.rokidclient | grep -F android.permission.CAMERA
+./scripts/rokid-control --serial "$ROKID_SERIAL" status
+./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
+./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
-## Direct diagnostics
+`cue-left` and `cue-right` emit short development audio/haptic cues and must be
+used only when the wearer expects them. `capture-start` fails closed when camera
+permission is absent or Camera2 cannot acquire the device. `stop` finishes the
+nonvisual activity; unbinding then closes the frame source, pose source, cue
+transport, and audio output.
+
+Equivalent nonvisual command:
 
 ```bash
-adb -s "$ROKID_SERIAL" shell pidof org.conceptflow.mpl.rokidclient
-adb -s "$ROKID_SERIAL" shell dumpsys activity activities | \
-  grep -F org.conceptflow.mpl.rokidclient
-adb -s "$ROKID_SERIAL" logcat --pid="$(adb -s "$ROKID_SERIAL" shell pidof \
-  org.conceptflow.mpl.rokidclient | tr -d '\r')"
+adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+  -n org.conceptflow.mpl.rokidclient/org.conceptflow.mpl.rokid.RokidCommandActivity \
+  -a org.conceptflow.mpl.rokid.action.START_CAPTURE
 ```
 
-If Camera2 reports `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, record the conflict
-and stop capture in this app. Do not disable YodaOS security or system services
-as an installation shortcut. A test build must also avoid raw-frame log output.
+## Diagnostics
 
-## Current boundary and next implementation
+Use the bounded helper first:
 
-Direct sideloading proves installation and standalone execution; it does not
-create the application data plane. The current activity captures only locally
-and routes manually generated cues through `InProcessCueTransport`.
+```bash
+./scripts/rokid-control --serial "$ROKID_SERIAL" status
+adb -s "$ROKID_SERIAL" logcat -d -s ConceptFlowRokid:I '*:S'
+```
 
-The next executable slice is a project-owned, authenticated connection between
-the glasses APK and the Android host or Ubuntu service, using the canonical
-protobuf contract. It must retain explicit capture state, bounded queues and
-frame sizes, TLS outside loopback, cancellation, reconnect, stale-result
-rejection, and cue TTL. No Hi Rokid or credentialed Rokid SDK is part of that
-milestone.
+Logs contain state and monotonic frame IDs, never frame bytes. If Camera2
+reports `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, stop this service and record
+the conflict. Do not disable YodaOS security or services.
 
-## Verified and unverified
+## Current boundary
 
-Verified locally: standard Android source, dependency graph with no Rokid SDK,
-Gradle/JDK build, 22 Rokid-client JVM tests, Android Lint, debug APK creation,
-direct ADB target inspection, and current-revision direct install/activity-start
-on the observed glasses. The installed process remained live and camera
-permission was granted by the explicit development option.
+The client currently captures locally and routes local development cues through
+`InProcessCueTransport`. Direct sideload and nonvisual component execution do
+not constitute a phone/glasses data plane. The next slice is an authenticated,
+bounded protobuf transport between this service and the Android host, retaining
+explicit capture state, TLS, cancellation, reconnect, size limits, and cue TTL.
 
-Not yet verified: foreground rendering or touchpad mappings in this run because
-the 480x640 built-in display reported `OFF` and Android kept the activity
-sleeping; Camera2 capture while YodaOS services are active; physical
-audio/haptics; glasses-to-Poco transport; continuous remote inference; or
-perceived latency. See [`VALIDATION.md`](../VALIDATION.md).
-
-No vendor SDK, proprietary model weight, camera capture, or private brand asset
-is included in this repository.
+Verified and unverified physical behavior is recorded without inference in
+[`VALIDATION.md`](../VALIDATION.md). No vendor SDK, client secret, proprietary
+model weight, captured frame, or private device identifier is included here.

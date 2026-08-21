@@ -151,7 +151,8 @@ the strict native build/test/demo including CUDA-aware compilation. Exact
 evidence is recorded in [`VALIDATION.md`](../VALIDATION.md).
 
 Still requiring hardware work are the project-owned phone-to-glasses transport,
-current-firmware Camera2/audio/touchpad validation, Windows UI and JAWS/NVDA
+sustained non-display Style Camera2 and audio/haptic/physical-control validation,
+Windows UI and JAWS/NVDA
 manual acceptance, real CUDA kernels and model execution, WebRTC media plane,
 physical latency characterization, and safety/usability validation.
 “Near-real-time” and “zero-touch” are experience goals, not claims of zero

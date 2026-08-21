@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
+cd "$REPOSITORY_ROOT"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
+readonly COMMAND_ACTIVITY_NAME="org.conceptflow.mpl.rokid.RokidCommandActivity"
+readonly ACTION_PREFIX="org.conceptflow.mpl.rokid.action"
+
+serial=""
+command_name=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/rokid-control [--serial SERIAL] COMMAND
+
+Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
+
+Commands:
+  capture-start  Explicitly start camera capture (CAMERA must already be granted).
+  cue-left       Emit one development left audio/haptic cue.
+  cue-right      Emit one development right audio/haptic cue.
+  stop           Stop capture, cue output, and the runtime service.
+  status         Report package, permission, process, and service state.
+
+Options:
+  --serial SERIAL  Explicit ADB serial. Required when multiple devices are attached.
+  -h, --help       Show this help.
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --serial)
+            (($# >= 2)) || fail "--serial requires a value"
+            serial="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        capture-start|cue-left|cue-right|stop|status)
+            [[ -z "$command_name" ]] || fail "only one command may be supplied"
+            command_name="$1"
+            shift
+            ;;
+        *)
+            fail "unknown argument '$1'; use --help"
+            ;;
+    esac
+done
+
+[[ -n "$command_name" ]] || fail "a command is required; use --help"
+select_rokid_target "$serial"
+verify_rokid_target
+
+component="$PACKAGE_NAME/$COMMAND_ACTIVITY_NAME"
+case "$command_name" in
+    capture-start)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.START_CAPTURE"
+        printf 'Requested explicit nonvisual camera capture.\n'
+        ;;
+    cue-left)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.PLAY_LEFT_CUE"
+        printf 'Requested one left development cue.\n'
+        ;;
+    cue-right)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.PLAY_RIGHT_CUE"
+        printf 'Requested one right development cue.\n'
+        ;;
+    stop)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.STOP"
+        printf 'Requested runtime stop.\n'
+        ;;
+    status)
+        if adb -s "$ROKID_SERIAL" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1; then
+            printf 'package: installed\n'
+        else
+            printf 'package: not installed\n'
+            exit 0
+        fi
+        permission_state="$(adb -s "$ROKID_SERIAL" shell dumpsys package "$PACKAGE_NAME" | \
+            awk '/android.permission.CAMERA: granted=/{if ($0 ~ /granted=true/) print "granted"; else print "denied"; exit}')"
+        printf 'camera permission: %s\n' "${permission_state:-unknown}"
+        process_running=false
+        if adb -s "$ROKID_SERIAL" shell pidof "$PACKAGE_NAME" >/dev/null 2>&1; then
+            process_running=true
+            printf 'process: running\n'
+        else
+            printf 'process: stopped\n'
+        fi
+        if [[ "$process_running" == true ]] && \
+            adb -s "$ROKID_SERIAL" shell dumpsys activity services "$PACKAGE_NAME" | grep -F "RokidRuntimeService" >/dev/null; then
+            printf 'runtime service: running\n'
+        else
+            printf 'runtime service: stopped\n'
+        fi
+        ;;
+esac

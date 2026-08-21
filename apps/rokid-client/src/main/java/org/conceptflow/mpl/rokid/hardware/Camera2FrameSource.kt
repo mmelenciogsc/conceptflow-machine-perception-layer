@@ -19,7 +19,6 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
-import androidx.core.content.ContextCompat
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.FrameLimits
 import org.conceptflow.mpl.rokid.core.FrameSource
@@ -55,7 +54,7 @@ class Camera2FrameSource(
     override val isRunning: Boolean get() = lifecycle.isRunning
 
     override fun start(listener: FrameSource.Listener) {
-        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (appContext.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             listener.onError(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
             return
         }
@@ -122,7 +121,7 @@ class Camera2FrameSource(
         )
         synchronized(stateLock) {
             lifecycle.runIfActive(runId) {
-                if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) !=
+                if (appContext.checkSelfPermission(Manifest.permission.CAMERA) !=
                     PackageManager.PERMISSION_GRANTED
                 ) {
                     throw SecurityException(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)

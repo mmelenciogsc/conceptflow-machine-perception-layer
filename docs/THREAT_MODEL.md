@@ -32,11 +32,12 @@ an engineering review aid, not a security certification.
 ### Unintended or covert capture
 
 An application or future transport integration could start capture without
-the user understanding the state, continue after backgrounding, or broaden a
-selected region. Current controls require visible actions in the sample apps,
-close glasses capture on pause, require one-shot Windows consent, and validate a
-bounded region. Future zero-touch operation must retain an accessible state
-indicator and immediate stop control.
+the user understanding the state, continue after disconnect, or broaden a
+selected region. The non-display glasses client remains stopped after install;
+development capture requires an explicit authorized-ADB action and stops with
+the service. The Android host and Windows samples require explicit actions and
+validate bounded input. Future zero-touch operation must retain accessible host
+status, distinctive nonvisual glasses feedback, and an immediate stop control.
 
 ### Frame disclosure
 

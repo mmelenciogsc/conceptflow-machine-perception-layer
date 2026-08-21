@@ -42,6 +42,8 @@ REQUIRED = (
     "scripts/demo",
     "scripts/benchmark",
     "scripts/rokid-install",
+    "scripts/rokid-control",
+    "scripts/lib/rokid-adb.sh",
     "scripts/repository/secret_scan.py",
 )
 SOURCE_SUFFIXES = {".py", ".sh", ".kt", ".kts", ".java", ".cs", ".cpp", ".hpp", ".proto"}
@@ -55,6 +57,7 @@ SCRIPT_NAMES = {
     "generate",
     "lint",
     "rokid-install",
+    "rokid-control",
     "test",
 }
 FORBIDDEN_SUFFIXES = {
@@ -140,53 +143,89 @@ def check_rokid_workflow_component() -> list[str]:
     namespace_match = re.search(r'(?m)^\s*namespace\s*=\s*"([^"]+)"\s*$', build_text)
     application_id_match = re.search(r'(?m)^\s*applicationId\s*=\s*"([^"]+)"\s*$', build_text)
     install_package_match = re.search(r'(?m)^readonly PACKAGE_NAME="([^"]+)"$', install_text)
-    install_activity_match = re.search(r'(?m)^readonly ACTIVITY_NAME="([^"]+)"$', install_text)
+    control_text = read_text(Path("scripts/rokid-control")) or ""
+    control_package_match = re.search(r'(?m)^readonly PACKAGE_NAME="([^"]+)"$', control_text)
+    control_activity_match = re.search(r'(?m)^readonly COMMAND_ACTIVITY_NAME="([^"]+)"$', control_text)
 
     try:
         manifest = ET.parse(ROOT / ROKID_MANIFEST).getroot()
     except (ET.ParseError, OSError) as error:
         return [f"cannot parse Rokid manifest: {error}"]
 
-    launcher_activity: str | None = None
+    launcher_activities: list[str] = []
     for activity in manifest.findall("./application/activity"):
         for intent_filter in activity.findall("intent-filter"):
             actions = {item.get(f"{ANDROID_NAMESPACE}name") for item in intent_filter.findall("action")}
             categories = {item.get(f"{ANDROID_NAMESPACE}name") for item in intent_filter.findall("category")}
             if "android.intent.action.MAIN" in actions and "android.intent.category.LAUNCHER" in categories:
-                launcher_activity = activity.get(f"{ANDROID_NAMESPACE}name")
-                break
-        if launcher_activity:
-            break
+                name = activity.get(f"{ANDROID_NAMESPACE}name")
+                if name:
+                    launcher_activities.append(name)
+
+    services = manifest.findall("./application/service")
+    runtime_services = [
+        service
+        for service in services
+        if (service.get(f"{ANDROID_NAMESPACE}name") or "").endswith("RokidRuntimeService")
+    ]
+    command_activities = [
+        activity
+        for activity in manifest.findall("./application/activity")
+        if (activity.get(f"{ANDROID_NAMESPACE}name") or "").endswith("RokidCommandActivity")
+    ]
 
     if namespace_match is None:
         failures.append(f"cannot determine Android namespace from {ROKID_BUILD_FILE}")
     if application_id_match is None:
         failures.append(f"cannot determine applicationId from {ROKID_BUILD_FILE}")
-    if launcher_activity is None:
-        failures.append(f"cannot determine MAIN/LAUNCHER activity from {ROKID_MANIFEST}")
+    if launcher_activities:
+        failures.append(f"non-display Rokid client must not declare a MAIN/LAUNCHER activity: {ROKID_MANIFEST}")
+    if len(runtime_services) != 1:
+        failures.append(f"expected exactly one RokidRuntimeService in {ROKID_MANIFEST}")
+    if len(command_activities) != 1:
+        failures.append(f"expected exactly one RokidCommandActivity in {ROKID_MANIFEST}")
     if "./scripts/rokid-install --no-build" not in workflow_text:
         failures.append(f"Rokid workflow does not invoke the direct-sideload helper: {HARDWARE_WORKFLOW}")
-    if install_package_match is None or install_activity_match is None:
-        failures.append(f"cannot determine launch component from {ROKID_INSTALL_SCRIPT}")
+    if install_package_match is None:
+        failures.append(f"cannot determine install package from {ROKID_INSTALL_SCRIPT}")
+    if control_package_match is None or control_activity_match is None:
+        failures.append("cannot determine the nonvisual runtime component from scripts/rokid-control")
     if (
         namespace_match is None
         or application_id_match is None
-        or launcher_activity is None
         or install_package_match is None
-        or install_activity_match is None
+        or control_package_match is None
+        or control_activity_match is None
+        or len(runtime_services) != 1
+        or len(command_activities) != 1
     ):
         return failures
 
     namespace = namespace_match.group(1)
     application_id = application_id_match.group(1)
-    if launcher_activity.startswith("."):
-        launcher_activity = f"{namespace}{launcher_activity}"
-    elif "." not in launcher_activity:
-        launcher_activity = f"{namespace}.{launcher_activity}"
-    expected_component = f"{application_id}/{launcher_activity}"
-    actual_component = f"{install_package_match.group(1)}/{install_activity_match.group(1)}"
+    runtime_service = runtime_services[0]
+    command_activity = command_activities[0]
+    activity_name = command_activity.get(f"{ANDROID_NAMESPACE}name") or ""
+    if activity_name.startswith("."):
+        activity_name = f"{namespace}{activity_name}"
+    elif "." not in activity_name:
+        activity_name = f"{namespace}.{activity_name}"
+    expected_component = f"{application_id}/{activity_name}"
+    actual_component = f"{control_package_match.group(1)}/{control_activity_match.group(1)}"
     if actual_component != expected_component:
         failures.append(f"Rokid workflow component mismatch: expected {expected_component}, found {actual_component}")
+    if install_package_match.group(1) != application_id:
+        failures.append(
+            f"Rokid installer package mismatch: expected {application_id}, found {install_package_match.group(1)}"
+        )
+    if runtime_service.get(f"{ANDROID_NAMESPACE}exported") != "false":
+        failures.append("RokidRuntimeService must remain private to the application")
+    if command_activity.get(f"{ANDROID_NAMESPACE}exported") != "true":
+        failures.append("RokidCommandActivity must be exported for explicit authorized ADB control")
+    if command_activity.get(f"{ANDROID_NAMESPACE}permission") != "android.permission.DUMP":
+        failures.append("RokidCommandActivity must require the shell-held android.permission.DUMP permission")
+    if command_activity.get(f"{ANDROID_NAMESPACE}theme") != "@style/Theme.ConceptFlow.Nonvisual":
+        failures.append("RokidCommandActivity must retain the nonvisual compatibility theme")
     return failures
 
 

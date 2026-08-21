@@ -2,17 +2,4 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <resources>
     <string name="app_name">CONCEPTFlow glasses client</string>
-    <string name="ready_status">Ready. Swipe the touchpad to choose and tap to activate. The camera key toggles capture.</string>
-    <string name="start_capture">Start camera capture</string>
-    <string name="stop_capture">Stop camera capture</string>
-    <string name="capture_started_status">Camera capture started.</string>
-    <string name="camera_permission_denied">Camera permission was not granted. Capture remains stopped.</string>
-    <string name="frame_captured_status">Camera frame captured within limits. Frame ID: %1$d</string>
-    <string name="capture_error_status">Camera capture stopped or rejected: %1$s</string>
-    <string name="pose_unavailable_status">Motion sensors are unavailable; camera and cue controls remain usable.</string>
-    <string name="play_left_cue">Play left stereo cue</string>
-    <string name="play_right_cue">Play right stereo cue</string>
-    <string name="left_cue_status">Left stereo-balance cue played.</string>
-    <string name="right_cue_status">Right stereo-balance cue played.</string>
-    <string name="cue_unavailable_status">Cue output is unavailable; no cue was played.</string>
 </resources>

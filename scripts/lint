@@ -13,7 +13,7 @@ lint_repository() {
     "$python_executable" scripts/repository/secret_scan.py
     "$python_executable" scripts/repository/check_config_examples.py
     bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark \
-        scripts/generate scripts/rokid-install scripts/lib/common.sh
+        scripts/generate scripts/rokid-install scripts/rokid-control scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }
 lint_python() {
     local python_executable

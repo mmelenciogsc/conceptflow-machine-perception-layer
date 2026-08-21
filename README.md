@@ -71,8 +71,8 @@ the complete flow and source-level boundaries.
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
 | Python | 145 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, and assistive-only cue; three wheels/sdists built and isolated-imported | Real model worker, production serving, physical-device path |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 49 JVM tests including the shared wire vector; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
-| Rokid | Standalone standard-Android APK; Camera2/SensorManager hardware adapters; inspectable cue rendering; serial-safe direct build/install/activity-start over the magnetic 5-pin cable | Foreground camera/audio/touchpad validation with the display awake; project-owned Rokid-to-Poco frame/cue transport |
+| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; JVM tests including the shared wire vector; Android Lint; both debug APKs built with JDK 17 and an installed SDK | Real inter-device transport, instrumentation, TalkBack and physical cue validation |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; Camera2 capture with monotonic frames; explicit stop; no vendor SDK | Physical audio/haptic and sustained camera/thermal validation; project-owned Rokid-to-Poco transport |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 
@@ -159,18 +159,24 @@ app without Hi Rokid, a client secret, or a proprietary SDK:
 read -r -p "Rokid ADB serial: " ROKID_SERIAL
 read -r -p "Poco ADB serial: " POCO_SERIAL
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build
+./scripts/rokid-control --serial "$ROKID_SERIAL" status
 adb -s "$POCO_SERIAL" install -r apps/android-host/build/outputs/apk/debug/android-host-debug.apk
 adb -s "$POCO_SERIAL" shell am start -W \
   -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity
 ```
 
-The attached consumer device has reported `RG-glasses`, Android 12/API 32,
+Installation leaves the nonvisual glasses runtime stopped. Camera permission and
+capture are separate, explicit development actions documented in
+[direct Rokid development](docs/ROKID_INTEGRATION.md).
+
+The attached non-display consumer device has reported `RG-glasses`, Android
+12/API 32,
 YodaOS Sprite assist service 0.3.5, and `com.rokid.cxrservice` v12 target 32;
 direct ADB over its magnetic 5-pin cable is verified. The glasses app is a
 standalone Android APK using standard platform APIs and no vendor SDK. The two
 apps currently exercise independent in-process flows; a real authenticated
 Rokid/Poco transport is not yet implemented. See
-[direct Rokid development](docs/ROKID_INTEGRATION.md) and
+[direct non-display Rokid development](docs/ROKID_INTEGRATION.md) and
 [Android host](docs/ANDROID_HOST.md).
 
 ## Windows relay

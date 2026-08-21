@@ -96,7 +96,7 @@ that can conceal backpressure or cancellation defects.
 - If dependencies cannot resolve, check access to Google Maven and Maven
   Central. The declared baseline is Gradle 8.11.1, AGP 8.10.1, Kotlin 2.0.21.
 
-## ADB or Rokid launch fails
+## ADB or Rokid non-display runtime fails
 
 - Run `adb devices -l`. If more than one device is attached, pass `-s` on every
   command.
@@ -110,15 +110,16 @@ that can conceal backpressure or cancellation defects.
   non-Rokid targets.
 - A 3-pin charging lead does not provide the required ADB data path. Use the
   magnetic 5-pin development cable.
-- Camera remains stopped: grant Android camera permission and confirm the app is
-  foregrounded. On a non-touch YodaOS build, the explicit development command
-  is `./scripts/rokid-install --serial SERIAL --no-build --grant-camera`.
-  Capture stops on pause by design.
+- Camera remains stopped: explicitly install/grant with
+  `./scripts/rokid-install --serial SERIAL --no-build --grant-camera`, then run
+  `./scripts/rokid-control --serial SERIAL capture-start`. Inspect state with
+  the helper's `status` command. Capture stops with the service.
 - `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`: another YodaOS service owns the
   camera. Record the conflict; do not disable system security or services as an
   installation shortcut.
-- No phone/glasses exchange: expected in the public baseline. Both activities
-  use local/in-process flows and there is no real inter-device transport.
+- No phone/glasses exchange: expected in the public baseline. The glasses
+  service and phone activity use independent local/in-process flows; no real
+  inter-device transport exists yet.
 - No Rokid client secret or SDK class is required. This project intentionally
   builds and sideloads a standalone standard-Android APK.
 

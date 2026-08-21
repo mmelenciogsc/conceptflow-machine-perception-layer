@@ -50,10 +50,24 @@ jobs:
           adb shell getprop ro.product.manufacturer
           adb shell getprop ro.product.model
       - run: ./gradlew --no-daemon --dependency-verification strict lintDebug testDebugUnitTest assembleDebug
-      - name: Install and launch device client
+      - name: Install non-display device client
         shell: bash
         run: |
           set -euo pipefail
           apk="apps/rokid-client/build/outputs/apk/debug/rokid-client-debug.apk"
           test -f "$apk" || { echo "Expected APK was not produced: $apk" >&2; exit 1; }
-          ./scripts/rokid-install --no-build
+          ./scripts/rokid-install --no-build --grant-camera
+      - name: Validate non-display capture lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() { ./scripts/rokid-control stop >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          ./scripts/rokid-control capture-start
+          sleep 3
+          adb shell pidof org.conceptflow.mpl.rokidclient >/dev/null
+          adb shell dumpsys media.camera | grep -F "Client Package Name: org.conceptflow.mpl.rokidclient" >/dev/null
+          ./scripts/rokid-control stop
+          trap - EXIT
+          sleep 1
+          ! adb shell pidof org.conceptflow.mpl.rokidclient >/dev/null 2>&1

@@ -4,16 +4,16 @@
 set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
 cd "$REPOSITORY_ROOT"
 
 readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
-readonly ACTIVITY_NAME="org.conceptflow.mpl.rokid.MainActivity"
 readonly DEFAULT_APK="apps/rokid-client/build/outputs/apk/debug/rokid-client-debug.apk"
 
 serial=""
 apk_path="$DEFAULT_APK"
 build_apk=true
-launch_app=true
 grant_camera=false
 inspect_only=false
 
@@ -28,7 +28,6 @@ Options:
   --serial SERIAL   Explicit ADB serial. Required when multiple devices are attached.
   --apk PATH        Install PATH instead of the default debug APK; implies --no-build.
   --no-build        Use the existing default debug APK.
-  --no-launch       Install without launching the activity.
   --grant-camera    Grant only android.permission.CAMERA after installation.
   --inspect-only    Identify and validate the target without changing it.
   -h, --help        Show this help.
@@ -52,10 +51,6 @@ while (($# > 0)); do
             build_apk=false
             shift
             ;;
-        --no-launch)
-            launch_app=false
-            shift
-            ;;
         --grant-camera)
             grant_camera=true
             shift
@@ -74,32 +69,8 @@ while (($# > 0)); do
     esac
 done
 
-require_command adb "Android platform-tools (adb) are required"
-
-if [[ -z "$serial" ]]; then
-    mapfile -t authorized_devices < <(adb devices | awk 'NR > 1 && $2 == "device" { print $1 }')
-    if ((${#authorized_devices[@]} != 1)); then
-        fail "found ${#authorized_devices[@]} authorized devices; pass --serial for the Rokid glasses"
-    fi
-    serial="${authorized_devices[0]}"
-fi
-
-state="$(adb -s "$serial" get-state 2>/dev/null || true)"
-[[ "$state" == "device" ]] || fail "the selected ADB target is not in the authorized device state"
-
-model="$(adb -s "$serial" shell getprop ro.product.model | tr -d '\r')"
-product="$(adb -s "$serial" shell getprop ro.product.name | tr -d '\r')"
-device="$(adb -s "$serial" shell getprop ro.product.device | tr -d '\r')"
-manufacturer="$(adb -s "$serial" shell getprop ro.product.manufacturer | tr -d '\r')"
-sdk="$(adb -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')"
-identity="${manufacturer} ${model} ${product} ${device}"
-
-if [[ ! "${identity,,}" =~ rokid|rg_glasses|(^|[[:space:]])glasses($|[[:space:]]) ]]; then
-    fail "the selected target does not identify as Rokid glasses (manufacturer='$manufacturer', model='$model', product='$product', device='$device')"
-fi
-
-printf 'Rokid target: manufacturer=%s model=%s product=%s device=%s api=%s\n' \
-    "$manufacturer" "$model" "$product" "$device" "$sdk"
+select_rokid_target "$serial"
+verify_rokid_target
 
 if [[ "$inspect_only" == true ]]; then
     printf 'Inspection complete; no build, install, permission, or launch command was run.\n'
@@ -112,15 +83,12 @@ fi
 
 [[ -f "$apk_path" ]] || fail "APK not found: $apk_path"
 
-adb -s "$serial" install -r "$apk_path"
+adb -s "$ROKID_SERIAL" install -r "$apk_path"
 
 if [[ "$grant_camera" == true ]]; then
-    adb -s "$serial" shell pm grant "$PACKAGE_NAME" android.permission.CAMERA
+    adb -s "$ROKID_SERIAL" shell pm grant "$PACKAGE_NAME" android.permission.CAMERA
     printf 'Granted android.permission.CAMERA at the operator request.\n'
 fi
 
-if [[ "$launch_app" == true ]]; then
-    adb -s "$serial" shell am start -W -n "$PACKAGE_NAME/$ACTIVITY_NAME"
-fi
-
 printf 'Direct sideload completed for %s on the selected Rokid target.\n' "$PACKAGE_NAME"
+printf 'The nonvisual runtime remains stopped. Use ./scripts/rokid-control to start an explicit action.\n'

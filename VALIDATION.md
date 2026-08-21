@@ -27,7 +27,7 @@ toolchain-aware compilation only.
 | Repository | format, policy, secret, config-example, shell, Ruff, and MyPy gates passed | `actionlint` was unavailable; workflows received parser and repository-policy checks |
 | Python | 145 tests passed; protocol generation valid; all three source/wheel packages built and isolated-imported | no production worker or non-loopback deployment |
 | Synthetic slice | real loopback gRPC demo passed reconnect, cancellation, timeout, stale rejection, worker error, overload, recovery, and cue rendering | deterministic CPU mock and synthetic frames only |
-| Android | 49 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
+| Android | 52 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or final inter-device transport |
 | .NET | locked restore, formatter, warning-free Release build including WPF cross-target, 156 tests, and consent-gated demo passed | WPF was not executed on Windows |
 | Native | strict Release build, 15-case test executable, JSON-lines demo, ASan/UBSan build/tests, and CUDA-aware build/tests passed | no CUDA kernel or model inference exists |
 | Dependencies | Python and .NET vulnerability queries found no known vulnerability in resolved third-party packages | local editable Python distributions were correctly excluded from the index audit |
@@ -63,7 +63,7 @@ Android baseline:
 ```
 
 The build used JDK 17 and the installed Android SDK. Test totals were 26 for
-`android-host`, 23 for `rokid-client`, and one cross-language protocol-vector
+`android-host`, 25 for `rokid-client`, and one cross-language protocol-vector
 test in `android-protocol`.
 
 .NET baseline:
@@ -154,16 +154,23 @@ WebRTC implementation is claimed.
 
 ## Rokid and Poco evidence
 
-The attached consumer glasses reported manufacturer `Rokid`, model `RG-glasses`,
+The attached non-display consumer glasses reported manufacturer `Rokid`, model
+`RG-glasses`,
 Android 12/API 32, YodaOS Sprite assist service 0.3.5, and CXR service package
 `com.rokid.cxrservice` version 12. Direct ADB over the magnetic 5-pin data cable
-was verified. The current debug Rokid APK was installed directly, camera
-permission was explicitly granted for development, and `am start -W` accepted
-its activity; its process remained live. The 480x640 built-in display reported
-`OFF`, so Android kept the activity sleeping and the key/camera test did not
-execute. The system Sprite assist service still held camera 0. This proves the
-direct build/install/start boundary, not foreground rendering, frame capture,
-touchpad input, or cue output.
+was verified. An earlier visual activity-based debug APK was the wrong
+application model and was replaced. Android's reported 480×640 display object
+in state `OFF` is an internal compatibility surface, not a physical display.
+
+The replacement APK was rebuilt and installed. Its explicit, protected,
+nonvisual command activity bound a private runtime service and kept Android's
+logical compatibility surface awake without a launcher or wearer-facing UI.
+Device logs recorded `state=capturing` followed by monotonic frame IDs 1 through
+5, while CameraService identified `org.conceptflow.mpl.rokidclient` as camera
+0's active client. The explicit stop command left both process and runtime
+service stopped. No vendor service was disabled. A temporary app-op diagnostic
+was restored to the original foreground mode. Physical audio/haptic quality was
+not tested.
 
 The Poco F7 Ultra rejected the debug host APK through ADB with
 `INSTALL_FAILED_USER_RESTRICTED`. No device-security setting was bypassed or
@@ -186,17 +193,19 @@ unpublished serials:
 ./scripts/rokid-install --serial "$POCO_SERIAL" --inspect-only  # refused as non-Rokid
 ./scripts/rokid-install --inspect-only                           # refused as ambiguous
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build --grant-camera
+./scripts/rokid-control --serial "$ROKID_SERIAL" capture-start
+./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
-The installed debug APK was 13,408,278 bytes with SHA-256
-`a46272478ebdb0beb30f3bc666cae9b22cca14fd6455bf846d3000411db1113f`.
+The final clean-built debug APK was 6,951,992 bytes with SHA-256
+`de7a01b2f4d4b2b35c31aece05daad675d06c42ccf8db89c468b668bbf1216c2`.
 
 ## Accessibility evidence
 
-Android source and lint cover labeled controls, logical focus, live-region
+Android host source and lint cover labeled controls, logical focus, live-region
 status, non-color state text, TalkBack-aware speech suppression, and a bounded
-text fallback when spoken cue delivery is unavailable. Glasses-side essentials
-have audio/haptic output seams and an inspectable nonvisual renderer.
+text fallback when spoken cue delivery is unavailable. The non-display glasses
+client has audio/haptic output seams and an inspectable nonvisual renderer.
 
 The Windows WPF shell uses standard controls, keyboard navigation, accessible
 names/help text, live status, predictable focus restoration, and optional

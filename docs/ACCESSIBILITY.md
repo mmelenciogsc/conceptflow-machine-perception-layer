@@ -45,16 +45,22 @@ avoiding competing application speech.
 
 ### Rokid client
 
-`apps/rokid-client/src/main/res/layout/activity_main.xml` uses stock controls, a
-heading, a polite status live region, 48 dp targets, and explicit focus order.
-`MainActivity.onKeyUp` maps `C` to capture and `L`/`R` to directional test cues.
-The visible status describes permission denial, capture, errors, pose fallback,
-and cue direction.
+Rokid AI Glasses Style is a non-display device. The client therefore has no
+launcher activity, layout, visual controls, focus order, or touchpad workflow.
+Its current development interface is explicit authorized-ADB control of a
+nonvisual activity and private bound service. This is inspectable engineering
+access, not an acceptable end-user control surface.
 
 `InspectableCueRenderer` records disposition, frame, stereo balance, and
 haptic use. It rejects invalid, stale, duplicate, and older-frame cues. These
 properties make behavior auditable but do not establish that a particular
 glasses speaker, haptic path, or spatial percept is usable.
+
+A product path must put capture state, stop, errors, cue verbosity, and consent
+in the TalkBack-accessible phone host and reinforce essential state through
+distinctive nonvisual feedback on the glasses. Hands-free control remains
+unverified until physical button or voice behavior is mapped without a vendor
+SDK and tested with blind users.
 
 ### Windows relay
 
@@ -70,9 +76,9 @@ state and synthetic cue information as plain text.
 
 ## TalkBack procedure
 
-Run separately on the Android host and on any glasses build whose firmware
-supports TalkBack or an equivalent accessibility service. Record OS, device,
-screen reader, input method, app revision, and transport mode.
+Run on the Android host. The non-display glasses have no TalkBack UI; validate
+their audio/haptic behavior separately. Record OS, device, screen reader, input
+method, app revision, and transport mode.
 
 1. Enable TalkBack before launch. Confirm the app title and initial capture or
    session state are announced without starting capture, connecting, or playing
@@ -82,18 +88,17 @@ screen reader, input method, app revision, and transport mode.
 3. On the host, activate Connect, Process synthetic frame, Cancel, and
    Disconnect. Confirm each state is visible and announced once, and that app
    TTS does not talk over TalkBack.
-4. On the glasses client, deny camera permission and confirm the denial is
-   announced and capture remains stopped. Grant permission, start and stop
-   capture, background the app, and confirm capture stops on pause.
+4. From the phone host, deny camera permission and confirm the denial is
+   announced and glasses capture remains stopped. Grant permission, start and
+   stop capture, disconnect, and confirm state remains available nonvisually.
 5. Trigger left and right synthetic cues. Confirm equivalent text remains
    available and that stereo/haptic feedback is distinguishable without being
    painful, startling, or mistaken for a safety instruction.
 6. Cause a malformed, stale, timeout, transport-loss, and overload condition in
    a synthetic environment. Confirm the user can identify the failure and
    return to a safe stopped state.
-7. Increase display and font size, enable high contrast/color correction, and
-   test portrait/landscape behavior supported by the device. Confirm controls
-   do not clip or become unreachable.
+7. On the phone, increase display/font size, enable high contrast or color
+   correction, and test supported orientations. Confirm controls remain usable.
 
 Status: not yet manually validated on the attached Rokid consumer device or a
 Poco host with TalkBack. JVM tests and APK builds do not satisfy this procedure.

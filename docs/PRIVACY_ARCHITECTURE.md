@@ -28,13 +28,15 @@ must be configured separately.
 
 ## Capture and consent
 
-The Rokid client requests Android camera permission and starts capture only from
-the focused control, camera key, or external `C` key. On a YodaOS device without
-an operable permission dialog, the direct-sideload helper can grant only the
-declared camera permission after an explicit `--grant-camera` operator action.
+The non-display Rokid client has no launcher UI. Installation leaves its
+nonvisual runtime stopped. On a controlled development unit, the direct-sideload
+helper can grant only the declared camera permission after an explicit
+`--grant-camera` operator action, and `rokid-control capture-start` is a separate
+authorized-ADB command.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
-byte limit, and a 400 ms default capture interval. Stopping or pausing the
-activity closes the capture resources.
+byte limit, and a 400 ms default capture interval. Stopping the nonvisual
+activity unbinds the service and closes capture resources. This development
+control is not the intended product consent interface.
 
 The current Android host demo generates a synthetic frame after the user
 connects and presses Process. Its activity does not receive real glasses frames
@@ -47,8 +49,10 @@ consumes approval after one submission. The headless demo requires the explicit
 `--consent-synthetic-demo` argument.
 
 Future continuous or zero-touch behavior must have an unambiguous start/stop
-state, visible and screen-reader-readable status, revocable consent, bounded
-duration, and a local kill path. Zero-touch cannot mean invisible capture.
+state, screen-reader-readable host status, distinctive nonvisual glasses
+feedback, revocable consent, bounded duration, and a local kill path. The
+glasses' hardware recording indicator must remain active. Zero-touch cannot
+mean covert capture.
 
 ## Minimization and bounds
 
