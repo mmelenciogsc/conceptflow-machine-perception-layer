@@ -28,10 +28,16 @@ Sources checked on 2026-08-21:
   authorized ADB transport.
 - Android's official [ADB documentation](https://developer.android.com/tools/adb)
   defines serial-selected installation and shell commands; its
+  [hardware-device setup guide](https://developer.android.com/studio/run/device)
+  documents Ubuntu `plugdev` membership and packaged udev rules; its
   [command-line build guide](https://developer.android.com/build/building-cmdline)
   defines Gradle `assembleDebug`; and its
   [Camera2 guide](https://developer.android.com/media/camera/camera2) defines
   the camera API used here.
+- The Linux kernel's official
+  [USB error-code documentation](https://docs.kernel.org/driver-api/usb/error-codes.html)
+  defines `-EPROTO` as a protocol-level failure such as no response or a
+  low-level signaling error; it is not an ADB authorization result.
 - The independent `aimindseye/rokid-ai-glasses` research repository documents
   the same non-display device class in its pinned
   [architecture notes](https://github.com/aimindseye/rokid-ai-glasses/blob/c2483fae87d637ebf12bd1bf643365d80bf2438d/docs/architecture/non-display-system-architecture.md),
@@ -56,8 +62,9 @@ CONCEPTFlow did not disable or modify that system service. Later explicit tests
 acquired camera 0 through Camera2 and concurrently received game-rotation,
 gyroscope/linear-acceleration, and 16-kHz mono PCM microphone data through
 standard Android APIs. The bounded results are recorded in `VALIDATION.md`.
-Physical speaker output, haptics, microphone-array beam selection, acoustic
-quality, and hardware button mappings remain separate empirical tests.
+Physical speaker output, haptics, microphone-array beam selection, and acoustic
+quality remain separate empirical tests. The physical button and right-arm
+touch surface mappings below were measured directly with Linux `getevent`.
 
 ## Non-display application model
 
@@ -83,11 +90,36 @@ The implemented hardware boundaries are:
 - Android stereo audio and optional vibrator output; and
 - deterministic, package-scoped commands for capture and development cues.
 
-There is no touchpad, screen, launcher, or wearer-facing visual state.
-Development state is inspectable through safe ADB status/log commands. A
-product release must expose capture state and stop control through the
-accessible phone host, distinctive nonvisual feedback, and verified physical
-controls; ADB is not a user control.
+There is no screen, launcher, or wearer-facing visual state. The right arm does
+have a capacitive touch surface; it reports firmware-recognized key events, not
+raw coordinates. Development state is inspectable through safe ADB status/log
+commands. A product release must expose capture state and stop control through
+the accessible phone host, distinctive nonvisual feedback, and verified
+physical controls; ADB is not a user control.
+
+## Verified physical input mappings
+
+The following mappings were captured on the attached Style unit while an
+authorized ADB session ran `getevent -lt`. They are observations for this
+firmware, not a cross-version Rokid API guarantee.
+
+| Physical action | Linux input source | Observed key sequence |
+| --- | --- | --- |
+| Top-right physical button near the lens, short press | `qpnp_pon` (`event0`) | `KEY_MENU` down/up |
+| Touch-surface single tap, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then `KEY_PROG1` down/up after about 478 ms |
+| Touch-surface long press, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then `KEY_PROG1` held for about 766 ms |
+| Touch-surface double tap, while worn | `ROKID,PSOC-TP-R` (`event1`) | two `KEY_DASHBOARD` pulses, then `KEY_YELLOW` down/up |
+| Touch-surface swipe toward lenses, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then `KEY_VOLUMEUP` down/up |
+| Touch-surface swipe toward ear, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then one or more `KEY_VOLUMEDOWN` pulses |
+
+The isolated off-head tap and swipe trials produced no input events, while worn
+trials produced the listed key sequences. This is consistent with wear gating
+on the observed unit. A repeated/longer swipe can emit multiple volume steps.
+`KEY_DASHBOARD` appeared as a consistent gesture preamble/contact event.
+Applications should treat the terminal key as the candidate semantic action
+and must test whether Android or a YodaOS system component consumes it before
+application dispatch. Raw `getevent` visibility alone does not prove that an
+ordinary app can intercept every system key.
 
 ## Cable and authorization
 
@@ -103,6 +135,22 @@ controls; ADB is not a user control.
 
 4. With multiple attached devices, pass the glasses serial on every command.
    The scripts refuse an ambiguous target and validate Rokid product properties.
+
+On the tested Ubuntu host, the direct USB-C path repeatedly failed before USB
+descriptor enumeration with Linux error `-71` (`EPROTO`). Because the device
+was absent from `lsusb`, neither udev permissions nor restarting ADB could fix
+that state. No custom udev rule was created: Ubuntu's packaged Android rule
+already matched vendor `18d1`, and the user was already in `plugdev`.
+
+Cycling **Glasses ADB debugging** off and back on through Hi Rokid and using its
+supported **Restart** action reinitialized device-side state, but did not repair
+the failing physical USB-C path. Moving the same 5-pin data cable to a USB-A
+port through a data-capable adapter enumerated immediately at 480 Mbit/s and
+remained authorized after temporary host compatibility settings were restored.
+Treat that as a verified recovery for this host/cable combination, not a
+universal adapter requirement. Hi Rokid was used only to enable/recover the
+device's development setting; it is not part of the CONCEPTFlow runtime,
+installation path, protocol, or application architecture.
 
 The repository does not bypass Android Debug Bridge authorization.
 

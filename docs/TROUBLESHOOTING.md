@@ -103,6 +103,18 @@ that can conceal backpressure or cancellation defects.
 - `unauthorized`: unlock the device and accept the host authorization prompt.
 - `offline`: reconnect the cable, verify the magnetic 5-pin seating, then
   restart only the ADB client if needed.
+- If the kernel reports repeated `device descriptor read/64, error -71` and the
+  glasses do not appear in `lsusb`, the failure precedes udev and ADB. On the
+  validated host, moving the same data cable from direct USB-C to a USB-A port
+  through a data-capable adapter restored a stable 480 Mbit/s connection. Do
+  not weaken device permissions or replace udev rules to mask this condition.
+- Ubuntu's `android-sdk-platform-tools-common` package supplies the standard
+  Android udev rules. Confirm that vendor `18d1` is covered and that the user is
+  in `plugdev`; a custom Rokid rule was not required on the validated host.
+- Hi Rokid's **Glasses ADB debugging** switch may be cycled and its supported
+  **Restart** action used to recover device-side development state. This is an
+  initial setup/recovery operation only; the sideloaded application has no Hi
+  Rokid or client-secret runtime dependency.
 - APK not found: build the specific module and verify its
   `build/outputs/apk/debug/` directory.
 - If both the Poco and glasses are connected, pass the glasses serial to
@@ -122,6 +134,10 @@ that can conceal backpressure or cancellation defects.
   inter-device transport exists yet.
 - No Rokid client secret or SDK class is required. This project intentionally
   builds and sideloads a standalone standard-Android APK.
+- Right-arm touch input is wear-gated on the tested unit. An off-head gesture
+  can correctly produce no event; repeat the diagnostic while worn and keep
+  the magnetic cable slack. Verified raw mappings are in
+  `ROKID_INTEGRATION.md`.
 
 See [ROKID_INTEGRATION.md](ROKID_INTEGRATION.md) for the verified device and SDK
 boundaries.

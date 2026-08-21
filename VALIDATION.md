@@ -183,6 +183,28 @@ recorder was reported. This verifies standard Android acquisition on this unit;
 it does not validate array beam selection, acoustic fidelity, long-duration
 thermal behavior, or physical audio/haptic output.
 
+A separate physical-input pass captured only Linux input events and no camera,
+microphone, or personal content. The top-right physical button near the lens
+reported `KEY_MENU` on `qpnp_pon`. The right-arm capacitive controller
+`ROKID,PSOC-TP-R` was wear-gated: isolated off-head taps/swipes produced no
+events, while worn trials reported a `KEY_DASHBOARD` preamble followed by
+`KEY_PROG1` for single/long press, `KEY_YELLOW` for double tap,
+`KEY_VOLUMEUP` for a swipe toward the lenses, and `KEY_VOLUMEDOWN` for a swipe
+toward the ear. A repeated swipe could report multiple volume steps. These are
+raw firmware/input mappings; application-level interception and system-key
+consumption remain to be tested.
+
+During that pass, direct USB-C attachment repeatedly failed before enumeration
+with kernel `-71` (`EPROTO`) despite correct packaged Android udev coverage,
+`plugdev` membership, udev/ADB refresh, disabled autosuspend, compatibility
+enumeration, a host-controller rebind, a Hi Rokid ADB-setting cycle, and a
+supported glasses restart. The same magnetic data cable connected through a
+data-capable USB-A adapter enumerated as `18d1:4ee7` at 480 Mbit/s and kept an
+authorized ADB session after host settings were restored. No custom udev rule
+was added. Temporary on-device event logs were removed, the glasses stay-awake
+setting was restored to `0`, and host USB autosuspend/legacy-order settings were
+restored to `2`/`N`.
+
 The Poco F7 Ultra rejected the debug host APK through ADB with
 `INSTALL_FAILED_USER_RESTRICTED`. No device-security setting was bypassed or
 left modified. The host APK itself builds and tests successfully, but phone
