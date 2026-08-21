@@ -871,6 +871,10 @@ public sealed class RelaySession : IAsyncDisposable
             {
                 await Task.WhenAll(transportOperations).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (connection.Lifetime.IsCancellationRequested)
+            {
+                // Cancellation initiated by this connection's shutdown is expected.
+            }
             catch (Exception exception)
             {
                 shutdownFailure ??= exception;
