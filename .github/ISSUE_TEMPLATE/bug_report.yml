@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Bug report
+description: Report a reproducible defect using synthetic or redacted evidence.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not disclose vulnerabilities, credentials, camera captures, or personal data here. Follow SECURITY.md for private reporting.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide minimal steps using synthetic or redacted inputs.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Python host or cluster
+        - Android host
+        - Rokid client
+        - Windows desktop relay
+        - Native or CUDA boundary
+        - Repository infrastructure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and version
+      description: Include OS, runtime/tool versions, and project version or revision.
+    validations:
+      required: true
+  - type: textarea
+    id: accessibility
+    attributes:
+      label: Accessibility and camera-data impact
+      description: Describe any assistive feedback, privacy, retention, or camera implications without attaching sensitive data.

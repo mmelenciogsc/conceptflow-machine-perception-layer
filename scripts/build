@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+target="${1:-all}"
+build_python() {
+    local python_executable
+    python_executable="$(venv_python)"
+    "$python_executable" -m build --no-isolation packages/shared-protocol
+    "$python_executable" -m build --no-isolation packages/host-runtime
+    "$python_executable" -m build --no-isolation services/cuda-cluster
+}
+build_native() {
+    require_command cmake "CMake 3.24 or newer is required for native builds"
+    require_command ninja "Ninja is required for native builds"
+    local output
+    output="$(native_build_directory)"
+    cmake -S services/cuda-cluster/native -B "$output" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCONCEPTFLOW_ENABLE_CUDA=OFF
+    cmake --build "$output" --parallel
+}
+build_android() { run_gradle testDebugUnitTest assembleDebug; }
+build_dotnet() {
+    require_command dotnet ".NET SDK 8 is required for desktop relay builds"
+    dotnet restore apps/desktop-relay/ConceptFlow.Mpl.DesktopRelay.sln --locked-mode
+    dotnet build apps/desktop-relay/ConceptFlow.Mpl.DesktopRelay.sln --configuration Release --no-restore
+}
+
+case "$target" in
+    python) build_python ;;
+    native) build_native ;;
+    android) build_android ;;
+    dotnet) build_dotnet ;;
+    all) build_python; build_native; build_android; build_dotnet ;;
+    *) fail "unknown build target '$target'; expected all, python, native, android, or dotnet" ;;
+esac

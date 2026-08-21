@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+python_executable="$(find_python312)"
+if [[ ! -x .venv/bin/python && ! -x .venv/Scripts/python.exe ]]; then
+    "$python_executable" -m venv .venv
+fi
+repository_python="$(venv_python)"
+"$repository_python" -m pip install --disable-pip-version-check --require-hashes --requirement requirements.lock
+"$repository_python" -m pip install --disable-pip-version-check --no-deps \
+    --editable packages/shared-protocol \
+    --editable packages/host-runtime \
+    --editable services/cuda-cluster
+printf 'Repository environment is ready: %s\n' "$repository_python"

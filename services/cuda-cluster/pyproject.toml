@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conceptflow-mpl-cluster"
+version = "0.1.0"
+description = "Bounded asynchronous CONCEPTFlow MPL worker service"
+requires-python = ">=3.12,<3.13"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE", "LICENSE-APACHE", "LICENSE-MIT", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+  "conceptflow-mpl-host==0.1.0",
+  "conceptflow-mpl-protocol==0.1.0",
+  "grpcio==1.74.0",
+  "Pillow==12.3.0",
+  "protobuf==6.33.5",
+]
+
+[project.scripts]
+conceptflow-mpl-cluster = "conceptflow_mpl_cluster.server:main"
+conceptflow-mpl-demo = "conceptflow_mpl_cluster.demo:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conceptflow_mpl_cluster"]

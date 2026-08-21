@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+target="${1:-all}"
+lint_repository() {
+    local python_executable
+    python_executable="$(venv_python)"
+    "$python_executable" scripts/repository/check_policy.py
+    "$python_executable" scripts/repository/secret_scan.py
+    "$python_executable" scripts/repository/check_config_examples.py
+    bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark scripts/generate scripts/lib/common.sh
+}
+lint_python() {
+    local python_executable
+    python_executable="$(venv_python)"
+    "$python_executable" -m ruff check .
+    "$python_executable" -m mypy \
+        packages/host-runtime/src \
+        packages/shared-protocol/src/conceptflow_mpl_protocol \
+        services/cuda-cluster/src
+}
+
+case "$target" in
+    repository) lint_repository ;;
+    python) lint_python ;;
+    all) lint_repository; lint_python ;;
+    *) fail "unknown lint target '$target'; expected all, repository, or python" ;;
+esac

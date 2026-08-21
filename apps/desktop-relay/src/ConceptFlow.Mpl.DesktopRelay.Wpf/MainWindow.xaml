@@ -1,0 +1,136 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<Window x:Class="ConceptFlow.Mpl.DesktopRelay.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CONCEPTFlow Desktop Relay"
+        Width="760"
+        Height="720"
+        MinWidth="640"
+        MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        AutomationProperties.Name="CONCEPTFlow desktop relay window"
+        AutomationProperties.HelpText="Connects only on request and submits only explicitly approved captures."
+        KeyboardNavigation.TabNavigation="Cycle">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0">
+                <TextBlock Text="CONCEPTFlow Desktop Relay" FontSize="24" FontWeight="SemiBold"
+                           AutomationProperties.Name="CONCEPTFlow Desktop Relay" />
+                <TextBlock Margin="0,6,0,14" TextWrapping="Wrap"
+                           Text="Capture is off by default. This application never captures, sends, or exports content without a deliberate user action." />
+            </StackPanel>
+
+            <GroupBox Grid.Row="1" Header="Connection" Padding="12" Margin="0,0,0,12">
+                <StackPanel KeyboardNavigation.TabNavigation="Local">
+                    <Label Content="_Transport mode" Target="{Binding ElementName=TransportMode}" />
+                    <ComboBox x:Name="TransportMode" SelectedIndex="0"
+                              KeyboardNavigation.TabIndex="1"
+                              AutomationProperties.Name="Transport mode"
+                              AutomationProperties.HelpText="Choose an in-process synthetic demonstration or a real gRPC endpoint.">
+                        <ComboBoxItem Content="Deterministic in-process demo (no network)" />
+                        <ComboBoxItem Content="gRPC endpoint" />
+                    </ComboBox>
+
+                    <Label Content="_Endpoint" Target="{Binding ElementName=EndpointTextBox}" />
+                    <TextBox x:Name="EndpointTextBox" Text="https://localhost:7443"
+                             KeyboardNavigation.TabIndex="2"
+                             AutomationProperties.Name="Perception service endpoint"
+                             AutomationProperties.HelpText="HTTPS is required unless the explicit loopback development option is selected." />
+
+                    <CheckBox x:Name="AllowInsecureLoopbackCheckBox"
+                              Content="Allow insecure HTTP only on loopback for this development session"
+                              IsChecked="False" Margin="0,4,0,8"
+                              KeyboardNavigation.TabIndex="3"
+                              AutomationProperties.Name="Allow insecure loopback development transport"
+                              AutomationProperties.HelpText="Development only. This never permits an insecure non-loopback endpoint." />
+
+                    <WrapPanel>
+                        <Button x:Name="ConnectButton" Content="_Connect" Click="ConnectButton_Click"
+                                KeyboardNavigation.TabIndex="4"
+                                AutomationProperties.Name="Connect relay" />
+                        <Button x:Name="StopButton" Content="_Stop" Click="StopButton_Click" IsEnabled="False"
+                                KeyboardNavigation.TabIndex="5"
+                                AutomationProperties.Name="Stop relay"
+                                AutomationProperties.HelpText="Cancels the current operation, disconnects, and clears queued captures." />
+                    </WrapPanel>
+
+                    <TextBlock x:Name="SessionStateText" Margin="0,6,0,2" Text="Session state: Idle."
+                               TextWrapping="Wrap"
+                               AutomationProperties.Name="Session state"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="SessionIdentifierText" Text="Session identifier: None."
+                               TextWrapping="Wrap"
+                               AutomationProperties.Name="Ephemeral session identifier" />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Grid.Row="2" Header="Capture" Padding="12" Margin="0,0,0,12">
+                <StackPanel KeyboardNavigation.TabNavigation="Local">
+                    <TextBlock x:Name="CaptureStateText" Text="Capture state: Off."
+                               FontWeight="SemiBold" TextWrapping="Wrap"
+                               AutomationProperties.Name="Capture state"
+                               AutomationProperties.LiveSetting="Polite" />
+
+                    <Label Content="Capture t_ype" Target="{Binding ElementName=CaptureTypeComboBox}" Margin="0,8,0,0" />
+                    <ComboBox x:Name="CaptureTypeComboBox" SelectedIndex="0"
+                              KeyboardNavigation.TabIndex="6"
+                              AutomationProperties.Name="Capture type">
+                        <ComboBoxItem Content="Synthetic one-pixel demo snapshot" />
+                    </ComboBox>
+
+                    <CheckBox x:Name="CaptureConsentCheckBox"
+                              Content="I approve one submission of the selected synthetic demo snapshot"
+                              IsChecked="False" Margin="0,4,0,8"
+                              KeyboardNavigation.TabIndex="7"
+                              Checked="CaptureConsentChanged" Unchecked="CaptureConsentChanged"
+                              AutomationProperties.Name="Approve one synthetic snapshot submission"
+                              AutomationProperties.HelpText="Approval is consumed after one submission and does not enable continuous capture." />
+
+                    <Button x:Name="SubmitCaptureButton" Content="S_ubmit approved snapshot"
+                            IsEnabled="False" HorizontalAlignment="Left"
+                            Click="SubmitCaptureButton_Click"
+                            KeyboardNavigation.TabIndex="8"
+                            AutomationProperties.Name="Submit approved synthetic snapshot"
+                            AutomationProperties.HelpText="Submits exactly one fixed synthetic image. It does not capture the desktop." />
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Grid.Row="3" Header="Status and result" Padding="12" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock x:Name="StatusText" Text="Ready. No capture or upload is active."
+                               TextWrapping="Wrap" Margin="0,0,0,6"
+                               AutomationProperties.Name="Relay status"
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="CueOutputText" Text="" TextWrapping="Wrap" Margin="0,0,0,6"
+                               AutomationProperties.Name="Current protocol speech cue"
+                               AutomationProperties.HelpText="Validated protocol speech rendered as bounded visual text and a screen-reader live-region event."
+                               AutomationProperties.LiveSetting="Polite" />
+                    <TextBlock x:Name="ErrorText" Text="" Visibility="Collapsed"
+                               TextWrapping="Wrap" Margin="0,0,0,6" FontWeight="SemiBold"
+                               AutomationProperties.Name="Relay error"
+                               AutomationProperties.LiveSetting="Assertive" />
+                    <Label Content="_Inspectable status history" Target="{Binding ElementName=StatusHistoryTextBox}" />
+                    <TextBox x:Name="StatusHistoryTextBox" Height="150" IsReadOnly="True"
+                             AcceptsReturn="True" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             KeyboardNavigation.TabIndex="9"
+                             AutomationProperties.Name="Inspectable status and cue history" />
+                </StackPanel>
+            </GroupBox>
+
+            <CheckBox Grid.Row="4" x:Name="SoundNotificationCheckBox"
+                      Content="Play a concise system sound after success or error"
+                      IsChecked="True" KeyboardNavigation.TabIndex="10"
+                      AutomationProperties.Name="System sound notifications"
+                      AutomationProperties.HelpText="Optional. Text status is always provided." />
+        </Grid>
+    </ScrollViewer>
+</Window>

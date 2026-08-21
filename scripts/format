@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+python_executable="$(venv_python)"
+if [[ "${1:-}" == "--check" ]]; then
+    "$python_executable" -m ruff format --check .
+    git diff --check
+elif [[ $# -eq 0 ]]; then
+    "$python_executable" -m ruff format .
+else
+    fail "usage: ./scripts/format [--check]"
+fi

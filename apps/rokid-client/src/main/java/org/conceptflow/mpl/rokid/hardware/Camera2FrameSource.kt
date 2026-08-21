@@ -1,0 +1,492 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.rokid.hardware
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureFailure
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Size
+import androidx.core.content.ContextCompat
+import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
+import org.conceptflow.mpl.rokid.core.FrameLimits
+import org.conceptflow.mpl.rokid.core.FrameSource
+import org.conceptflow.mpl.rokid.core.MonotonicFrameSequence
+import org.conceptflow.mpl.rokid.core.SystemWallClock
+import org.conceptflow.mpl.rokid.core.buildJpegFrame
+import java.util.UUID
+import java.util.concurrent.Executor
+
+class Camera2FrameSource(
+    context: Context,
+    private val limits: FrameLimits = FrameLimits(),
+    private val captureIntervalMillis: Long = 400L,
+) : FrameSource {
+    private val appContext = context.applicationContext
+    private val cameraManager = appContext.getSystemService(CameraManager::class.java)
+    private val stateLock = Any()
+    private val lifecycle = CameraRunLifecycle()
+    private val sequence = MonotonicFrameSequence()
+    private val sessionId = "camera-${UUID.randomUUID()}"
+    private var listener: FrameSource.Listener? = null
+    private var cameraThread: HandlerThread? = null
+    private var cameraHandler: Handler? = null
+    private var imageReader: ImageReader? = null
+    private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
+    private var captureRequest: CaptureRequest? = null
+
+    init {
+        require(captureIntervalMillis in 100L..10_000L)
+    }
+
+    override val isRunning: Boolean get() = lifecycle.isRunning
+
+    override fun start(listener: FrameSource.Listener) {
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            listener.onError(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
+            return
+        }
+
+        val runId = synchronized(stateLock) {
+            val id = lifecycle.begin()
+            this.listener = listener
+            id
+        }
+        val thread = HandlerThread("bounded-camera-capture")
+        val handler = try {
+            thread.start()
+            Handler(thread.looper)
+        } catch (_: RuntimeException) {
+            closeUnownedThread(thread)
+            failRun(runId, CAMERA_START_FAILURE_MESSAGE)
+            return
+        }
+
+        val attached = synchronized(stateLock) {
+            if (!lifecycle.isActive(runId)) {
+                false
+            } else {
+                cameraThread = thread
+                cameraHandler = handler
+                true
+            }
+        }
+        if (!attached) {
+            closeUnownedThread(thread)
+            return
+        }
+
+        try {
+            openCamera(runId, handler)
+        } catch (_: CameraAccessException) {
+            failRun(runId, CAMERA_OPEN_FAILURE_MESSAGE)
+        } catch (error: SecurityException) {
+            failRun(runId, cameraPermissionFailure(error).message ?: CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
+        } catch (_: RuntimeException) {
+            failRun(runId, CAMERA_START_FAILURE_MESSAGE)
+        }
+    }
+
+    @Throws(CameraAccessException::class)
+    private fun openCamera(runId: Long, handler: Handler) {
+        if (!lifecycle.isActive(runId)) return
+        val cameraId = selectCameraId()
+        val size = selectJpegSize(cameraId)
+        val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
+        if (!attachImageReader(runId, reader)) {
+            closeSafely { reader.close() }
+            return
+        }
+        reader.setOnImageAvailableListener(
+            { source ->
+                try {
+                    consumeLatestImage(source, runId, size)
+                } catch (_: RuntimeException) {
+                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                }
+            },
+            handler,
+        )
+        synchronized(stateLock) {
+            lifecycle.runIfActive(runId) {
+                if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    throw SecurityException(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
+                }
+                cameraManager.openCamera(cameraId, cameraStateCallback(runId, reader, handler), handler)
+            }
+        }
+    }
+
+    private fun cameraStateCallback(
+        runId: Long,
+        reader: ImageReader,
+        handler: Handler,
+    ): CameraDevice.StateCallback = object : CameraDevice.StateCallback() {
+        private val callbackCameraCloser = CallbackResourceCloser<CameraDevice> { it.close() }
+
+        override fun onOpened(camera: CameraDevice) {
+            if (!attachCameraDevice(runId, camera)) {
+                callbackCameraCloser.close(camera)
+                return
+            }
+            try {
+                synchronized(stateLock) {
+                    lifecycle.runIfActive(runId) {
+                        createCaptureSession(runId, camera, reader, handler)
+                    }
+                }
+            } catch (_: CameraAccessException) {
+                completeTerminalCallback(camera, callbackCameraCloser) {
+                    failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE, camera)
+                }
+            } catch (_: RuntimeException) {
+                completeTerminalCallback(camera, callbackCameraCloser) {
+                    failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE, camera)
+                }
+            }
+        }
+
+        override fun onDisconnected(camera: CameraDevice) {
+            completeTerminalCallback(camera, callbackCameraCloser) {
+                failRun(runId, CAMERA_DISCONNECTED_MESSAGE, camera)
+            }
+        }
+
+        override fun onError(camera: CameraDevice, error: Int) {
+            completeTerminalCallback(camera, callbackCameraCloser) {
+                failRun(runId, CAMERA_DEVICE_FAILURE_MESSAGE, camera)
+            }
+        }
+    }
+
+    @Throws(CameraAccessException::class)
+    private fun selectCameraId(): String {
+        val ids = cameraManager.cameraIdList
+        check(ids.isNotEmpty()) { "No Camera2 device is available" }
+        return ids.firstOrNull { id ->
+            cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) ==
+                CameraCharacteristics.LENS_FACING_BACK
+        } ?: ids.first()
+    }
+
+    @Throws(CameraAccessException::class)
+    private fun selectJpegSize(cameraId: String): Size {
+        val map = cameraManager.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: error("Camera has no stream configuration map")
+        return map.getOutputSizes(ImageFormat.JPEG)
+            .filter { it.width <= limits.maxWidth && it.height <= limits.maxHeight }
+            .maxByOrNull { it.width.toLong() * it.height.toLong() }
+            ?: error("Camera has no JPEG output within configured dimensions")
+    }
+
+    @Throws(CameraAccessException::class)
+    private fun createCaptureSession(
+        runId: Long,
+        camera: CameraDevice,
+        reader: ImageReader,
+        handler: Handler,
+    ) {
+        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+            addTarget(reader.surface)
+            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+        }.build()
+        if (!attachCaptureRequest(runId, request)) return
+        val callback = object : CameraCaptureSession.StateCallback() {
+            override fun onConfigured(session: CameraCaptureSession) {
+                if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
+                captureNext(runId, handler)
+            }
+
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                closeSafely { session.close() }
+                failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
+            }
+        }
+        camera.createCaptureSession(
+            SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                listOf(OutputConfiguration(reader.surface)),
+                Executor { command -> handler.post(command) },
+                callback,
+            ),
+        )
+    }
+
+    private fun captureNext(runId: Long, handler: Handler) {
+        val capture = synchronized(stateLock) {
+            if (!lifecycle.isActive(runId)) return
+            val session = captureSession ?: return
+            val request = captureRequest ?: return
+            session to request
+        }
+        try {
+            capture.first.capture(capture.second, object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    result: TotalCaptureResult,
+                ) {
+                    if (lifecycle.isActive(runId) &&
+                        !handler.postDelayed({ captureNext(runId, handler) }, captureIntervalMillis)
+                    ) {
+                        failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                    }
+                }
+
+                override fun onCaptureFailed(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    failure: CaptureFailure,
+                ) {
+                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                }
+            }, handler)
+        } catch (_: CameraAccessException) {
+            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+        } catch (_: RuntimeException) {
+            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+        }
+    }
+
+    private fun consumeLatestImage(reader: ImageReader, runId: Long, outputSize: Size) {
+        val image = reader.acquireLatestImage() ?: return
+        image.use {
+            if (!lifecycle.isActive(runId)) return
+            val buffer = image.planes.singleOrNull()?.buffer ?: return
+            val size = buffer.remaining()
+            if (size <= 0 || size > limits.maxJpegBytes) {
+                listenerFor(runId)?.onError("JPEG frame was rejected by the byte limit")
+                return
+            }
+            val bytes = ByteArray(size)
+            buffer.get(bytes)
+            val frameId = sequence.nextId()
+            val sensorTimestamp = if (image.timestamp > 0L) image.timestamp else ElapsedRealtimeClock.nowNanos()
+            val timestamp = sequence.normalizeTimestamp(sensorTimestamp)
+            val target = listenerFor(runId) ?: return
+            target.onFrame(
+                buildJpegFrame(
+                    requestId = "camera-$frameId",
+                    sessionId = sessionId,
+                    streamId = "camera2-jpeg",
+                    frameId = frameId,
+                    timestampNanos = timestamp,
+                    wallTimeMillis = SystemWallClock.nowMillis(),
+                    width = outputSize.width,
+                    height = outputSize.height,
+                    bytes = bytes,
+                    synthetic = false,
+                ),
+            )
+        }
+    }
+
+    override fun stop() {
+        val resources = synchronized(stateLock) {
+            lifecycle.finishCurrent() ?: return
+            listener = null
+            detachResourcesLocked()
+        }
+        closeResources(resources)
+    }
+
+    private fun failRun(runId: Long, message: String, callbackCamera: CameraDevice? = null): Boolean {
+        val stopped = synchronized(stateLock) {
+            if (!lifecycle.finish(runId)) return false
+            val target = listener
+            listener = null
+            target to detachResourcesLocked(callbackCamera)
+        }
+        closeResources(stopped.second)
+        stopped.first?.onError(message)
+        return true
+    }
+
+    private fun attachImageReader(runId: Long, reader: ImageReader): Boolean = synchronized(stateLock) {
+        if (!lifecycle.isActive(runId)) return@synchronized false
+        imageReader = reader
+        true
+    }
+
+    private fun attachCameraDevice(runId: Long, camera: CameraDevice): Boolean = synchronized(stateLock) {
+        if (!lifecycle.isActive(runId)) return@synchronized false
+        cameraDevice = camera
+        true
+    }
+
+    private fun attachCaptureRequest(runId: Long, request: CaptureRequest): Boolean = synchronized(stateLock) {
+        if (!lifecycle.isActive(runId)) return@synchronized false
+        captureRequest = request
+        true
+    }
+
+    private fun attachCaptureSession(runId: Long, session: CameraCaptureSession): Boolean = synchronized(stateLock) {
+        if (!lifecycle.isActive(runId)) return@synchronized false
+        captureSession = session
+        true
+    }
+
+    private fun listenerFor(runId: Long): FrameSource.Listener? = synchronized(stateLock) {
+        listener.takeIf { lifecycle.isActive(runId) }
+    }
+
+    private fun detachResourcesLocked(callbackCamera: CameraDevice? = null): CameraResourceCloser {
+        val handler = cameraHandler
+        val thread = cameraThread
+        val reader = imageReader
+        val device = cameraDevice
+        val session = captureSession
+        cameraHandler = null
+        cameraThread = null
+        imageReader = null
+        cameraDevice = null
+        captureSession = null
+        captureRequest = null
+        return CameraResourceCloser(
+            listOf(
+                { handler?.removeCallbacksAndMessages(null) },
+                { session?.close() },
+                { if (device !== callbackCamera) device?.close() },
+                { reader?.close() },
+                { closeUnownedThread(thread) },
+            ),
+        )
+    }
+
+    private fun closeResources(resources: CameraResourceCloser) = resources.close()
+}
+
+internal class CameraResourceCloser(private var closeActions: List<() -> Unit>) {
+    @Synchronized
+    fun close() {
+        val actions = closeActions
+        closeActions = emptyList()
+        actions.forEach(::closeSafely)
+    }
+}
+
+internal class CallbackResourceCloser<T>(private val closeAction: (T) -> Unit) {
+    private var closed = false
+
+    @Synchronized
+    fun close(resource: T) {
+        if (closed) return
+        closed = true
+        closeSafely { closeAction(resource) }
+    }
+}
+
+internal fun <T> completeTerminalCallback(
+    resource: T,
+    closer: CallbackResourceCloser<T>,
+    transition: () -> Unit,
+) {
+    try {
+        transition()
+    } finally {
+        closer.close(resource)
+    }
+}
+
+internal class CameraRunLifecycle {
+    private var nextRunId = 0L
+    private var activeRunId: Long? = null
+
+    @get:Synchronized
+    val isRunning: Boolean get() = activeRunId != null
+
+    @Synchronized
+    fun begin(): Long {
+        check(activeRunId == null) { "Camera frame source is already running" }
+        val runId = ++nextRunId
+        activeRunId = runId
+        return runId
+    }
+
+    @Synchronized
+    fun isActive(runId: Long): Boolean = activeRunId == runId
+
+    @Synchronized
+    fun runIfActive(runId: Long, action: () -> Unit): Boolean {
+        if (activeRunId != runId) return false
+        action()
+        return true
+    }
+
+    @Synchronized
+    fun finish(runId: Long): Boolean {
+        if (activeRunId != runId) return false
+        activeRunId = null
+        return true
+    }
+
+    @Synchronized
+    fun finishCurrent(): Long? {
+        val runId = activeRunId ?: return null
+        activeRunId = null
+        return runId
+    }
+}
+
+private fun closeSafely(action: () -> Unit): Boolean = try {
+    action()
+    true
+} catch (_: RuntimeException) {
+    false
+}
+
+internal fun <T> attachOrClose(
+    resource: T,
+    attach: (T) -> Boolean,
+    close: (T) -> Unit,
+): Boolean {
+    if (attach(resource)) return true
+    closeSafely { close(resource) }
+    return false
+}
+
+private fun closeUnownedThread(thread: HandlerThread?) {
+    if (thread == null) return
+    closeSafely { thread.quitSafely() }
+    if (shouldJoinCameraThread(thread)) {
+        try {
+            thread.join(1_000L)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+}
+
+internal fun shouldJoinCameraThread(
+    cameraThread: Thread?,
+    currentThread: Thread = Thread.currentThread(),
+): Boolean = cameraThread != null && cameraThread !== currentThread
+
+internal const val CAMERA_PERMISSION_UNAVAILABLE_MESSAGE =
+    "Camera permission became unavailable before the camera could open; capture remains stopped"
+internal const val CAMERA_START_FAILURE_MESSAGE = "Camera could not start; capture remains stopped"
+internal const val CAMERA_OPEN_FAILURE_MESSAGE = "Camera could not be opened; capture remains stopped"
+internal const val CAMERA_CONFIGURATION_FAILURE_MESSAGE =
+    "Camera capture session could not be configured; capture remains stopped"
+internal const val CAMERA_CAPTURE_FAILURE_MESSAGE = "Camera capture failed; capture remains stopped"
+internal const val CAMERA_DISCONNECTED_MESSAGE = "Camera disconnected; capture remains stopped"
+internal const val CAMERA_DEVICE_FAILURE_MESSAGE = "Camera device failed; capture remains stopped"
+
+internal fun cameraPermissionFailure(cause: SecurityException? = null): IllegalStateException =
+    IllegalStateException(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE, cause)

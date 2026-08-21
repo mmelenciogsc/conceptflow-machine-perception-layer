@@ -1,0 +1,16 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Platforms>AnyCPU;x64</Platforms>
+    <PlatformTarget Condition="'$(Platform)' == 'x64'">x64</PlatformTarget>
+    <RootNamespace>ConceptFlow.Mpl.DesktopRelay.Wpf</RootNamespace>
+    <Description>Accessible Windows 11 desktop relay for CONCEPTFlow machine perception.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ConceptFlow.Mpl.DesktopRelay.Core/ConceptFlow.Mpl.DesktopRelay.Core.csproj" />
+  </ItemGroup>
+</Project>

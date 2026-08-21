@@ -1,0 +1,328 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+syntax = "proto3";
+
+package conceptflow.mpl.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_package = "org.conceptflow.mpl.v1";
+option java_outer_classname = "PerceptionProto";
+option csharp_namespace = "ConceptFlow.Mpl.V1";
+
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+  uint32 patch = 3;
+}
+
+message EphemeralIdentity {
+  string session_id = 1;
+  bytes nonce = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+enum ImageEncoding {
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  IMAGE_ENCODING_RGB8 = 1;
+  IMAGE_ENCODING_RGBA8 = 2;
+  IMAGE_ENCODING_GRAY8 = 3;
+  IMAGE_ENCODING_JPEG = 4;
+  IMAGE_ENCODING_PNG = 5;
+}
+
+enum CueModality {
+  CUE_MODALITY_UNSPECIFIED = 0;
+  CUE_MODALITY_EARCON = 1;
+  CUE_MODALITY_SPEECH = 2;
+  CUE_MODALITY_HAPTIC = 3;
+}
+
+message CapabilitySet {
+  repeated ImageEncoding image_encodings = 1;
+  repeated CueModality cue_modalities = 2;
+  uint32 max_width = 3;
+  uint32 max_height = 4;
+  uint64 max_frame_bytes = 5;
+  bool supports_cancellation = 6;
+  bool supports_supersession = 7;
+  bool supports_pose = 8;
+  bool supports_intrinsics = 9;
+}
+
+message QualityOfService {
+  uint32 max_in_flight = 1;
+  uint32 target_frames_per_second = 2;
+  google.protobuf.Duration result_deadline = 3;
+  bool allow_frame_drop = 4;
+  uint32 max_cues_per_result = 5;
+}
+
+message NegotiateRequest {
+  string client_instance_id = 1;
+  repeated ProtocolVersion supported_versions = 2;
+  EphemeralIdentity identity = 3;
+  CapabilitySet capabilities = 4;
+  QualityOfService requested_qos = 5;
+}
+
+message NegotiateResponse {
+  ProtocolVersion selected_version = 1;
+  EphemeralIdentity identity = 2;
+  CapabilitySet capabilities = 3;
+  QualityOfService accepted_qos = 4;
+  ErrorStatus error = 5;
+}
+
+message ImageDescriptor {
+  uint32 width = 1;
+  uint32 height = 2;
+  uint32 row_stride_bytes = 3;
+  ImageEncoding encoding = 4;
+  string media_type = 5;
+  uint64 payload_bytes = 6;
+  bytes sha256 = 7;
+}
+
+enum CoordinateFrame {
+  COORDINATE_FRAME_UNSPECIFIED = 0;
+  COORDINATE_FRAME_CAMERA_OPTICAL = 1;
+  COORDINATE_FRAME_HEAD = 2;
+  COORDINATE_FRAME_BODY = 3;
+  COORDINATE_FRAME_LOCAL_WORLD = 4;
+}
+
+message CameraIntrinsics {
+  double focal_x_pixels = 1;
+  double focal_y_pixels = 2;
+  double principal_x_pixels = 3;
+  double principal_y_pixels = 4;
+  repeated double distortion_coefficients = 5;
+  uint32 calibrated_width = 6;
+  uint32 calibrated_height = 7;
+}
+
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double w = 4;
+}
+
+message Pose {
+  CoordinateFrame reference_frame = 1;
+  Vector3 translation_meters = 2;
+  Quaternion rotation = 3;
+  uint64 monotonic_timestamp_ns = 4;
+}
+
+message FramePayload {
+  string request_id = 1;
+  string session_id = 2;
+  string stream_id = 3;
+  uint64 frame_id = 4;
+  uint64 capture_monotonic_timestamp_ns = 5;
+  google.protobuf.Timestamp capture_wall_time = 6;
+  ImageDescriptor image = 7;
+  CameraIntrinsics intrinsics = 8;
+  Pose pose = 9;
+  bytes frame_data = 10;
+  google.protobuf.Duration processing_deadline = 11;
+  bool synthetic = 12;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_ARGUMENT = 1;
+  ERROR_CODE_UNSUPPORTED_VERSION = 2;
+  ERROR_CODE_OVERSIZE = 3;
+  ERROR_CODE_OVERLOADED = 4;
+  ERROR_CODE_CANCELLED = 5;
+  ERROR_CODE_DEADLINE_EXCEEDED = 6;
+  ERROR_CODE_WORKER_UNAVAILABLE = 7;
+  ERROR_CODE_STALE = 8;
+  ERROR_CODE_INTERNAL = 9;
+}
+
+message ErrorStatus {
+  ErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+  uint32 retry_after_ms = 4;
+  string correlation_id = 5;
+}
+
+message Provenance {
+  string component = 1;
+  string component_version = 2;
+  string worker_id = 3;
+  string model_id = 4;
+  string model_version = 5;
+  string artifact_digest = 6;
+  uint64 processing_started_monotonic_ns = 7;
+  uint64 processing_finished_monotonic_ns = 8;
+  repeated string source_result_ids = 9;
+  bool synthetic = 10;
+}
+
+message BoundingBox {
+  double left = 1;
+  double top = 2;
+  double right = 3;
+  double bottom = 4;
+}
+
+message PerceptionObservation {
+  string observation_id = 1;
+  string category = 2;
+  string description = 3;
+  double confidence = 4;
+  BoundingBox normalized_bounds = 5;
+  CoordinateFrame coordinate_frame = 6;
+  double azimuth_degrees = 7;
+  double elevation_degrees = 8;
+  double distance_meters = 9;
+  Provenance provenance = 10;
+}
+
+enum CueCategory {
+  CUE_CATEGORY_UNSPECIFIED = 0;
+  CUE_CATEGORY_OBSTACLE = 1;
+  CUE_CATEGORY_NAVIGATION = 2;
+  CUE_CATEGORY_TEXT = 3;
+  CUE_CATEGORY_PERSON = 4;
+  CUE_CATEGORY_OBJECT = 5;
+  CUE_CATEGORY_SCENE = 6;
+  CUE_CATEGORY_SYSTEM = 7;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_AHEAD = 1;
+  DIRECTION_LEFT = 2;
+  DIRECTION_RIGHT = 3;
+  DIRECTION_ABOVE = 4;
+  DIRECTION_BELOW = 5;
+  DIRECTION_BEHIND = 6;
+}
+
+enum Urgency {
+  URGENCY_UNSPECIFIED = 0;
+  URGENCY_LOW = 1;
+  URGENCY_NORMAL = 2;
+  URGENCY_HIGH = 3;
+  URGENCY_CRITICAL = 4;
+}
+
+message Earcon {
+  string earcon_id = 1;
+  float gain = 2;
+  float pitch = 3;
+  bool spatialized = 4;
+}
+
+message Speech {
+  string text = 1;
+  string language_tag = 2;
+  bool interrupt = 3;
+}
+
+enum HapticPattern {
+  HAPTIC_PATTERN_UNSPECIFIED = 0;
+  HAPTIC_PATTERN_PULSE = 1;
+  HAPTIC_PATTERN_DOUBLE_PULSE = 2;
+  HAPTIC_PATTERN_RAMP = 3;
+}
+
+message Haptic {
+  HapticPattern pattern = 1;
+  float intensity = 2;
+  uint32 duration_ms = 3;
+}
+
+message CueCancellation {
+  repeated string cue_ids = 1;
+  string reason = 2;
+}
+
+message CueSupersession {
+  repeated string cue_ids = 1;
+  string reason = 2;
+}
+
+message PerceptionCue {
+  string cue_id = 1;
+  uint64 frame_id = 2;
+  uint64 created_monotonic_timestamp_ns = 3;
+  uint32 ttl_ms = 4;
+  CueCategory category = 5;
+  string description = 6;
+  double confidence = 7;
+  uint32 priority = 8;
+  CoordinateFrame coordinate_frame = 9;
+  double azimuth_degrees = 10;
+  double elevation_degrees = 11;
+  double distance_meters = 12;
+  Direction direction = 13;
+  Urgency urgency = 14;
+  Earcon earcon = 15;
+  Speech speech = 16;
+  Haptic haptic = 17;
+  CueCancellation cancel = 18;
+  CueSupersession supersede = 19;
+  Provenance provenance = 20;
+}
+
+message PerceptionResult {
+  string result_id = 1;
+  string request_id = 2;
+  string session_id = 3;
+  string stream_id = 4;
+  uint64 frame_id = 5;
+  uint64 capture_monotonic_timestamp_ns = 6;
+  uint64 completed_monotonic_timestamp_ns = 7;
+  repeated PerceptionObservation observations = 8;
+  repeated PerceptionCue cues = 9;
+  ErrorStatus error = 10;
+  Provenance provenance = 11;
+}
+
+message HealthRequest {
+  bool include_workers = 1;
+}
+
+enum ServingStatus {
+  SERVING_STATUS_UNSPECIFIED = 0;
+  SERVING_STATUS_SERVING = 1;
+  SERVING_STATUS_DEGRADED = 2;
+  SERVING_STATUS_NOT_SERVING = 3;
+}
+
+message WorkerHealth {
+  string worker_id = 1;
+  string device = 2;
+  bool healthy = 3;
+  uint32 consecutive_failures = 4;
+  uint32 queue_depth = 5;
+}
+
+message HealthResponse {
+  ServingStatus status = 1;
+  ProtocolVersion protocol_version = 2;
+  repeated WorkerHealth workers = 3;
+  uint32 queue_depth = 4;
+  uint32 queue_capacity = 5;
+}
+
+service PerceptionService {
+  rpc Negotiate(NegotiateRequest) returns (NegotiateResponse);
+  rpc ProcessFrame(FramePayload) returns (PerceptionResult);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

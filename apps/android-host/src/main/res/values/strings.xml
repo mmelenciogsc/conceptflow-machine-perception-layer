@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<resources>
+    <string name="app_name">CONCEPTFlow Android host</string>
+    <string name="checking_capabilities">Checking device capabilities.</string>
+    <string name="capability_summary">Capabilities. Camera: %1$s. Motion: %2$s. Audio: %3$s. Haptics: %4$s. Validated network: %5$s.</string>
+    <string name="available">available</string>
+    <string name="unavailable">unavailable</string>
+    <string name="idle_status">Session idle. Press C to connect.</string>
+    <string name="connecting_status">Connecting and negotiating a synthetic session.</string>
+    <string name="connected_status">Session connected. Press P to process a synthetic frame.</string>
+    <string name="connect_error_status">The session could not connect.</string>
+    <string name="connect_first_status">Connect the session before processing a frame.</string>
+    <string name="processing_status">Processing synthetic frame %1$d.</string>
+    <string name="stale_result_status">The result was rejected because it was stale or did not correlate.</string>
+    <string name="processing_error_status">Frame processing failed.</string>
+    <string name="cue_delivered_status">A %1$s cue reached the in-process glasses endpoint.</string>
+    <string name="no_cue_status">No eligible cue was available.</string>
+    <string name="no_cue_content_status">No cue text is currently available.</string>
+    <string name="cue_accessible_status">Cue: %1$s</string>
+    <string name="cancelled_status">Current work cancelled and session closed.</string>
+    <string name="disconnected_status">Session disconnected.</string>
+    <string name="connect">Connect session — C key</string>
+    <string name="process_frame">Process synthetic frame (P)</string>
+    <string name="cancel">Cancel current work (X)</string>
+    <string name="disconnect">Disconnect session (D)</string>
+</resources>

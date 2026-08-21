@@ -1,0 +1,19 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ConceptFlow.Mpl.DesktopRelay.Core</RootNamespace>
+    <AssemblyName>ConceptFlow.Mpl.DesktopRelay.Core</AssemblyName>
+    <Description>Cross-platform core for the CONCEPTFlow machine-perception desktop relay.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="../../../../packages/shared-protocol/proto/conceptflow/mpl/v1/perception.proto"
+              Link="Protos/perception.proto"
+              GrpcServices="Client" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,22 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>ConceptFlow.Mpl.DesktopRelay.Core.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/ConceptFlow.Mpl.DesktopRelay.Core/ConceptFlow.Mpl.DesktopRelay.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../../../tests/fixtures/protocol_vectors.properties"
+          Link="fixtures/protocol_vectors.properties"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+target="${1:-all}"
+test_python() { "$(venv_python)" -m pytest; }
+test_native() {
+    "$SCRIPT_DIRECTORY/build" native
+    ctest --test-dir "$(native_build_directory)" --output-on-failure
+}
+test_android() { run_gradle testDebugUnitTest assembleDebug; }
+test_dotnet() {
+    require_command dotnet ".NET SDK 8 is required for desktop relay tests"
+    dotnet restore apps/desktop-relay/ConceptFlow.Mpl.DesktopRelay.sln --locked-mode
+    dotnet build apps/desktop-relay/ConceptFlow.Mpl.DesktopRelay.sln --configuration Release --no-restore
+    dotnet test apps/desktop-relay/ConceptFlow.Mpl.DesktopRelay.sln --configuration Release --no-build
+}
+
+case "$target" in
+    python) test_python ;;
+    native) test_native ;;
+    android) test_android ;;
+    dotnet) test_dotnet ;;
+    all) test_python; test_native; test_android; test_dotnet ;;
+    *) fail "unknown test target '$target'; expected all, python, native, android, or dotnet" ;;
+esac

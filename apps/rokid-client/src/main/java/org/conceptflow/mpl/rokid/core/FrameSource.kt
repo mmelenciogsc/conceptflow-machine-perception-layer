@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.rokid.core
+
+import com.google.protobuf.ByteString
+import org.conceptflow.mpl.v1.FramePayload
+import org.conceptflow.mpl.v1.ImageDescriptor
+import org.conceptflow.mpl.v1.ImageEncoding
+import org.conceptflow.mpl.protocol.SyntheticImageFixtures
+import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+data class FrameLimits(
+    val maxWidth: Int = 1280,
+    val maxHeight: Int = 720,
+    val maxJpegBytes: Int = 768 * 1024,
+) {
+    init {
+        require(maxWidth in 1..4096)
+        require(maxHeight in 1..4096)
+        require(maxJpegBytes in 1..8 * 1024 * 1024)
+    }
+}
+
+enum class FrameRejection {
+    MISSING_IDENTITY,
+    INVALID_DIMENSIONS,
+    INVALID_ENCODING,
+    SIZE_MISMATCH,
+    OVERSIZE,
+    NON_MONOTONIC_ID,
+    NON_MONOTONIC_TIMESTAMP,
+}
+
+class FrameValidator(
+    private val limits: FrameLimits,
+    private val maxStreamHistories: Int = 1_024,
+) {
+    private val histories = LinkedHashMap<FrameStreamKey, FrameHighWater>()
+
+    init {
+        require(maxStreamHistories in 1..65_536)
+    }
+
+    @Synchronized
+    fun validate(frame: FramePayload): FrameRejection? {
+        if (frame.requestId.isBlank() || frame.sessionId.isBlank() || frame.streamId.isBlank()) {
+            return FrameRejection.MISSING_IDENTITY
+        }
+        if (frame.image.width !in 1..limits.maxWidth || frame.image.height !in 1..limits.maxHeight) {
+            return FrameRejection.INVALID_DIMENSIONS
+        }
+        if (frame.image.encoding != ImageEncoding.IMAGE_ENCODING_JPEG || frame.image.mediaType != "image/jpeg") {
+            return FrameRejection.INVALID_ENCODING
+        }
+        if (frame.frameData.size().toLong() != frame.image.payloadBytes) {
+            return FrameRejection.SIZE_MISMATCH
+        }
+        if (frame.frameData.size() > limits.maxJpegBytes) return FrameRejection.OVERSIZE
+        val key = FrameStreamKey(frame.sessionId, frame.streamId)
+        val previous = histories.remove(key)
+        if (previous != null) histories[key] = previous
+        if (frame.frameId == 0L || previous != null && frame.frameId <= previous.frameId) {
+            return FrameRejection.NON_MONOTONIC_ID
+        }
+        if (previous != null && frame.captureMonotonicTimestampNs <= previous.timestampNanos) {
+            return FrameRejection.NON_MONOTONIC_TIMESTAMP
+        }
+        histories.remove(key)
+        histories[key] = FrameHighWater(frame.frameId, frame.captureMonotonicTimestampNs)
+        while (histories.size > maxStreamHistories) histories.remove(histories.keys.first())
+        return null
+    }
+
+    @Synchronized
+    fun resetSession(sessionId: String): Int {
+        val keys = histories.keys.filter { it.sessionId == sessionId }
+        keys.forEach(histories::remove)
+        return keys.size
+    }
+
+    @Synchronized
+    fun reset() = histories.clear()
+
+    @Synchronized
+    fun historyCount(): Int = histories.size
+}
+
+private data class FrameStreamKey(val sessionId: String, val streamId: String)
+
+private data class FrameHighWater(val frameId: Long, val timestampNanos: Long)
+
+interface FrameSource : AutoCloseable {
+    interface Listener {
+        fun onFrame(frame: FramePayload)
+        fun onError(message: String)
+    }
+
+    val isRunning: Boolean
+    fun start(listener: Listener)
+    fun stop()
+    override fun close() = stop()
+}
+
+class FrameSourceStateController {
+    private var activeSource: FrameSource? = null
+
+    @get:Synchronized
+    val hasActiveSource: Boolean get() = activeSource != null
+
+    @Synchronized
+    fun attach(source: FrameSource): Boolean {
+        if (activeSource != null) return false
+        activeSource = source
+        return true
+    }
+
+    @Synchronized
+    fun isCurrent(source: FrameSource): Boolean = activeSource === source
+
+    @Synchronized
+    fun stopIfCurrent(source: FrameSource): Boolean {
+        if (activeSource !== source) return false
+        activeSource = null
+        source.close()
+        return true
+    }
+
+    @Synchronized
+    fun stopCurrent(): Boolean {
+        val source = activeSource ?: return false
+        activeSource = null
+        source.close()
+        return true
+    }
+}
+
+internal class MonotonicFrameSequence {
+    private val nextFrameId = AtomicLong(0L)
+    private val lastTimestamp = AtomicLong(-1L)
+
+    fun nextId(): Long = nextFrameId.incrementAndGet()
+
+    fun normalizeTimestamp(candidateNanos: Long): Long {
+        while (true) {
+            val previous = lastTimestamp.get()
+            val normalized = maxOf(candidateNanos, previous + 1L)
+            if (lastTimestamp.compareAndSet(previous, normalized)) return normalized
+        }
+    }
+}
+
+class SyntheticFrameSource(
+    private val clock: MonotonicClock,
+    private val wallClock: WallClock,
+    private val limits: FrameLimits = FrameLimits(),
+    private val sessionId: String = "synthetic-session",
+    private val streamId: String = "synthetic-camera",
+) : FrameSource {
+    private val running = AtomicBoolean(false)
+    private val sequence = MonotonicFrameSequence()
+    private var listener: FrameSource.Listener? = null
+
+    override val isRunning: Boolean get() = running.get()
+
+    override fun start(listener: FrameSource.Listener) {
+        check(running.compareAndSet(false, true)) { "Frame source is already running" }
+        this.listener = listener
+    }
+
+    fun capture(jpeg: ByteArray = SYNTHETIC_JPEG): FramePayload {
+        check(isRunning) { "Frame source is not running" }
+        require(jpeg.isNotEmpty() && jpeg.size <= limits.maxJpegBytes) { "JPEG payload exceeds capture limits" }
+        val frameId = sequence.nextId()
+        val timestamp = sequence.normalizeTimestamp(clock.nowNanos())
+        val payload = buildJpegFrame(
+            requestId = "synthetic-$frameId",
+            sessionId = sessionId,
+            streamId = streamId,
+            frameId = frameId,
+            timestampNanos = timestamp,
+            wallTimeMillis = wallClock.nowMillis(),
+            width = 1,
+            height = 1,
+            bytes = jpeg,
+            synthetic = true,
+        )
+        listener?.onFrame(payload)
+        return payload
+    }
+
+    override fun stop() {
+        running.set(false)
+        listener = null
+    }
+
+    companion object {
+        private val SYNTHETIC_JPEG = SyntheticImageFixtures.onePixelJpeg()
+    }
+}
+
+internal fun buildJpegFrame(
+    requestId: String,
+    sessionId: String,
+    streamId: String,
+    frameId: Long,
+    timestampNanos: Long,
+    wallTimeMillis: Long,
+    width: Int,
+    height: Int,
+    bytes: ByteArray,
+    synthetic: Boolean,
+): FramePayload {
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val descriptor = ImageDescriptor.newBuilder()
+        .setWidth(width)
+        .setHeight(height)
+        .setEncoding(ImageEncoding.IMAGE_ENCODING_JPEG)
+        .setMediaType("image/jpeg")
+        .setPayloadBytes(bytes.size.toLong())
+        .setSha256(ByteString.copyFrom(digest))
+        .build()
+    return FramePayload.newBuilder()
+        .setRequestId(requestId)
+        .setSessionId(sessionId)
+        .setStreamId(streamId)
+        .setFrameId(frameId)
+        .setCaptureMonotonicTimestampNs(timestampNanos)
+        .setCaptureWallTime(protobufTimestamp(wallTimeMillis))
+        .setImage(descriptor)
+        .setFrameData(ByteString.copyFrom(bytes))
+        .setSynthetic(synthetic)
+        .build()
+}

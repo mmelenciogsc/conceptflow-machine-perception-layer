@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conceptflow-mpl-protocol"
+version = "0.1.0"
+description = "Generated CONCEPTFlow MPL protobuf and gRPC contracts"
+requires-python = ">=3.12,<3.13"
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE", "LICENSE-APACHE", "LICENSE-MIT", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+  "grpcio==1.74.0",
+  "grpcio-tools==1.74.0",
+  "protobuf==6.33.5",
+]
+
+[project.scripts]
+conceptflow-mpl-generate = "conceptflow_mpl_protocol.generate:main"
+conceptflow-mpl-validate = "conceptflow_mpl_protocol.validation:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conceptflow_mpl_protocol", "src/conceptflow"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"proto/conceptflow/mpl/v1/perception.proto" = "conceptflow_mpl_protocol/proto/conceptflow/mpl/v1/perception.proto"

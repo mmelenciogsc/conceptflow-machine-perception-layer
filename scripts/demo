@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+source "$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+cd "$REPOSITORY_ROOT"
+
+python_executable="$(venv_python)"
+"$python_executable" -c 'from conceptflow_mpl_cluster.demo import main; raise SystemExit(main())'
+
+if [[ "${1:-}" == "--all" ]]; then
+    "$SCRIPT_DIRECTORY/test" native
+    require_command dotnet ".NET SDK 8 is required for the optional desktop demo"
+    dotnet run --project apps/desktop-relay/src/ConceptFlow.Mpl.DesktopRelay.Demo/ConceptFlow.Mpl.DesktopRelay.Demo.csproj \
+        --configuration Release -- --consent-synthetic-demo
+elif [[ $# -ne 0 ]]; then
+    fail "usage: ./scripts/demo [--all]"
+fi
