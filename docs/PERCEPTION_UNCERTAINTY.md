@@ -28,10 +28,12 @@ unsecured non-loopback endpoint. It never upgrades monocular estimates to
 sensor-grade truth.
 
 The CUDA/backend boundary above retains the Large profiles. The power- and
-thermal-constrained Android Node separately declares Metric **Small** indoor
-and outdoor profiles at fixed 518×518 input for eventual quantized QNN HTP
-deployment. `DepthProfileSelector` requires multiple fresh independent signals,
-probability margin, quorum, and hold time; ambiguity keeps the existing profile.
+thermal-constrained Android Node separately declares the official
+`Depth-Anything-V2-Metric-Hypersim-Small` indoor and
+`Depth-Anything-V2-Metric-VKITTI-Small` outdoor profiles at fixed 518×518 input
+for QNN HTP deployment. `DepthProfileSelector` requires multiple fresh
+independent signals, probability margin, quorum, and hold time; ambiguity keeps
+the existing profile.
 `TwoAnchorMetricDepthCalibrator` uses dimension-stable semantic observations at
 exact 0.6096 m and 2.4384 m guided anchors. Extrapolated output is marked and
 penalized. This does not make monocular depth equivalent to measured depth.

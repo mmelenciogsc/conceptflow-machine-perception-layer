@@ -15,10 +15,10 @@ proof of perceptual effectiveness, licensing permission, or device support.
 | [Ultralytics LICENSE](https://raw.githubusercontent.com/ultralytics/ultralytics/main/LICENSE) | Inspected source declares AGPL-3.0 | Do not vendor into permissively licensed core |
 | [Depth Anything V2 indoor metric Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf) | Hypersim-tuned metric checkpoint exists | Separate explicit indoor profile; preserve uncertainty |
 | [Depth Anything V2 outdoor metric Large](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf) | Virtual KITTI 2-tuned metric checkpoint exists | Separate explicit outdoor profile; no auto-selection |
-| [ONNX Runtime QNN Execution Provider](https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html) | QNN supports Android; HTP is the NPU backend and quantized fixed-shape models are the intended path | Target HTP only after runtime initialization; prepare static quantized artifacts and fail closed on unsupported nodes |
+| [ONNX Runtime QNN Execution Provider](https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html) | QNN supports Android and HTP is the NPU backend; supported precision is model/device dependent | Target HTP only after runtime initialization; use the physically validated static FP16 baseline and fail closed on unsupported nodes |
 | [ExecuTorch Qualcomm backend](https://docs.pytorch.org/executorch/stable/android-qualcomm.html) | Qualcomm AI Engine Direct delegates to Snapdragon accelerators and documents HTP as the default backend | Treat QNN/HTP as the Poco deployment target, not legacy HTA or device-name inference |
-| [Depth Anything V2 indoor metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf) | A smaller indoor-tuned metric profile exists; checked API license metadata was undeclared | Keep external and blocked from distribution pending explicit terms |
-| [Depth Anything V2 outdoor metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf) | A smaller outdoor-tuned metric profile exists; checked card reports Apache-2.0 | Keep separately checksummed and governed for Android conversion |
+| [Depth Anything V2 Hypersim metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Hypersim-Small) | Official indoor checkpoint revision `3bc65d4e14a6786a61acec16453c50e12bf5f338`; card declares Apache-2.0 | Pin revision/checksum, use the 20 m metric head, and retain uncertainty |
+| [Depth Anything V2 VKITTI metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Small) | Official outdoor checkpoint revision `c725b8589bdf6ab04072cab74c0467830db80d6d`; card declares Apache-2.0 | Pin revision/checksum, use the 80 m metric head, and retain uncertainty |
 | [Rokid AI Glasses Style](https://global.rokid.com/products/rokid-ai-glasses-style) | Product is explicitly non-display | No visual wearer UI; direct Android/ADB path stays canonical |
 | [Camera2 capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests) | A configured session submits capture requests to target surfaces | Keep the JPEG `ImageReader` bounded and schedule capture requests independently of inference |
 | [`Bitmap.createScaledBitmap`](https://developer.android.com/reference/android/graphics/Bitmap#createScaledBitmap(android.graphics.Bitmap,int,int,boolean)) | Android exposes an explicit width/height scaling operation | Compute one aspect-fit scale first; never force a source into 16:9 |
@@ -37,8 +37,11 @@ proof of perceptual effectiveness, licensing permission, or device support.
 - Both local NVIDIA GPUs were visible after power cycle, but no model inference
   or CUDA performance measurement is inferred from enumeration.
 - The attached Poco identified as model `24122RKC7G`, Qualcomm `SM8750`, arm64,
-  Android API 36, with the vendor NPU property enabled. That supports HTP
-  eligibility, not proof that this app initialized QNN or ran a model.
+  Android API 36, with the vendor NPU property enabled. QAIRT 2.48.40 then
+  physically executed fixed-shape YOLOE and both Depth Anything graphs through
+  QNN HTP V79 with six HVX threads. This is backend/model compatibility
+  evidence, not proof that the Android APK has integrated the proprietary
+  runtime or that perception is accurate in use.
 - Live Rokid characteristics exposed exact 1920×1080 JPEG and game-rotation,
   gyroscope, and linear-acceleration rates compatible with a 10 ms request. A
   bounded direct-app run observed 98.7 orientation samples/s. A preview-only

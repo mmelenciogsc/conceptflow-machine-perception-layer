@@ -13,17 +13,31 @@ performs depth fusion, body-overlap calculation, similarity gating, and icon
 selection independently of Ultralytics.
 
 No Ultralytics Python package, source, model weight, generated engine, or sample
-is vendored or downloaded by repository scripts. The public vertical slice uses
-deterministic permissive fixtures.
+is vendored or downloaded by repository scripts. The preparation command
+requires a caller-supplied checkpoint and an explicit acknowledgement of the
+separately governed terms. The public vertical slice uses deterministic
+permissive fixtures.
 
-The Android Node uses the closed `BviClassCatalog` vocabulary. An acceptable
-export must call the upstream static-class mechanism before export, use a
-quantized static input shape suitable for QNN HTP, and provide both artifact
-SHA-256 and the exact baked-vocabulary SHA-256. Runtime prompts and YOLOE's
+The Android Node uses the closed `BviClassCatalog` vocabulary. The implemented
+export calls `set_classes` with the exact ordered 40 prompts before producing a
+static `1×3×640×640` ONNX graph, then verifies ONNX metadata against vocabulary
+SHA-256 `2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44`.
+The accepted baseline QNN library uses FP16 on HTP; quantization is not treated
+as a prerequisite. Runtime prompts and YOLOE's
 prompt-free/open-knowledge class set are out of scope. A locally available
 legacy ONNX export was inspected as static `1x3x640x640`, but its embedded
 330-class custom vocabulary does not match the Android Node list and the app
 therefore rejects it rather than silently using broader knowledge.
+
+On the attached Poco F7 Ultra, QAIRT 2.48.40/QNN HTP V79 executed the FP16
+graph 25 times with an 80.065 ms median client inference time. A higher-signal
+COCO calibration image produced 31/31 class-aware IoU≥0.5 matches above 0.05
+confidence against ONNX Runtime, with mean matched IoU 0.9886. This is a
+single-image conversion-fidelity smoke test, not detection/segmentation
+accuracy evidence. Plain W8A8 was rejected because shared quantization of the
+mixed detection output destroyed confidence/class semantics. W8A16 retained
+those semantics but remains experimental pending representative BVI accuracy
+testing and showed no material YOLO latency improvement.
 
 ## Licensing decision
 

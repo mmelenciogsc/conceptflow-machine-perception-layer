@@ -33,6 +33,7 @@ if [[ -z "$serial" || -z "$yoloe" || -z "$depth_indoor" || -z "$depth_outdoor" ]
 fi
 command -v adb >/dev/null || { printf 'adb is required.\n' >&2; exit 1; }
 command -v sha256sum >/dev/null || { printf 'sha256sum is required.\n' >&2; exit 1; }
+command -v readelf >/dev/null || { printf 'readelf is required.\n' >&2; exit 1; }
 
 device_state="$(adb -s "$serial" get-state 2>/dev/null || true)"
 [[ "$device_state" == "device" ]] || { printf 'Selected Android device is not authorized and online.\n' >&2; exit 1; }
@@ -51,6 +52,14 @@ provision() {
     local target_name="$2"
     local maximum_bytes="$3"
     [[ -f "$source_path" ]] || { printf 'Missing artifact: %s\n' "$source_path" >&2; exit 1; }
+    local elf_header
+    elf_header="$(readelf -h -- "$source_path" 2>/dev/null || true)"
+    if ! grep -q 'Class:.*ELF64' <<<"$elf_header" ||
+        ! grep -q 'Data:.*little endian' <<<"$elf_header" ||
+        ! grep -q 'Machine:.*AArch64' <<<"$elf_header"; then
+        printf 'Artifact is not an ELF64 little-endian AArch64 QNN model library: %s\n' "$source_path" >&2
+        exit 1
+    fi
     local size_bytes
     size_bytes="$(stat -c '%s' -- "$source_path")"
     if ((size_bytes < 1 || size_bytes > maximum_bytes)); then
@@ -100,10 +109,10 @@ write_sidecar() {
     adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/models/$target_name"
 }
 
-provision "$yoloe" "yoloe-26s-bvi-seg-qnn-htp.bin" $((256 * 1024 * 1024))
-write_sidecar "yoloe-26s-bvi-seg-qnn-htp.bin.vocabulary.sha256" "$VOCABULARY_SHA256"
-provision "$depth_indoor" "depth-anything-v2-metric-indoor-small-qnn-htp.bin" $((512 * 1024 * 1024))
-provision "$depth_outdoor" "depth-anything-v2-metric-outdoor-small-qnn-htp.bin" $((512 * 1024 * 1024))
+provision "$yoloe" "libyoloe_bvi40_fp16.so" $((256 * 1024 * 1024))
+write_sidecar "libyoloe_bvi40_fp16.so.vocabulary.sha256" "$VOCABULARY_SHA256"
+provision "$depth_indoor" "libdepth_indoor_fp16.so" $((512 * 1024 * 1024))
+provision "$depth_outdoor" "libdepth_outdoor_fp16.so" $((512 * 1024 * 1024))
 
 printf 'All three private model artifacts passed byte-for-byte transfer verification.\n'
 printf 'Restart the Android Node to refresh its model readiness status.\n'

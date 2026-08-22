@@ -17,7 +17,8 @@ selection, an 80-record two-distance dimension-vector table, bounded relative-
 to-metric calibration, fixed-vocabulary artifact verification, and truthful
 QNN HTP capability planning for the Poco F7 Ultra. See
 [Android Machine Vision](ANDROID_MACHINE_VISION.md). No model runtime or model
-weight is bundled, and no real model inference is claimed.
+weight is bundled. External FP16 model libraries have been executed through
+standalone QNN tooling on the Poco; the APK does not yet load them in-process.
 
 ## Build baseline
 
@@ -145,7 +146,7 @@ cleartext globally.
 ## Verified status
 
 The current validation record reports 129 JVM tests across the Android apps and
-shared protocol module: 50 Android Node tests, 78 Rokid Node tests, and one
+shared protocol module: 51 Android Node tests, 78 Rokid Node tests, and one
 byte-exact Python/Java protocol vector. Both debug APK builds succeeded using
 JDK 17 and an installed Android SDK. The host source includes the capability,
 preprocessing, routing, session, correlation, scheduler, Machine Vision, gRPC,

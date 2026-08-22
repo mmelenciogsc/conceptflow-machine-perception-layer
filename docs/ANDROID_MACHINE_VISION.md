@@ -13,8 +13,8 @@ semantic/depth fusion path:
 1. `BviClassCatalog` defines a closed 40-class vocabulary. Runtime prompts and
    prompt-free discovery are rejected by design.
 2. `MachineVisionModelProfiles` requires one fixed-vocabulary YOLOE-26S
-   segmentation artifact and separate Depth Anything V2 Metric Small indoor
-   and outdoor artifacts.
+   segmentation artifact and the official Depth Anything V2 Metric Small
+   Hypersim (indoor) and VKITTI (outdoor) artifacts.
 3. `PrivateModelBundleVerifier` requires an artifact checksum for every model
    and the exact baked-vocabulary fingerprint for segmentation. Nothing is
    downloaded implicitly or packaged in the APK.
@@ -59,8 +59,11 @@ matching alone is insufficient. The present public APK contains neither a QNN
 runtime nor proprietary Qualcomm binaries, so its truthful fallback is the
 deterministic CPU/reference boundary.
 
-QNN HTP deployment requires separately governed, quantized, static-shape
-artifacts. The local QAIRT/QNN installation is development tooling and is not
+QNN HTP deployment requires separately governed, static-shape artifacts. The
+validated baseline is FP16: plain W8A8 damaged both mixed YOLO output semantics
+and metric depth, while real-image-calibrated W8A16 did not materially improve
+YOLO latency and remains experimental pending a representative BVI accuracy
+suite. The local QAIRT/QNN installation is development tooling and is not
 copied into this public repository.
 
 ## Depth profiles and calibration
@@ -85,22 +88,51 @@ selection, mask-depth association, and two-anchor metric calibration on
 deterministic test data. The accessible result explicitly says it is not live
 perception.
 
-No current test proves real YOLOE inference, real Depth Anything inference,
-QNN/HTP execution, metric accuracy, thermals, or BVI usability. Those remain
-physical-device acceptance gates after lawful private model provisioning and a
-project-owned QNN adapter exist.
+QAIRT 2.48.40 physically loaded and executed the three generated FP16 model
+libraries through QNN HTP V79 on the attached Poco F7 Ultra. That proves graph
+compatibility and device execution. A one-image numerical smoke test was also
+performed against ONNX Runtime; it is not model-accuracy, calibration,
+sustained-thermal, or BVI-usability validation. The public Android APK still
+contains no proprietary QNN runtime and does not yet dispatch these models from
+its process.
 
-Once separately licensed models have been converted to compatible QNN context
-binaries, a debuggable installation can be provisioned without putting weights
-in Git:
+The external preparation path is explicit and refuses to write generated
+artifacts under the repository root. Run it from a separately governed Python
+environment containing CPU PyTorch 2.8.0, torchvision 0.23.0, Ultralytics
+8.4.90, ONNX 1.18, ONNX Runtime 1.22.1, onnxslim, and the dependencies required
+by the pinned Depth Anything source. These optional AGPL/toolchain dependencies
+are intentionally absent from the permissive repository lock file.
+
+```bash
+./scripts/android-model-prepare export \
+  --yoloe-checkpoint /private/models/yoloe-26s-seg.pt \
+  --depth-source /private/src/Depth-Anything-V2 \
+  --depth-indoor-checkpoint /private/models/depth_anything_v2_metric_hypersim_vits.pth \
+  --depth-outdoor-checkpoint /private/models/depth_anything_v2_metric_vkitti_vits.pth \
+  --output-dir /private/build/mpl-onnx \
+  --acknowledge-ultralytics-terms
+
+./scripts/android-qnn-build \
+  --qnn-sdk /private/qairt \
+  --ndk /private/android-ndk \
+  --onnx-dir /private/build/mpl-onnx \
+  --calibration-dir /private/build/calibration-real \
+  --output-dir /private/build/mpl-qnn \
+  --precision fp16 \
+  --acknowledge-ultralytics-terms
+```
+
+Once separately licensed model libraries have been generated, a debuggable
+installation can be provisioned without putting weights in Git:
 
 ```bash
 ./scripts/android-model-install --serial "$POCO_SERIAL" \
-  --yoloe /private/path/yoloe-qnn.bin \
-  --depth-indoor /private/path/depth-indoor-qnn.bin \
-  --depth-outdoor /private/path/depth-outdoor-qnn.bin
+  --yoloe /private/path/libyoloe_bvi40_fp16.so \
+  --depth-indoor /private/path/libdepth_indoor_fp16.so \
+  --depth-outdoor /private/path/libdepth_outdoor_fp16.so
 ```
 
-The helper checks explicit size bounds and verifies every transfer by SHA-256.
-It adds the fixed-vocabulary fingerprint and performs no network download.
-Artifact verification alone is not proof that QNN can load or execute a model.
+The helper rejects anything that is not an ELF64 little-endian AArch64 shared
+object, checks explicit size bounds, verifies every transfer by SHA-256, adds
+the fixed-vocabulary fingerprint, and performs no network download. Artifact
+verification is separate from QNN backend initialization and inference.

@@ -40,11 +40,90 @@ and the rerun passed byte-for-byte SHA-256 checks for all three transfers. All
 stand-ins and sidecars were then removed from the phone, and the app was
 restarted to confirm zero of three artifacts. Real weights were never copied.
 
-Not validated: YOLOE-26S execution, Depth Anything execution, QNN context
-conversion/load, HTP/NPU execution, inference accuracy/FPS, metric accuracy,
-thermal behavior, or BVI usability. Ultralytics remains a separately governed
-AGPL/commercial integration; the checked indoor-small depth model did not
-declare license metadata and remains blocked from provisioning.
+At that foundation checkpoint, YOLOE-26S execution, Depth Anything execution,
+QNN conversion/load, HTP/NPU execution, inference accuracy/FPS, metric
+accuracy, thermal behavior, and BVI usability had not been validated. The
+subsequent physical model-toolchain pass below supersedes only the stated graph
+conversion and standalone HTP-execution limitations.
+
+## Poco QNN HTP model-toolchain validation — 2026-08-22
+
+The exact 40 prompts in `config/machine-vision/bvi_classes.txt` were applied to
+the caller-supplied `yoloe-26s-seg.pt` checkpoint with Ultralytics 8.4.90. The
+resulting static ONNX contract has input `1×3×640×640`, detection output
+`1×300×38`, mask-prototype output `1×32×160×160`, and vocabulary fingerprint
+`2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44`.
+The original checkpoint, generated checkpoint, ONNX graph, calibration images,
+QNN sources/libraries, and Qualcomm runtime all remained outside Git.
+
+The official Depth Anything V2 source was pinned to
+`a561b849ebae10a6f5ef49e26c83cbbcd36c71bf`. The official Small checkpoints
+were pinned and checksum-verified as follows:
+
+- Hypersim indoor revision `3bc65d4e14a6786a61acec16453c50e12bf5f338`,
+  SHA-256 `b782898d8a3e8be1f639de33837ed85e9b4b73e40f8f5e5cd99067588d722545`,
+  20 m metric head; and
+- VKITTI outdoor revision `c725b8589bdf6ab04072cab74c0467830db80d6d`,
+  SHA-256 `9203e538d35255c90dda4b7fedb47ff33fe725497bcca3b1e53b3a65ee63f0cb`,
+  80 m metric head.
+
+Static `1×3×518×518` ONNX exports passed ONNX validation and CPU execution.
+PyTorch-to-ONNX maximum absolute differences on deterministic synthetic input
+were `0.000004292` m indoor and `0.000015736` m outdoor.
+
+QAIRT 2.48.40 converted and built all three FP16 graphs, and `qnn-net-run`
+physically executed them through QNN HTP V79 on the Poco F7 Ultra using six HVX
+threads. Client-side inference measurements, including the first warm-up run,
+were:
+
+| Graph | Runs | Median | Post-first observed range | First run |
+| --- | ---: | ---: | ---: | ---: |
+| YOLOE-26S BVI40 segmentation FP16 | 25 | 80.065 ms | 73.824–84.117 ms | 135.989 ms |
+| Depth Anything V2 Hypersim Small FP16 | 15 | 262.657 ms | 250.223–278.268 ms | 456.937 ms |
+| Depth Anything V2 VKITTI Small FP16 | 15 | 269.760 ms | 243.522–276.508 ms | 447.588 ms |
+
+On one real-image conversion-fidelity smoke sample, indoor depth differed from
+ONNX Runtime by mean absolute `0.02337` m / mean relative `1.895%`; outdoor by
+mean absolute `0.33195` m / mean relative `4.495%`. A higher-signal YOLO image
+produced 31/31 class-aware IoU≥0.5 matches above 0.05 confidence for FP16, mean
+matched IoU `0.9886`, with mask-prototype mean absolute difference `0.009675`
+after accounting for QNN NHWC output layout. These are conversion checks on
+individual images, not task accuracy, metric-world accuracy, or BVI evidence.
+
+Plain W8A8 was physically rejected: the mixed YOLO detection tensor lost
+usable confidence/class semantics, and both depth graphs exceeded 50% mean
+relative error on the smoke input. Real-image-calibrated W8A16 retained YOLO
+detection semantics and reduced depth median runtime to 247.258 ms indoor and
+242.518 ms outdoor, but YOLO remained 79.122 ms and its prototype deviation
+increased to `0.049879`. It is therefore experimental rather than the accepted
+baseline. During this short sequence, battery temperature remained 36.5 °C and
+reported NSP zones rose from approximately 39.9–40.7 °C to 42.6–43.0 °C; this
+is not a thermal-soak result.
+
+The public source now provides deterministic external export/calibration and
+QNN build helpers, and the app-side verifier requires an ELF64 little-endian
+AArch64 library plus matching SHA-256 sidecars. The Android APK still does not
+package Qualcomm binaries or initialize QNN in-process. Standalone model
+execution is validated; app integration, representative BVI accuracy,
+sustained thermals, energy consumption, and end-to-end Rokid-to-cue behavior
+remain open gates.
+
+The rebuilt debug APK was installed on the Poco and the three accepted FP16
+model libraries were atomically provisioned into app-private storage with
+byte-for-byte SHA-256 verification. Android UI Automation then exposed the
+truthful nonvisual status `Integrity-checked private artifact slots: 3 of 3`
+and `CPU reference mode; QNN adapter unavailable`. The private artifacts remain
+on the user-owned test phone for the next in-process adapter milestone; they
+are absent from the repository and APK. The installed debug APK SHA-256 was
+`4b1fb3a2168cecb0ca00d9e9190f38c19441ce53a86d4ba1bec6256a705863cc`.
+
+Post-change validation passed 205 Python tests, native CTest, 51 Android Node
+JVM tests, 78 Rokid Node JVM tests, the shared Android protocol test, both debug
+APK builds, Android Lint, the minified Android Node release build, and all 156
+.NET tests with a warning-free Release build. The first release build exposed
+R8 warnings for gRPC's optional legacy OkHttp and desktop JNDI references;
+narrow Android-only warning rules were added for those exact unavailable
+classes and the release build then passed.
 
 ## Map. Morph. Move. extension — 2026-08-22
 

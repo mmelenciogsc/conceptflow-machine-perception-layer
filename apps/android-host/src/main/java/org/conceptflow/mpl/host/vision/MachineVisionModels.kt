@@ -21,6 +21,11 @@ enum class AcceleratorTarget {
     UNAVAILABLE,
 }
 
+enum class QnnNumericProfile {
+    FLOAT16,
+    W8A16_EXPERIMENTAL,
+}
+
 data class MachineVisionModelProfile(
     val id: String,
     val upstreamModelId: String,
@@ -28,6 +33,7 @@ data class MachineVisionModelProfile(
     val kind: MachineVisionModelKind,
     val inputWidth: Int,
     val inputHeight: Int,
+    val numericProfile: QnnNumericProfile,
     val depthEnvironment: DepthEnvironment? = null,
     val fixedVocabularySha256: String? = null,
     val maximumArtifactBytes: Long = 512L * 1_024L * 1_024L,
@@ -52,33 +58,36 @@ object MachineVisionModelProfiles {
     val fixedVocabularySha256: String = sha256(BviClassCatalog.prompts.joinToString("\n").encodeToByteArray())
 
     val yoloe26sBvi = MachineVisionModelProfile(
-        id = "yoloe-26s-bvi-seg-qnn-htp",
-        upstreamModelId = "Ultralytics/yoloe-26s-seg.pt",
-        artifactFileName = "yoloe-26s-bvi-seg-qnn-htp.bin",
+        id = "yoloe-26s-bvi40-seg-qnn-htp-fp16",
+        upstreamModelId = "ultralytics/yoloe-26s-seg.pt",
+        artifactFileName = "libyoloe_bvi40_fp16.so",
         kind = MachineVisionModelKind.INSTANCE_SEGMENTATION,
         inputWidth = 640,
         inputHeight = 640,
+        numericProfile = QnnNumericProfile.FLOAT16,
         fixedVocabularySha256 = fixedVocabularySha256,
         maximumArtifactBytes = 256L * 1_024L * 1_024L,
     )
 
     val depthIndoor = MachineVisionModelProfile(
-        id = "depth-anything-v2-metric-indoor-small-qnn-htp",
-        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
-        artifactFileName = "depth-anything-v2-metric-indoor-small-qnn-htp.bin",
+        id = "depth-anything-v2-metric-hypersim-small-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
+        artifactFileName = "libdepth_indoor_fp16.so",
         kind = MachineVisionModelKind.METRIC_DEPTH,
         inputWidth = 518,
         inputHeight = 518,
+        numericProfile = QnnNumericProfile.FLOAT16,
         depthEnvironment = DepthEnvironment.INDOOR,
     )
 
     val depthOutdoor = MachineVisionModelProfile(
-        id = "depth-anything-v2-metric-outdoor-small-qnn-htp",
-        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",
-        artifactFileName = "depth-anything-v2-metric-outdoor-small-qnn-htp.bin",
+        id = "depth-anything-v2-metric-vkitti-small-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small",
+        artifactFileName = "libdepth_outdoor_fp16.so",
         kind = MachineVisionModelKind.METRIC_DEPTH,
         inputWidth = 518,
         inputHeight = 518,
+        numericProfile = QnnNumericProfile.FLOAT16,
         depthEnvironment = DepthEnvironment.OUTDOOR,
     )
 
@@ -122,6 +131,9 @@ class PrivateModelBundleVerifier {
         if (size !in 1L..profile.maximumArtifactBytes) {
             return ModelArtifactCheck(profile, false, "artifact_size_invalid", sizeBytes = size)
         }
+        if (!isAarch64SharedObject(artifact)) {
+            return ModelArtifactCheck(profile, false, "artifact_format_invalid", sizeBytes = size)
+        }
         val declared = readSha256(sidecar)
         if (declared == null || !SHA256.matches(declared)) {
             return ModelArtifactCheck(profile, false, "checksum_sidecar_invalid", sizeBytes = size)
@@ -156,6 +168,22 @@ class PrivateModelBundleVerifier {
                 .getOrNull()
                 ?.takeIf(SHA256::matches)
         }
+
+        fun isAarch64SharedObject(file: File): Boolean {
+            if (file.length() < ELF_HEADER_BYTES) return false
+            val header = ByteArray(ELF_HEADER_BYTES)
+            val count = FileInputStream(file).use { it.read(header) }
+            return count == ELF_HEADER_BYTES &&
+                header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte() &&
+                header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte() &&
+                header[4] == ELF_CLASS_64 && header[5] == ELF_DATA_LITTLE_ENDIAN &&
+                (header[18].toInt() and 0xff) == ELF_MACHINE_AARCH64 && header[19] == 0.toByte()
+        }
+
+        const val ELF_HEADER_BYTES = 20
+        const val ELF_CLASS_64: Byte = 2
+        const val ELF_DATA_LITTLE_ENDIAN: Byte = 1
+        const val ELF_MACHINE_AARCH64 = 183
     }
 }
 
@@ -173,7 +201,7 @@ data class AcceleratorPlan(
     val target: AcceleratorTarget,
     val reason: String,
     val requiresStaticShapes: Boolean,
-    val requiresQuantizedModel: Boolean,
+    val numericProfile: QnnNumericProfile?,
 )
 
 /** HTP is the Snapdragon 8 Elite NPU path. HTA is intentionally not selected. */
@@ -187,7 +215,7 @@ object QualcommAcceleratorPlanner {
                 AcceleratorTarget.QNN_HTP,
                 "QNN HTP initialized on ${evidence.socModel.ifBlank { "Qualcomm SoC" }}",
                 requiresStaticShapes = true,
-                requiresQuantizedModel = true,
+                numericProfile = QnnNumericProfile.FLOAT16,
             )
         }
         if (evidence.cpuReferenceBackendAvailable) {
@@ -201,14 +229,14 @@ object QualcommAcceleratorPlanner {
                 AcceleratorTarget.CPU_REFERENCE,
                 reason,
                 requiresStaticShapes = false,
-                requiresQuantizedModel = false,
+                numericProfile = null,
             )
         }
         return AcceleratorPlan(
             AcceleratorTarget.UNAVAILABLE,
             "no verified inference backend",
             requiresStaticShapes = false,
-            requiresQuantizedModel = false,
+            numericProfile = null,
         )
     }
 }

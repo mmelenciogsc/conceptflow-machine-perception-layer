@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Ordered fixed vocabulary baked into the Android Node YOLOE-26S export.
+person
+guide dog
+wheelchair
+white mobility cane
+chair
+table
+bench
+doorway
+door
+door handle
+stairs
+escalator
+elevator door
+wall
+curb
+curb ramp
+pedestrian crosswalk
+transit platform edge
+drop-off edge
+pothole
+pole
+bollard
+traffic cone
+pedestrian barrier
+fence
+tree trunk
+low tree branch
+overhead obstacle
+trash bin
+construction scaffold
+car
+bus
+bicycle
+motorcycle
+traffic light
+pedestrian crossing signal
+stop sign
+sign containing readable text
+room number sign
+information display
