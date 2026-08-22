@@ -36,6 +36,25 @@ class CoordinateFrame(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     COORDINATE_FRAME_BODY: _ClassVar[CoordinateFrame]
     COORDINATE_FRAME_LOCAL_WORLD: _ClassVar[CoordinateFrame]
 
+class SensorStreamKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SENSOR_STREAM_KIND_UNSPECIFIED: _ClassVar[SensorStreamKind]
+    SENSOR_STREAM_KIND_CAMERA: _ClassVar[SensorStreamKind]
+    SENSOR_STREAM_KIND_IMU: _ClassVar[SensorStreamKind]
+    SENSOR_STREAM_KIND_MICROPHONE: _ClassVar[SensorStreamKind]
+
+class StreamLeaseOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    STREAM_LEASE_OPERATION_UNSPECIFIED: _ClassVar[StreamLeaseOperation]
+    STREAM_LEASE_OPERATION_OPEN: _ClassVar[StreamLeaseOperation]
+    STREAM_LEASE_OPERATION_RENEW: _ClassVar[StreamLeaseOperation]
+    STREAM_LEASE_OPERATION_CLOSE: _ClassVar[StreamLeaseOperation]
+
+class AudioSampleEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    AUDIO_SAMPLE_ENCODING_UNSPECIFIED: _ClassVar[AudioSampleEncoding]
+    AUDIO_SAMPLE_ENCODING_PCM_S16LE: _ClassVar[AudioSampleEncoding]
+
 class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     ERROR_CODE_UNSPECIFIED: _ClassVar[ErrorCode]
@@ -106,6 +125,16 @@ COORDINATE_FRAME_CAMERA_OPTICAL: CoordinateFrame
 COORDINATE_FRAME_HEAD: CoordinateFrame
 COORDINATE_FRAME_BODY: CoordinateFrame
 COORDINATE_FRAME_LOCAL_WORLD: CoordinateFrame
+SENSOR_STREAM_KIND_UNSPECIFIED: SensorStreamKind
+SENSOR_STREAM_KIND_CAMERA: SensorStreamKind
+SENSOR_STREAM_KIND_IMU: SensorStreamKind
+SENSOR_STREAM_KIND_MICROPHONE: SensorStreamKind
+STREAM_LEASE_OPERATION_UNSPECIFIED: StreamLeaseOperation
+STREAM_LEASE_OPERATION_OPEN: StreamLeaseOperation
+STREAM_LEASE_OPERATION_RENEW: StreamLeaseOperation
+STREAM_LEASE_OPERATION_CLOSE: StreamLeaseOperation
+AUDIO_SAMPLE_ENCODING_UNSPECIFIED: AudioSampleEncoding
+AUDIO_SAMPLE_ENCODING_PCM_S16LE: AudioSampleEncoding
 ERROR_CODE_UNSPECIFIED: ErrorCode
 ERROR_CODE_INVALID_ARGUMENT: ErrorCode
 ERROR_CODE_UNSUPPORTED_VERSION: ErrorCode
@@ -326,6 +355,142 @@ class FramePayload(_message.Message):
     processing_deadline: _duration_pb2.Duration
     synthetic: bool
     def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., frame_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., capture_wall_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., image: _Optional[_Union[ImageDescriptor, _Mapping]] = ..., intrinsics: _Optional[_Union[CameraIntrinsics, _Mapping]] = ..., pose: _Optional[_Union[Pose, _Mapping]] = ..., frame_data: _Optional[bytes] = ..., processing_deadline: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., synthetic: bool = ...) -> None: ...
+
+class StreamLeaseRequest(_message.Message):
+    __slots__ = ("request_id", "session_id", "lease_id", "operation", "requested_streams", "requested_duration_ms", "user_requested_microphone", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_STREAMS_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    USER_REQUESTED_MICROPHONE_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_RELAXED_FPS_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_MOTION_FPS_FIELD_NUMBER: _ClassVar[int]
+    IMU_MAX_BATCH_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
+    IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    session_id: str
+    lease_id: str
+    operation: StreamLeaseOperation
+    requested_streams: _containers.RepeatedScalarFieldContainer[SensorStreamKind]
+    requested_duration_ms: int
+    user_requested_microphone: bool
+    camera_relaxed_fps: int
+    camera_motion_fps: int
+    imu_max_batch_delay_ms: int
+    imu_max_silence_ms: int
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., operation: _Optional[_Union[StreamLeaseOperation, str]] = ..., requested_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., requested_duration_ms: _Optional[int] = ..., user_requested_microphone: bool = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ...) -> None: ...
+
+class StreamLeaseGrant(_message.Message):
+    __slots__ = ("request_id", "session_id", "lease_id", "granted_streams", "granted_duration_ms", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "error")
+    REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    GRANTED_STREAMS_FIELD_NUMBER: _ClassVar[int]
+    GRANTED_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_RELAXED_FPS_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_MOTION_FPS_FIELD_NUMBER: _ClassVar[int]
+    IMU_MAX_BATCH_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
+    IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    request_id: str
+    session_id: str
+    lease_id: str
+    granted_streams: _containers.RepeatedScalarFieldContainer[SensorStreamKind]
+    granted_duration_ms: int
+    camera_relaxed_fps: int
+    camera_motion_fps: int
+    imu_max_batch_delay_ms: int
+    imu_max_silence_ms: int
+    error: ErrorStatus
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., granted_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., granted_duration_ms: _Optional[int] = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+
+class ImuReading(_message.Message):
+    __slots__ = ("sequence_id", "pose", "angular_velocity_radians_per_second", "linear_acceleration_meters_per_second_squared", "orientation_accuracy", "angular_velocity_monotonic_timestamp_ns", "linear_acceleration_monotonic_timestamp_ns")
+    SEQUENCE_ID_FIELD_NUMBER: _ClassVar[int]
+    POSE_FIELD_NUMBER: _ClassVar[int]
+    ANGULAR_VELOCITY_RADIANS_PER_SECOND_FIELD_NUMBER: _ClassVar[int]
+    LINEAR_ACCELERATION_METERS_PER_SECOND_SQUARED_FIELD_NUMBER: _ClassVar[int]
+    ORIENTATION_ACCURACY_FIELD_NUMBER: _ClassVar[int]
+    ANGULAR_VELOCITY_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    LINEAR_ACCELERATION_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    sequence_id: int
+    pose: Pose
+    angular_velocity_radians_per_second: Vector3
+    linear_acceleration_meters_per_second_squared: Vector3
+    orientation_accuracy: int
+    angular_velocity_monotonic_timestamp_ns: int
+    linear_acceleration_monotonic_timestamp_ns: int
+    def __init__(self, sequence_id: _Optional[int] = ..., pose: _Optional[_Union[Pose, _Mapping]] = ..., angular_velocity_radians_per_second: _Optional[_Union[Vector3, _Mapping]] = ..., linear_acceleration_meters_per_second_squared: _Optional[_Union[Vector3, _Mapping]] = ..., orientation_accuracy: _Optional[int] = ..., angular_velocity_monotonic_timestamp_ns: _Optional[int] = ..., linear_acceleration_monotonic_timestamp_ns: _Optional[int] = ...) -> None: ...
+
+class ImuBatch(_message.Message):
+    __slots__ = ("lease_id", "batch_id", "created_monotonic_timestamp_ns", "samples")
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    BATCH_ID_FIELD_NUMBER: _ClassVar[int]
+    CREATED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    lease_id: str
+    batch_id: int
+    created_monotonic_timestamp_ns: int
+    samples: _containers.RepeatedCompositeFieldContainer[ImuReading]
+    def __init__(self, lease_id: _Optional[str] = ..., batch_id: _Optional[int] = ..., created_monotonic_timestamp_ns: _Optional[int] = ..., samples: _Optional[_Iterable[_Union[ImuReading, _Mapping]]] = ...) -> None: ...
+
+class CameraFrameChunk(_message.Message):
+    __slots__ = ("frame_metadata", "frame_id", "chunk_index", "chunk_count", "total_payload_bytes", "chunk_data")
+    FRAME_METADATA_FIELD_NUMBER: _ClassVar[int]
+    FRAME_ID_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_INDEX_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_PAYLOAD_BYTES_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_DATA_FIELD_NUMBER: _ClassVar[int]
+    frame_metadata: FramePayload
+    frame_id: int
+    chunk_index: int
+    chunk_count: int
+    total_payload_bytes: int
+    chunk_data: bytes
+    def __init__(self, frame_metadata: _Optional[_Union[FramePayload, _Mapping]] = ..., frame_id: _Optional[int] = ..., chunk_index: _Optional[int] = ..., chunk_count: _Optional[int] = ..., total_payload_bytes: _Optional[int] = ..., chunk_data: _Optional[bytes] = ...) -> None: ...
+
+class MicrophoneChunk(_message.Message):
+    __slots__ = ("lease_id", "chunk_id", "capture_monotonic_timestamp_ns", "sample_rate_hz", "channel_count", "encoding", "audio_data")
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_ID_FIELD_NUMBER: _ClassVar[int]
+    CAPTURE_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_HZ_FIELD_NUMBER: _ClassVar[int]
+    CHANNEL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ENCODING_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_DATA_FIELD_NUMBER: _ClassVar[int]
+    lease_id: str
+    chunk_id: int
+    capture_monotonic_timestamp_ns: int
+    sample_rate_hz: int
+    channel_count: int
+    encoding: AudioSampleEncoding
+    audio_data: bytes
+    def __init__(self, lease_id: _Optional[str] = ..., chunk_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., sample_rate_hz: _Optional[int] = ..., channel_count: _Optional[int] = ..., encoding: _Optional[_Union[AudioSampleEncoding, str]] = ..., audio_data: _Optional[bytes] = ...) -> None: ...
+
+class SensorStreamEnvelope(_message.Message):
+    __slots__ = ("session_id", "lease_id", "sequence_id", "sent_monotonic_timestamp_ns", "camera_chunk", "imu_batch", "microphone_chunk", "lease_grant", "error")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_ID_FIELD_NUMBER: _ClassVar[int]
+    SENT_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_CHUNK_FIELD_NUMBER: _ClassVar[int]
+    IMU_BATCH_FIELD_NUMBER: _ClassVar[int]
+    MICROPHONE_CHUNK_FIELD_NUMBER: _ClassVar[int]
+    LEASE_GRANT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    sequence_id: int
+    sent_monotonic_timestamp_ns: int
+    camera_chunk: CameraFrameChunk
+    imu_batch: ImuBatch
+    microphone_chunk: MicrophoneChunk
+    lease_grant: StreamLeaseGrant
+    error: ErrorStatus
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., sequence_id: _Optional[int] = ..., sent_monotonic_timestamp_ns: _Optional[int] = ..., camera_chunk: _Optional[_Union[CameraFrameChunk, _Mapping]] = ..., imu_batch: _Optional[_Union[ImuBatch, _Mapping]] = ..., microphone_chunk: _Optional[_Union[MicrophoneChunk, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
 
 class ErrorStatus(_message.Message):
     __slots__ = ("code", "message", "retryable", "retry_after_ms", "correlation_id")

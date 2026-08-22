@@ -56,15 +56,17 @@ The public repository keeps the three trust transitions explicit:
 The canonical contract is
 [`perception.proto`](../packages/shared-protocol/proto/conceptflow/mpl/v1/perception.proto).
 Its `PerceptionService` has exactly three typed unary methods: `Negotiate`,
-`ProcessFrame`, and `Health`. WebRTC is a documented future media-plane boundary;
-there is no WebRTC implementation or fictitious WebRTC RPC in this repository.
-See [PROTOCOL.md](PROTOCOL.md).
+`ProcessFrame`, and `Health`. The same schema now defines transport-neutral
+lease and sensor-stream envelopes, with a tested Rokid packetizer and Android
+host ingress. WebRTC signaling, authentication, and the physical data-channel
+adapter remain unimplemented; there is no fictitious WebRTC RPC in this
+repository. See [PROTOCOL.md](PROTOCOL.md).
 
 ## Repository layers
 
 | Layer | Current responsibility | Principal source |
 | --- | --- | --- |
-| Shared protocol | v1 frame, result, cue, capability, QoS, error, provenance, and health messages | `packages/shared-protocol/proto/conceptflow/mpl/v1/perception.proto` |
+| Shared protocol | v1 lease, sensor envelope, frame, result, cue, capability, QoS, error, provenance, and health messages | `packages/shared-protocol/proto/conceptflow/mpl/v1/perception.proto` |
 | Python host runtime | validation, stream ordering, route policy, correlation, cue scheduling, rendering, and local latency summaries | `packages/host-runtime/src/conceptflow_mpl_host/` |
 | Python cluster service | configuration, capability discovery, bounded admission, timeout/cancellation, worker health, TLS binding, and redacted logs | `services/cuda-cluster/src/conceptflow_mpl_cluster/` |
 | Android protocol | Java-lite protobuf and gRPC bindings generated from the canonical schema | `packages/android-protocol/` |
@@ -114,7 +116,7 @@ reverse loopback tunnel; release/non-loopback transport remains TLS-only.
 `CueTransport` remains transport-neutral for the future project-owned
 authenticated phone data plane.
 
-The host app includes `AndroidCapabilityDetector`, `BoundedFramePreprocessor`,
+The host app includes `AndroidCapabilityDetector`, `GlassesStreamIngress`, `BoundedFramePreprocessor`,
 `RoutingPolicy`, `BoundedFrameQueue`, `SessionStateMachine`, `ResultCorrelator`,
 and `CueScheduler`. `GrpcPerceptionTransport.secure` is implemented. The current
 `MainActivity`, however, constructs `InProcessHostTransport` and

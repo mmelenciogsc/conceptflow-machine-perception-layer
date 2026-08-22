@@ -37,6 +37,13 @@ REQUIRED_CUE_FIELDS = (
     "supersede",
     "provenance",
 )
+REQUIRED_STREAM_ENVELOPE_PAYLOADS = (
+    "camera_chunk",
+    "imu_batch",
+    "microphone_chunk",
+    "lease_grant",
+    "error",
+)
 
 
 def validate_descriptor() -> None:
@@ -56,6 +63,10 @@ def validate_descriptor() -> None:
     frame_data = descriptor.message_types_by_name["FramePayload"].fields_by_name["frame_data"]
     if frame_data.type != FieldDescriptor.TYPE_BYTES:
         raise AssertionError("FramePayload.frame_data must be bytes")
+    stream_envelope = descriptor.message_types_by_name["SensorStreamEnvelope"]
+    payload = stream_envelope.oneofs_by_name.get("payload")
+    if payload is None or tuple(field.name for field in payload.fields) != REQUIRED_STREAM_ENVELOPE_PAYLOADS:
+        raise AssertionError("SensorStreamEnvelope payload contract differs")
 
 
 def validate_generated() -> None:

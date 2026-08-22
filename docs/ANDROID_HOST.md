@@ -5,8 +5,10 @@ The Android host is the phone-side policy and cue-dispatch reference. It detects
 available platform capabilities, validates and queues frames, chooses a local
 or remote route, tracks session and result state, schedules cues, and exposes
 accessible feedback. Its current activity runs an in-process synthetic
-vertical slice; it does not yet exchange frames or cues with the Rokid app. A
-separate direct Rokid-to-Ubuntu development trace now exercises the shared
+vertical slice; it does not yet exchange frames or cues with the Rokid app. The
+host now also contains a bounded `GlassesStreamIngress` for the shared leased
+sensor envelopes, but no physical phone-to-glasses network adapter is wired to
+it. A separate direct Rokid-to-Ubuntu development trace exercises the shared
 protobuf contract without changing this boundary.
 
 ## Build baseline
@@ -46,6 +48,7 @@ The debug APK is produced at
 | `ResultCorrelator.correlate` | Pending bound, cancellation, session/frame match, TTL, and ordering. |
 | `CueScheduler.submit` | Confidence, freshness, modality, verbosity, cooldown, capacity, priority, cancellation, and supersession. |
 | `GrpcPerceptionTransport.secure` | TLS gRPC unary negotiation and frame processing with deadlines and caller cancellation. |
+| `GlassesStreamIngress.accept` | Lease/session validation, ordered camera chunk assembly with SHA-256, absolute IMU batch validation, explicit microphone authorization, and latest-unread camera retention. |
 | `AccessibilityAwareSpeechFeedback.speak` | Text-to-speech when available, suppressed when an accessibility service is enabled. |
 
 `apps/android-host/src/main/res/xml/network_security_config.xml` disables
@@ -63,7 +66,8 @@ does not receive a physical glasses frame, and does not send a cue to the Rokid
 APK.
 
 This separation allows policy tests and APK inspection without pretending the
-device bridge is complete. A production integration must wire concrete capture
+device bridge is complete. A production integration must wire an authenticated
+WebRTC or equivalently bounded media adapter to `GlassesStreamIngress`, then wire concrete capture
 and cue transports, preserve cancellation, and display whether work is local,
 remote, degraded, or disconnected.
 

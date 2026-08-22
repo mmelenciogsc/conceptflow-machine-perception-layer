@@ -34,7 +34,6 @@ import java.util.concurrent.Executor
 class Camera2FrameSource(
     context: Context,
     private val limits: FrameLimits = FrameLimits(),
-    private val captureIntervalMillis: Long = 200L,
 ) : FrameSource {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
@@ -42,6 +41,7 @@ class Camera2FrameSource(
     private val lifecycle = CameraRunLifecycle()
     private val sequence = MonotonicFrameSequence()
     private val processor = AdaptiveJpegProcessor(limits)
+    private val captureCadence = AdaptivePhysicalCaptureCadence()
     private val sessionId = "camera-${UUID.randomUUID()}"
     private var listener: FrameSource.Listener? = null
     private var cameraThread: HandlerThread? = null
@@ -51,10 +51,6 @@ class Camera2FrameSource(
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var captureRequest: CaptureRequest? = null
-
-    init {
-        require(captureIntervalMillis in 100L..10_000L)
-    }
 
     override val isRunning: Boolean get() = lifecycle.isRunning
 
@@ -133,6 +129,7 @@ class Camera2FrameSource(
             { source ->
                 try {
                     consumeLatestImage(source, runId)
+                    scheduleNextCapture(runId, handler)
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
@@ -347,6 +344,7 @@ class Camera2FrameSource(
             session to request
         }
         try {
+            captureCadence.recordCaptureRequest(ElapsedRealtimeClock.nowNanos())
             capture.first.capture(capture.second, object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
@@ -362,14 +360,20 @@ class Camera2FrameSource(
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
             }, handler)
-            if (lifecycle.isActive(runId) &&
-                !handler.postDelayed({ captureNext(runId, handler) }, captureIntervalMillis)
-            ) {
-                failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
-            }
         } catch (_: CameraAccessException) {
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
         } catch (_: RuntimeException) {
+            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+        }
+    }
+
+    private fun scheduleNextCapture(runId: Long, handler: Handler) {
+        if (lifecycle.isActive(runId) &&
+            !handler.postDelayed(
+                { captureNext(runId, handler) },
+                captureCadence.delayAfterCompletionMillis(ElapsedRealtimeClock.nowNanos()),
+            )
+        ) {
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
         }
     }
@@ -400,6 +404,7 @@ class Camera2FrameSource(
                     motionScore = processed.decision.analysis.motionScore,
                 ),
             )
+            captureCadence.update(processed.decision.targetFramesPerSecond)
             val output = processed.jpeg ?: return
             val frameId = sequence.nextId()
             target.onFrame(
@@ -426,6 +431,7 @@ class Camera2FrameSource(
             detachResourcesLocked()
         }
         processor.reset()
+        captureCadence.reset()
         closeResources(resources)
     }
 
@@ -437,6 +443,7 @@ class Camera2FrameSource(
             target to detachResourcesLocked(callbackCamera)
         }
         processor.reset()
+        captureCadence.reset()
         closeResources(stopped.second)
         stopped.first?.onError(message)
         return true
@@ -509,6 +516,46 @@ class Camera2FrameSource(
     }
 
     private fun closeResources(resources: CameraResourceCloser) = resources.close()
+}
+
+internal class AdaptivePhysicalCaptureCadence(
+    private val relaxedFramesPerSecond: Double = 2.0,
+    private val motionFramesPerSecond: Double = 5.0,
+) {
+    @Volatile private var currentFramesPerSecond = relaxedFramesPerSecond
+    @Volatile private var lastCaptureRequestNanos = 0L
+
+    init {
+        require(relaxedFramesPerSecond.isFinite() && motionFramesPerSecond.isFinite())
+        require(relaxedFramesPerSecond in 0.1..motionFramesPerSecond)
+        require(motionFramesPerSecond <= 10.0)
+    }
+
+    fun update(targetFramesPerSecond: Double) {
+        require(targetFramesPerSecond.isFinite() && targetFramesPerSecond > 0.0)
+        currentFramesPerSecond = targetFramesPerSecond.coerceIn(relaxedFramesPerSecond, motionFramesPerSecond)
+    }
+
+    fun intervalMillis(): Long = kotlin.math.floor(1_000.0 / currentFramesPerSecond).toLong().coerceAtLeast(1L)
+
+    fun recordCaptureRequest(timestampNanos: Long) {
+        require(timestampNanos > 0L)
+        lastCaptureRequestNanos = timestampNanos
+    }
+
+    fun delayAfterCompletionMillis(nowNanos: Long): Long {
+        require(nowNanos >= 0L)
+        val requestNanos = lastCaptureRequestNanos
+        if (requestNanos == 0L || nowNanos <= requestNanos) return intervalMillis()
+        val periodNanos = intervalMillis() * 1_000_000L
+        val remainingNanos = (periodNanos - (nowNanos - requestNanos)).coerceAtLeast(0L)
+        return (remainingNanos + 999_999L) / 1_000_000L
+    }
+
+    fun reset() {
+        currentFramesPerSecond = relaxedFramesPerSecond
+        lastCaptureRequestNanos = 0L
+    }
 }
 
 internal class CameraResourceCloser(private var closeActions: List<() -> Unit>) {

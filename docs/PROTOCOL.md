@@ -23,12 +23,41 @@ cues. It does not define autonomous control or safety decisions.
 `Health` is this protocol’s typed health method; it is not a claim that the
 standard `grpc.health.v1` service is registered.
 
-WebRTC is reserved as a future media-plane boundary. No WebRTC signaling,
-session, track, encoder, decoder, or RPC is implemented. The current baseline
-places image bytes directly in unary `ProcessFrame` messages for deterministic
-integration and testing. A future media adapter should decode a bounded media
-sample into the same `FramePayload` validation boundary and retain gRPC for
-typed negotiation, request/result metadata, control, and health.
+The schema now includes transport-neutral lease and sensor-stream envelopes for
+the glasses-to-host boundary. A bounded sender packetizer and Android host
+receiver are implemented and tested, but WebRTC signaling, peer
+authentication, session establishment, and a physical data channel are not.
+The current backend baseline still places image bytes directly in unary
+`ProcessFrame` messages for deterministic integration and testing. A future
+WebRTC adapter should feed bounded `SensorStreamEnvelope` messages into the
+same host validation boundary and retain gRPC for typed backend negotiation,
+request/result metadata, control, and health.
+
+## Glasses stream lease and media envelope
+
+`StreamLeaseRequest` expresses open, renew, or close intent and the requested
+camera, IMU, and microphone streams. A microphone request is separately
+explicit. `StreamLeaseGrant` returns bounded parameters; duration is expressed
+as a relative interval so a receiver never compares unrelated device monotonic
+clock epochs. Transport authentication is external to protobuf, and the Rokid
+controller binds the active lease to the authenticated peer supplied by that
+boundary.
+
+`SensorStreamEnvelope` carries exactly one of:
+
+- a `CameraFrameChunk`, with 16 KiB used by the current sender and a complete
+  metadata-only `FramePayload` on chunk zero;
+- an `ImuBatch` of absolute pose, angular velocity, and linear acceleration
+  readings rather than loss-sensitive deltas;
+- a bounded PCM `MicrophoneChunk` for explicitly authorized short intervals;
+- a lease grant or a typed error.
+
+The data-channel contract is reliable and ordered. The host enforces envelope,
+frame, batch, and sample order; bounds allocation before assembly; verifies the
+completed camera payload SHA-256; drops an incomplete older frame when a newer
+frame begins; and retains only the latest unread complete frame. Sender
+monotonic timestamps are preserved for correlation but are not directly
+compared with receiver monotonic time without an explicit clock-offset model.
 
 ## Version negotiation
 

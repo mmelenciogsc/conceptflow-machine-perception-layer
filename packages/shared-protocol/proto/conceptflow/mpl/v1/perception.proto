@@ -138,6 +138,110 @@ message FramePayload {
   bool synthetic = 12;
 }
 
+// Stream leases are transport-neutral control messages. The transport is
+// responsible for authenticating the peer; a client-provided identifier is
+// never proof of authentication by itself.
+enum SensorStreamKind {
+  SENSOR_STREAM_KIND_UNSPECIFIED = 0;
+  SENSOR_STREAM_KIND_CAMERA = 1;
+  SENSOR_STREAM_KIND_IMU = 2;
+  SENSOR_STREAM_KIND_MICROPHONE = 3;
+}
+
+enum StreamLeaseOperation {
+  STREAM_LEASE_OPERATION_UNSPECIFIED = 0;
+  STREAM_LEASE_OPERATION_OPEN = 1;
+  STREAM_LEASE_OPERATION_RENEW = 2;
+  STREAM_LEASE_OPERATION_CLOSE = 3;
+}
+
+message StreamLeaseRequest {
+  string request_id = 1;
+  string session_id = 2;
+  string lease_id = 3;
+  StreamLeaseOperation operation = 4;
+  repeated SensorStreamKind requested_streams = 5;
+  uint32 requested_duration_ms = 6;
+  bool user_requested_microphone = 7;
+  uint32 camera_relaxed_fps = 8;
+  uint32 camera_motion_fps = 9;
+  uint32 imu_max_batch_delay_ms = 10;
+  uint32 imu_max_silence_ms = 11;
+}
+
+message StreamLeaseGrant {
+  string request_id = 1;
+  string session_id = 2;
+  string lease_id = 3;
+  repeated SensorStreamKind granted_streams = 4;
+  uint32 granted_duration_ms = 5;
+  uint32 camera_relaxed_fps = 6;
+  uint32 camera_motion_fps = 7;
+  uint32 imu_max_batch_delay_ms = 8;
+  uint32 imu_max_silence_ms = 9;
+  ErrorStatus error = 10;
+}
+
+message ImuReading {
+  uint64 sequence_id = 1;
+  Pose pose = 2;
+  Vector3 angular_velocity_radians_per_second = 3;
+  Vector3 linear_acceleration_meters_per_second_squared = 4;
+  int32 orientation_accuracy = 5;
+  uint64 angular_velocity_monotonic_timestamp_ns = 6;
+  uint64 linear_acceleration_monotonic_timestamp_ns = 7;
+}
+
+message ImuBatch {
+  string lease_id = 1;
+  uint64 batch_id = 2;
+  uint64 created_monotonic_timestamp_ns = 3;
+  repeated ImuReading samples = 4;
+}
+
+// Camera frames are split for a bounded reliable ordered data channel. Only
+// chunk zero carries frame_metadata, whose frame_data field must be empty.
+message CameraFrameChunk {
+  FramePayload frame_metadata = 1;
+  uint64 frame_id = 2;
+  uint32 chunk_index = 3;
+  uint32 chunk_count = 4;
+  uint64 total_payload_bytes = 5;
+  bytes chunk_data = 6;
+}
+
+enum AudioSampleEncoding {
+  AUDIO_SAMPLE_ENCODING_UNSPECIFIED = 0;
+  AUDIO_SAMPLE_ENCODING_PCM_S16LE = 1;
+}
+
+message MicrophoneChunk {
+  string lease_id = 1;
+  uint64 chunk_id = 2;
+  uint64 capture_monotonic_timestamp_ns = 3;
+  uint32 sample_rate_hz = 4;
+  uint32 channel_count = 5;
+  AudioSampleEncoding encoding = 6;
+  bytes audio_data = 7;
+}
+
+// This envelope can be carried by a reliable ordered WebRTC data channel or
+// another bounded authenticated media transport. It does not define signaling
+// or confer authentication.
+message SensorStreamEnvelope {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 sequence_id = 3;
+  uint64 sent_monotonic_timestamp_ns = 4;
+  oneof payload {
+    CameraFrameChunk camera_chunk = 5;
+    ImuBatch imu_batch = 6;
+    MicrophoneChunk microphone_chunk = 7;
+    StreamLeaseGrant lease_grant = 8;
+    ErrorStatus error = 9;
+  }
+}
+
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_INVALID_ARGUMENT = 1;

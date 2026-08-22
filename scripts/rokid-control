@@ -23,7 +23,7 @@ Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
 
 Commands:
   capture-start  Explicitly start camera capture (CAMERA must already be granted).
-  stream-test    Run an eight-second camera, IMU, and microphone input test.
+  stream-test    Run an eight-second leased gate test; microphone stops after two seconds.
   physical-trace Capture once and use the ADB-reverse loopback gRPC development path.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
@@ -72,7 +72,7 @@ case "$command_name" in
     stream-test)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.START_STREAM_TEST"
-        printf 'Requested bounded camera, IMU, and microphone stream test; it stops automatically.\n'
+        printf 'Requested bounded leased stream test; microphone stops after two seconds.\n'
         ;;
     physical-trace)
         require_command ss "iproute2 is required to verify the loopback backend"

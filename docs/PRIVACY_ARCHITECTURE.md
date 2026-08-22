@@ -35,10 +35,13 @@ explicit `--grant-camera` and `--grant-microphone` operator actions.
 `rokid-control capture-start`, the bounded eight-second `stream-test`, and the
 one-shot `physical-trace` are separate authorized-ADB commands.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
-byte limit, and a 400 ms default capture interval. Stopping the nonvisual
+byte limit, and adaptive physical requests near 2 FPS stable/up to 5 FPS after
+material change. Stopping the nonvisual
 activity unbinds the service and closes camera, IMU, and microphone resources.
-`stream-test` computes only aggregate PCM activity evidence and never writes or
-logs the captured samples. `physical-trace` sends one bounded JPEG and matched
+`stream-test` uses a local eight-second stream lease, separately limits the
+explicit microphone request to two seconds, computes only aggregate PCM
+activity evidence, and never writes or logs captured samples. Lease renewal
+cannot silently extend microphone consent. `physical-trace` sends one bounded JPEG and matched
 HEAD pose; microphone samples never enter its wire message and only nonzero
 local signal gates dispatch. This development control is not the intended
 product consent interface.

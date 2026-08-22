@@ -53,6 +53,66 @@ produced no test result. The 6/6 EditMode and 1/1 PlayMode results above are fro
 the immediately preceding implementation pass on the same branch, not this
 post-reboot rerun.
 
+## Power-aware Rokid stream lease — 2026-08-22
+
+The v1 schema was additively extended with transport-neutral stream lease,
+camera chunk, absolute IMU batch, microphone chunk, and sensor envelope
+messages. Generated Python output was regenerated, protocol validation passed,
+and both Android applications compiled against the same Java-lite schema. The
+existing `PerceptionService` RPC surface remains unchanged.
+
+The final Android run passed 115 JVM tests (36 host, 78 Rokid client, and one
+shared-protocol test) with no skips or failures. Focused tests exercised
+single-owner lease expiry, owner-checked renewal and close, explicit and
+independently expiring microphone consent, quaternion
+sign equivalence, invalid/out-of-order IMU rejection, one-second absolute IMU
+refresh, maximum 20 ms batching, bounded 16 KiB camera packetization, protobuf
+round trips, host-side ordered reassembly and SHA-256 verification, partial
+frame replacement/expiry, latest-unread camera behavior, IMU batch ordering,
+and microphone authorization. Android Lint and both debug APK builds passed.
+
+The exact final debug APK was directly installed on Rokid serial
+`2001092545610702`
+and the explicit eight-second stream diagnostic ran to completion. The final
+run reported:
+
+- 12 source-gate emissions at exactly 1920×1080 / 12,932,054 transient JPEG
+  bytes; 13 analyzed frames, no dark or blur rejection, one cadence rejection,
+  maximum motion score 0.073, and eight motion-tier decisions. Eleven frames
+  reached packetization before lease closure, producing 726 bounded chunks and
+  11,855,622 payload bytes;
+- 783 raw IMU observations at 98.8 Hz with 12.7 ms maximum source gap; the
+  transmission gate selected 512, suppressed 267 consecutive near-duplicates,
+  and admitted 493 samples in 218 bounded batches before lease closure; and
+- 16 physically recorded microphone chunks / 65,536 transient bytes, of which
+  14 chunks / 57,344 bytes passed packetization before the explicit two-second
+  microphone sub-lease expired. Recorder shutdown was initiated by the
+  two-second timer; after the blocking close returned, the log reported
+  `stream=microphone status=lease_expired` while the camera and IMU lease
+  continued.
+
+The diagnostic reported `pass`, retained/logged no raw payload, and left the
+package process and private runtime service stopped. Total diagnostic duration
+was 8,424 ms including Camera2 shutdown; it is not an end-to-end network
+latency measurement. The APK SHA-256 was
+`e02082055e94cd21df0e86c5a9ccd3eb05754eb2675154a01c9a8b7839b5181e`.
+The matching Android host debug APK was reinstalled successfully on the Poco;
+that confirms installability, not a physical glasses-to-phone stream.
+
+The final repository-wide local cycle also passed 199 Python tests, 156 .NET
+tests with zero build warnings or errors, native CTest, three Python
+wheel/source builds plus isolated imports and the synthetic demo, repository
+format and policy checks, Ruff, MyPy, configuration validation, dependency
+verification, license guards, and secret scanning.
+
+No physical WebRTC link was claimed: the current milestone validates
+source-side leases/gates/packetization and Poco-side bounded ingestion, not
+wireless signaling, pairing, encryption, throughput, energy use, or thermal
+behavior. During the required local DEBUGGER pass, llama.cpp encountered a
+CUDA synchronization failure and the RTX 4060 Ti subsequently disappeared
+from `nvidia-smi`; only the RTX 2080 Ti remained visible. No CUDA result after
+that failure is counted as validation.
+
 ## Environment discovery
 
 The release host was Ubuntu 24.04 with kernel 7.0.0-29-generic. The relevant
@@ -197,8 +257,9 @@ image fixtures also pass the real Python gRPC decoding boundary. Unknown fields
 retain the behavior of the respective Protobuf runtimes.
 
 The implemented gRPC service is `Negotiate`, `ProcessFrame`, and `Health`.
-WebRTC is intentionally only a documented future media-plane boundary; no
-WebRTC implementation is claimed.
+Transport-neutral data-channel envelopes plus a sender packetizer and host
+ingress are implemented; WebRTC signaling, authentication, and a physical
+data-channel adapter are not, so no WebRTC transmission is claimed.
 
 ## Rokid and Poco evidence
 

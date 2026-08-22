@@ -11,6 +11,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import org.conceptflow.mpl.rokid.core.AudioInputSource
+import org.conceptflow.mpl.rokid.core.ActiveStreamLease
+import org.conceptflow.mpl.rokid.core.AuthenticatedStreamPeer
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
 import org.conceptflow.mpl.rokid.core.CueEnvelope
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
@@ -19,12 +21,19 @@ import org.conceptflow.mpl.rokid.core.FrameSourceStateController
 import org.conceptflow.mpl.rokid.core.GrpcRemotePerceptionClient
 import org.conceptflow.mpl.rokid.core.InProcessCueTransport
 import org.conceptflow.mpl.rokid.core.InspectableCueRenderer
+import org.conceptflow.mpl.rokid.core.ImuTransmissionBatch
+import org.conceptflow.mpl.rokid.core.ImuTransmissionGate
 import org.conceptflow.mpl.rokid.core.PcmAudioChunk
 import org.conceptflow.mpl.rokid.core.PhysicalTraceInputGate
 import org.conceptflow.mpl.rokid.core.RemoteCall
 import org.conceptflow.mpl.rokid.core.RemotePerceptionClient
 import org.conceptflow.mpl.rokid.core.RenderDisposition
 import org.conceptflow.mpl.rokid.core.RuntimeCommand
+import org.conceptflow.mpl.rokid.core.SensorStreamPacketizer
+import org.conceptflow.mpl.rokid.core.StreamLeaseController
+import org.conceptflow.mpl.rokid.core.StreamLeaseDecision
+import org.conceptflow.mpl.rokid.core.StreamLeasePolicy
+import org.conceptflow.mpl.rokid.core.StreamLeaseSpec
 import org.conceptflow.mpl.rokid.core.StreamDiagnosticSession
 import org.conceptflow.mpl.rokid.core.TraceCallback
 import org.conceptflow.mpl.rokid.hardware.AudioRecordInputSource
@@ -38,6 +47,7 @@ import org.conceptflow.mpl.v1.Haptic
 import org.conceptflow.mpl.v1.HapticPattern
 import org.conceptflow.mpl.v1.PerceptionCue
 import org.conceptflow.mpl.v1.PerceptionResult
+import org.conceptflow.mpl.v1.SensorStreamKind
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -48,7 +58,7 @@ class RokidRuntimeService : Service() {
     private val frameSources = FrameSourceStateController()
     private var poseSource: SensorManagerPoseSource? = null
     private var microphoneSource: AudioRecordInputSource? = null
-    private var diagnosticSession: StreamDiagnosticSession? = null
+    @Volatile private var diagnosticSession: StreamDiagnosticSession? = null
     private val physicalTraceLock = Any()
     private var physicalTrace: PhysicalTraceRun? = null
     private val cueIds = AtomicLong(0L)
@@ -84,7 +94,7 @@ class RokidRuntimeService : Service() {
             mainHandler.post(onTerminal)
             return
         }
-        if (frameSources.hasActiveSource) {
+        if (hasActiveInputs()) {
             Log.i(TAG, "state=capturing result=already_active")
             return
         }
@@ -144,14 +154,40 @@ class RokidRuntimeService : Service() {
             mainHandler.post(onTerminal)
             return
         }
-        if (frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
-            hasActivePhysicalTrace()
-        ) {
+        if (hasActiveInputs()) {
             Log.i(TAG, "state=stream_test result=already_active")
             return
         }
 
+        val leaseController = StreamLeaseController(
+            clock = ElapsedRealtimeClock,
+            policy = StreamLeasePolicy(
+                maximumLeaseDurationMillis = STREAM_TEST_DURATION_MS,
+                maximumMicrophoneDurationMillis = STREAM_TEST_MICROPHONE_DURATION_MS,
+            ),
+        )
+        val leaseDecision = leaseController.open(
+            AuthenticatedStreamPeer(ADB_DIAGNOSTIC_PEER),
+            StreamLeaseSpec(
+                sessionId = "adb-stream-diagnostic",
+                requestedStreams = setOf(
+                    SensorStreamKind.SENSOR_STREAM_KIND_CAMERA,
+                    SensorStreamKind.SENSOR_STREAM_KIND_IMU,
+                    SensorStreamKind.SENSOR_STREAM_KIND_MICROPHONE,
+                ),
+                requestedDurationMillis = STREAM_TEST_DURATION_MS,
+                userRequestedMicrophone = true,
+            ),
+        )
+        val lease = (leaseDecision as? StreamLeaseDecision.Granted)?.lease ?: run {
+            Log.w(TAG, "state=stream_test result=lease_rejected")
+            mainHandler.post(onTerminal)
+            return
+        }
         val diagnostic = StreamDiagnosticSession(ElapsedRealtimeClock.nowNanos())
+        val imuGate = ImuTransmissionGate()
+        val packetizer = SensorStreamPacketizer(ElapsedRealtimeClock)
+        val transmission = PowerAwareTransmissionCounters()
         diagnosticSession = diagnostic
         val sensor = SensorManagerPoseSource(this)
         poseSource = sensor
@@ -159,6 +195,9 @@ class RokidRuntimeService : Service() {
             sensor.start { sample ->
                 if (diagnostic.recordImuSample(sample.hasNonZeroSignal(), sample.pose.monotonicTimestampNs)) {
                     Log.i(TAG, "stream=imu status=active")
+                }
+                imuGate.offer(sample)?.let { batch ->
+                    recordImuTransmission(packetizer, lease, batch, transmission)
                 }
             }
         }.onFailure {
@@ -177,6 +216,10 @@ class RokidRuntimeService : Service() {
                             TAG,
                             "stream=microphone status=active sample_rate_hz=${chunk.sampleRateHz} channels=${chunk.channelCount}",
                         )
+                    }
+                    packetizer.microphone(lease, chunk)?.let { envelope ->
+                        transmission.microphonePackets.incrementAndGet()
+                        transmission.microphonePayloadBytes.addAndGet(envelope.microphoneChunk.audioData.size().toLong())
                     }
                 }
 
@@ -206,6 +249,12 @@ class RokidRuntimeService : Service() {
                                 "width=${frame.image.width} height=${frame.image.height}",
                         )
                     }
+                    packetizer.camera(lease, frame).let { packets ->
+                        if (packets.isNotEmpty()) {
+                            transmission.cameraPackets.addAndGet(packets.size.toLong())
+                            transmission.cameraPayloadBytes.addAndGet(frame.frameData.size().toLong())
+                        }
+                    }
                 }
 
                 override fun onError(message: String) {
@@ -219,17 +268,54 @@ class RokidRuntimeService : Service() {
             Log.w(TAG, "stream=camera status=unavailable reason=already_active")
         }
 
-        Log.i(TAG, "state=stream_test_started duration_ms=$STREAM_TEST_DURATION_MS")
+        val pollImu = object : Runnable {
+            override fun run() {
+                if (diagnosticSession !== diagnostic) return
+                imuGate.poll(ElapsedRealtimeClock.nowNanos())?.let { batch ->
+                    recordImuTransmission(packetizer, lease, batch, transmission)
+                }
+                mainHandler.postDelayed(this, IMU_GATE_POLL_MILLIS)
+            }
+        }
+        mainHandler.postDelayed(pollImu, IMU_GATE_POLL_MILLIS)
         mainHandler.postDelayed(
-            { finishStreamTest(diagnostic, onTerminal) },
+            {
+                if (diagnosticSession === diagnostic) {
+                    microphoneSource?.close()
+                    microphoneSource = null
+                    Log.i(TAG, "stream=microphone status=lease_expired")
+                }
+            },
+            STREAM_TEST_MICROPHONE_DURATION_MS,
+        )
+        Log.i(
+            TAG,
+            "state=stream_test_started duration_ms=$STREAM_TEST_DURATION_MS " +
+                "microphone_lease_ms=$STREAM_TEST_MICROPHONE_DURATION_MS transport=packetizer_diagnostic",
+        )
+        mainHandler.postDelayed(
+            {
+                mainHandler.removeCallbacks(pollImu)
+                imuGate.flush(ElapsedRealtimeClock.nowNanos())?.let { batch ->
+                    recordImuTransmission(packetizer, lease, batch, transmission)
+                }
+                leaseController.clear()
+                finishStreamTest(diagnostic, transmission, imuGate, onTerminal)
+            },
             STREAM_TEST_DURATION_MS,
         )
     }
 
-    private fun finishStreamTest(diagnostic: StreamDiagnosticSession, onTerminal: () -> Unit) {
+    private fun finishStreamTest(
+        diagnostic: StreamDiagnosticSession,
+        transmission: PowerAwareTransmissionCounters,
+        imuGate: ImuTransmissionGate,
+        onTerminal: () -> Unit,
+    ) {
         if (diagnosticSession !== diagnostic) return
         stopSensorInputs()
         val snapshot = diagnostic.finish(ElapsedRealtimeClock.nowNanos())
+        val imuStatistics = imuGate.statistics()
         diagnosticSession = null
         Log.i(
             TAG,
@@ -251,9 +337,29 @@ class RokidRuntimeService : Service() {
                 "microphone_bytes=${snapshot.microphoneBytes} " +
                 "microphone_nonzero_samples=${snapshot.microphoneNonZeroSamples} " +
                 "microphone_peak_absolute=${snapshot.microphonePeakAbsolute} " +
+                "camera_tx_packets=${transmission.cameraPackets.get()} " +
+                "camera_tx_payload_bytes=${transmission.cameraPayloadBytes.get()} " +
+                "imu_tx_selected=${imuStatistics.accepted} " +
+                "imu_tx_suppressed=${imuStatistics.duplicatesSuppressed} " +
+                "imu_tx_batches=${transmission.imuBatches.get()} " +
+                "imu_tx_samples=${transmission.imuSamples.get()} " +
+                "microphone_tx_packets=${transmission.microphonePackets.get()} " +
+                "microphone_tx_payload_bytes=${transmission.microphonePayloadBytes.get()} " +
                 "duration_ms=${snapshot.durationMillis}",
         )
         mainHandler.post(onTerminal)
+    }
+
+    private fun recordImuTransmission(
+        packetizer: SensorStreamPacketizer,
+        lease: ActiveStreamLease,
+        batch: ImuTransmissionBatch,
+        counters: PowerAwareTransmissionCounters,
+    ) {
+        packetizer.imu(lease, batch)?.let {
+            counters.imuBatches.incrementAndGet()
+            counters.imuSamples.addAndGet(it.imuBatch.samplesCount.toLong())
+        }
     }
 
     private fun startPhysicalTrace(onTerminal: () -> Unit) {
@@ -268,9 +374,7 @@ class RokidRuntimeService : Service() {
             mainHandler.post(onTerminal)
             return
         }
-        if (frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
-            hasActivePhysicalTrace()
-        ) {
+        if (hasActiveInputs()) {
             Log.w(TAG, "state=physical_trace_rejected reason=input_busy")
             mainHandler.post(onTerminal)
             return
@@ -492,6 +596,10 @@ class RokidRuntimeService : Service() {
     private fun hasActivePhysicalTrace(): Boolean =
         synchronized(physicalTraceLock) { physicalTrace != null }
 
+    private fun hasActiveInputs(): Boolean =
+        frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
+            diagnosticSession != null || hasActivePhysicalTrace()
+
     private fun abandonPhysicalTrace() {
         val run = synchronized(physicalTraceLock) {
             physicalTrace.also { physicalTrace = null }
@@ -582,11 +690,23 @@ class RokidRuntimeService : Service() {
         private const val TAG = "ConceptFlowRokid"
         private const val CUE_SERVICE_LIFETIME_MS = 1_500L
         private const val STREAM_TEST_DURATION_MS = 8_000L
+        private const val STREAM_TEST_MICROPHONE_DURATION_MS = 2_000L
+        private const val IMU_GATE_POLL_MILLIS = 20L
+        private const val ADB_DIAGNOSTIC_PEER = "authorized-adb-shell"
         private const val PHYSICAL_TRACE_TIMEOUT_MS = 8_000L
         private const val PHYSICAL_TRACE_RPC_DEADLINE_MS = 2_000L
         private const val PHYSICAL_TRACE_PORT = 50_051
         private const val MAX_REASON_LENGTH = 80
     }
+}
+
+private class PowerAwareTransmissionCounters {
+    val cameraPackets = AtomicLong(0L)
+    val cameraPayloadBytes = AtomicLong(0L)
+    val imuBatches = AtomicLong(0L)
+    val imuSamples = AtomicLong(0L)
+    val microphonePackets = AtomicLong(0L)
+    val microphonePayloadBytes = AtomicLong(0L)
 }
 
 private class PhysicalTraceRun(

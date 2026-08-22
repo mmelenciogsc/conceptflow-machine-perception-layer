@@ -120,9 +120,11 @@ The implemented hardware boundaries are:
 second so the standard Camera2 auto-exposure and white-balance loops can
 settle. It then closes that preview session and creates a JPEG-only session;
 this sequence is required because the tested vendor HAL stalls JPEG output
-when preview and JPEG requests overlap. The client then submits JPEG captures
-at a 200 ms ceiling. Every image is processed in memory and discarded after
-the current decision. Capture-size selection prefers an exact 1920×1080
+when preview and JPEG requests overlap. The client begins physical JPEG capture
+near 2 FPS and raises it toward a 5 FPS ceiling after material pixel change.
+The delay is budgeted from capture-request time so JPEG processing is not added
+on top of the intended period. Every image is processed in memory and discarded
+after the current decision. Capture-size selection prefers an exact 1920×1080
 source. If it is unavailable, it chooses the closest aspect-compatible source
 and aspect-fits it inside 1920×1080 using one uniform scale; it never crops,
 stretches, or upscales. A 4:3 source such as 4032×3024 therefore becomes
@@ -149,11 +151,12 @@ calibration; they are not evidence that a rejected frame contains nothing
 important.
 
 The current gRPC request advertises the 1920×1080, 2 MiB, 5 FPS maximum. It
-still carries one timestamp-matched HEAD pose per emitted image. Continuous
-100 Hz IMU transport to Unity/FMOD is not yet implemented; treating the
-2–5 FPS frame pose as an audio-listener update would be incorrect. The next
-transport slice must deliver bounded, ordered IMU samples independently from
-semantic frames and interpolate them at the renderer.
+still carries one timestamp-matched HEAD pose per emitted image. Independently,
+the stream packetizer can select meaningful samples from nominal 100 Hz IMU
+input, bound a batch to 20 ms, and send an absolute refresh at least once per
+second. The matching Poco ingress validates those typed batches. A physical
+glasses-to-Poco WebRTC adapter and Unity/FMOD listener interpolation are not yet
+implemented, so this is not a claim of live wireless spatial-audio tracking.
 
 There is no screen, launcher, or wearer-facing visual state. The right arm does
 have a capacitive touch surface; it reports firmware-recognized key events, not
@@ -252,12 +255,16 @@ sensor.
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stop
 ```
 
-`stream-test` concurrently samples camera, IMU, and microphone input for eight
-seconds and then stops automatically. Its pass criterion requires at least one
-item from every stream after quality gates. It reports only dimensions, counts,
+`stream-test` explicitly opens a local diagnostic lease for camera, IMU, and
+microphone. Camera and IMU run for eight seconds; microphone packet admission
+ends at the separately authorized two-second monotonic boundary, when
+`AudioRecord` shutdown is also initiated. All sources stop automatically. Its
+pass criterion requires at least one item from every
+stream after quality gates. It reports only dimensions, counts,
 aggregate byte totals, camera drop-reason counts, requested-tier counts,
-observed IMU rate/maximum gap, and aggregate PCM nonzero/peak evidence; it
-neither logs nor writes images, sensor values, or audio samples. `cue-left` and
+observed IMU rate/maximum gap, aggregate PCM nonzero/peak evidence, and
+packetization/IMU-suppression counters; it neither logs nor writes images,
+sensor values, or audio samples. `cue-left` and
 `cue-right` emit short development
 audio/haptic cues and must be used only when the wearer expects them.
 `capture-start` fails closed when camera permission is absent or Camera2 cannot

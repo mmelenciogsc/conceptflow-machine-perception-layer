@@ -7,7 +7,7 @@ an engineering review aid, not a security certification.
 
 ## Protected assets
 
-- camera frames, derived scene text, pose, and spatial metadata;
+- camera frames, microphone audio, derived scene text, pose, and spatial metadata;
 - user consent and capture state;
 - session, request, result, stream, and frame integrity;
 - cue ordering, urgency, modality, and accessible presentation;
@@ -19,8 +19,8 @@ an engineering review aid, not a security certification.
 
 | Boundary | Untrusted or failure-prone input | Primary controls | Remaining work |
 | --- | --- | --- | --- |
-| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounds, monotonic IDs, result correlation, TTL/dedup renderer, direct-ADB target check | Sustained lifecycle, production transport, localization, and BVI acceptance |
-| Android host | Frames, network state, transport callbacks, accessibility services | Capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, TLS client | Real phone-to-glasses transport and end-to-end device testing |
+| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounded single-owner lease, short explicit microphone sub-lease, latest-wins outbox, monotonic IDs, result correlation, TTL/dedup renderer, direct-ADB target check | Sustained lifecycle, authenticated production transport, localization, and BVI acceptance |
+| Android host | Frames, network state, transport callbacks, accessibility services | Lease/session-bound ingress, bounded camera assembly, digest/order checks, latest-unread frame, capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, TLS client | Real phone-to-glasses transport and end-to-end device testing |
 | Windows relay | Endpoint text, user approval, future screen/region content, status UI | Consent gate, content bounds, HTTPS policy, cancellation, bounded queues, redaction, stock accessible controls | Manual Windows, JAWS, and NVDA acceptance; real capture adapters |
 | Network | Eavesdropping, tampering, replay, downgrade, delay, reordering, flooding | TLS-required production config, loopback-only plaintext, ephemeral sessions, correlation, deadlines, message limits | Deployment authentication, certificate lifecycle, optional mTLS, WebRTC security design |
 | CUDA/backend | Malformed frames, exhausted queues, unhealthy workers, malicious model output, GPU failure | Preprocessing, admission bounds, timeout/cancellation, health thresholds, provenance, mock-only default | Sandboxed real workers, kernel/model validation, resource isolation |
@@ -48,6 +48,19 @@ permits it only for literal loopback through an authorized ADB reverse tunnel;
 this is not production peer authentication. Logs redact payload fields and no
 retention store exists. Deployments must also secure certificates, proxies,
 swap/crash collection, GPU tools, and third-party providers.
+
+### Lease spoofing or replay
+
+A network peer could claim another peer's lease ID, replay sensor packets, or
+silently renew microphone collection. Protobuf identifiers are correlation
+values, not credentials. The current controller accepts only an identity
+supplied by an authenticated transport boundary, permits one owner, enforces
+monotonic local expiry, and refuses owner-mismatched renewal/close. Renewal does
+not extend microphone consent. The host ingress rejects wrong lease/session
+identity and non-increasing envelope, frame, batch, and sample order. The
+wireless adapter must still implement authenticated pairing, encryption, key
+rotation, replay-resistant connection setup, revocation, and clear nonvisual
+capture state before this boundary is production-ready.
 
 ### Cue spoofing or mis-correlation
 

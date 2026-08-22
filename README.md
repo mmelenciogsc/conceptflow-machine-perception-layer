@@ -34,7 +34,8 @@ perfect perception, continuous availability, or any safety guarantee.
 It is:
 
 - a typed v1 contract for capability negotiation, bounded frame requests,
-  correlated results, multimodal cues, provenance, errors, and health;
+  leased camera/IMU/microphone envelopes, correlated results, multimodal cues,
+  provenance, errors, and health;
 - a deterministic CPU/no-device gRPC demonstration of reconnect, cancellation,
   timeout, stale rejection, error propagation, overload, recovery, and
   assistive-only rendering;
@@ -65,10 +66,12 @@ bounded FramePayload --> host validation + route --> local or gRPC processor
 assistive output <-- cue scheduler <-- correlated PerceptionResult
 ```
 
-The contract keeps control, request/result, and health semantics in gRPC:
+The contract keeps backend control, request/result, and health semantics in gRPC:
 `Negotiate`, `ProcessFrame`, and `Health`. The current unary frame RPC is a
-bounded integration baseline. WebRTC is documented only as a future media-plane
-boundary and is not implemented.
+bounded integration baseline. Transport-neutral glasses stream leases, bounded
+camera chunks, absolute IMU batches, microphone chunks, a Rokid packetizer, and
+a Poco-side latest-wins ingress are implemented. The physical WebRTC adapter,
+signaling, and authenticated pairing are not yet implemented.
 
 Before rendering, hosts validate identity, encoding, dimensions, bytes and
 digest; apply route and privacy policy; bound in-flight work; enforce deadlines
@@ -100,9 +103,9 @@ Bubble is a calibrated body-surface offset field with an exact default radius of
 
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
-| Python | 197 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; 90 JVM tests including the shared wire vector, adaptive Rokid capture/IMU gates, gRPC correlation/input gates, and haptic capability planner; Android Lint; both debug APKs built; Poco installation plus keyboard-triggered audio/haptic dispatch | Phone-to-glasses transport, instrumentation, and manual TalkBack/BVI acceptance |
-| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; distortion-free 1920×1080 gate; dark/blur and exposure-compensated 2–5 FPS motion gate; nominal 100 Hz fused head-IMU acquisition; bounded ADB-reverse gRPC development trace; correlated cue and physical audio dispatch; no vendor SDK | Continuous IMU transport to Unity/FMOD, production TLS deployment, Poco relay, open-ear localization/listening tests, on-glasses haptics, and sustained thermal validation |
+| Python | 199 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
+| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; JVM tests include the shared wire vector, leased stream ingress, adaptive Rokid capture/IMU gates, gRPC correlation/input gates, and haptic capability planner; Android Lint; both debug APKs built; Poco installation plus keyboard-triggered audio/haptic dispatch | Physical phone-to-glasses transport, instrumentation, and manual TalkBack/BVI acceptance |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; distortion-free 1920×1080 gate; physical capture cadence near 2 FPS stable/up to 5 FPS after change; dark/blur gate; nominal 100 Hz fused head-IMU acquisition with duplicate suppression and ≤20 ms batches; explicit short microphone lease; bounded ADB-reverse gRPC development trace; no vendor SDK | Physical WebRTC path to Poco, production authenticated pairing, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, and sustained thermal validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 | Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity EditMode/PlayMode lab and authored FMOD project | Physical open-ear localization, Unity FMOD runtime listening, metric depth on Rokid, target-user validation |
@@ -226,8 +229,11 @@ diagnostic is explicit and stops all inputs automatically:
 ./scripts/rokid-control --serial "$ROKID_SERIAL" stream-test
 ```
 
-It retains no image, IMU, or audio payload and reports only stream counts and
-aggregate microphone signal evidence through ADB logs.
+It retains no image, IMU, or audio payload. It reports only stream and
+packetization counts, IMU selection/suppression, and aggregate microphone
+signal evidence. Microphone packet admission stops at the exact monotonic
+two-second boundary and recorder shutdown is initiated by the matching timer;
+camera and IMU continue to the eight-second lease boundary.
 
 For the bounded physical development trace, start the deterministic service on
 the Ubuntu loopback interface, then ask the directly sideloaded Rokid app for
@@ -349,6 +355,9 @@ creation only. Each product must remain independently operable. See
   current/planned boundaries.
 - [Protocol](docs/PROTOCOL.md) — v1 messages, RPCs, correlation, errors, and
   transport boundary.
+- [Power-aware streaming](docs/POWER_AWARE_STREAMING.md) — subscribe-then-push
+  leases, adaptive camera cadence, IMU gating, microphone consent, and current
+  physical validation boundary.
 - [Accessibility](docs/ACCESSIBILITY.md) — release gates and TalkBack,
   keyboard, JAWS, and NVDA procedures.
 - [Privacy architecture](docs/PRIVACY_ARCHITECTURE.md) — data inventory,

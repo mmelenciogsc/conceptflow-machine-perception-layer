@@ -71,6 +71,70 @@ def test_frame_serialization_preserves_monotonic_identity(frame_factory) -> None
     assert decoded.pose.reference_frame == pb.COORDINATE_FRAME_LOCAL_WORLD
 
 
+def test_sensor_stream_envelope_round_trip_preserves_lease_and_absolute_imu() -> None:
+    reading = pb.ImuReading(
+        sequence_id=9,
+        pose=pb.Pose(
+            reference_frame=pb.COORDINATE_FRAME_HEAD,
+            rotation=pb.Quaternion(w=1.0),
+            monotonic_timestamp_ns=900,
+        ),
+        angular_velocity_radians_per_second=pb.Vector3(x=0.25),
+        linear_acceleration_meters_per_second_squared=pb.Vector3(y=0.5),
+        orientation_accuracy=3,
+        angular_velocity_monotonic_timestamp_ns=890,
+        linear_acceleration_monotonic_timestamp_ns=895,
+    )
+    envelope = pb.SensorStreamEnvelope(
+        session_id="ephemeral-session",
+        lease_id="lease-1",
+        sequence_id=4,
+        sent_monotonic_timestamp_ns=910,
+        imu_batch=pb.ImuBatch(
+            lease_id="lease-1",
+            batch_id=2,
+            created_monotonic_timestamp_ns=905,
+            samples=[reading],
+        ),
+    )
+
+    decoded = pb.SensorStreamEnvelope.FromString(envelope.SerializeToString(deterministic=True))
+
+    assert decoded.WhichOneof("payload") == "imu_batch"
+    assert decoded.imu_batch.samples[0] == reading
+    assert decoded.imu_batch.samples[0].pose.rotation.w == 1.0
+
+
+def test_microphone_request_is_explicit_and_camera_chunks_are_bounded() -> None:
+    request = pb.StreamLeaseRequest(
+        request_id="request-1",
+        session_id="session-1",
+        operation=pb.STREAM_LEASE_OPERATION_OPEN,
+        requested_streams=[
+            pb.SENSOR_STREAM_KIND_CAMERA,
+            pb.SENSOR_STREAM_KIND_IMU,
+            pb.SENSOR_STREAM_KIND_MICROPHONE,
+        ],
+        requested_duration_ms=8_000,
+        user_requested_microphone=True,
+        camera_relaxed_fps=2,
+        camera_motion_fps=5,
+        imu_max_batch_delay_ms=20,
+        imu_max_silence_ms=1_000,
+    )
+    chunk = pb.CameraFrameChunk(
+        frame_id=1,
+        chunk_index=0,
+        chunk_count=1,
+        total_payload_bytes=4,
+        chunk_data=b"test",
+    )
+
+    assert request.user_requested_microphone is True
+    assert request.camera_relaxed_fps == 2
+    assert len(chunk.chunk_data) <= 64 * 1024
+
+
 def test_canonical_cross_language_vectors_round_trip_byte_exactly() -> None:
     vector_path = Path(__file__).parent / "fixtures" / "protocol_vectors.properties"
     vectors = {

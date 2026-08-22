@@ -12,6 +12,38 @@ import org.conceptflow.mpl.rokid.core.PixelDimensions
 
 class Camera2FrameSourceTest {
     @Test
+    fun physicalCaptureCadenceStartsRelaxedAndRaisesOnlyAfterMotionSignal() {
+        val cadence = AdaptivePhysicalCaptureCadence()
+
+        assertEquals(500L, cadence.intervalMillis())
+        cadence.update(5.0)
+        assertEquals(200L, cadence.intervalMillis())
+        cadence.reset()
+        assertEquals(500L, cadence.intervalMillis())
+    }
+
+    @Test
+    fun physicalCaptureCadenceClampsUnexpectedGateValues() {
+        val cadence = AdaptivePhysicalCaptureCadence()
+
+        cadence.update(9.0)
+        assertEquals(200L, cadence.intervalMillis())
+        cadence.update(0.5)
+        assertEquals(500L, cadence.intervalMillis())
+    }
+
+    @Test
+    fun physicalCaptureCadenceBudgetsFromRequestTimeNotProcessingCompletion() {
+        val cadence = AdaptivePhysicalCaptureCadence()
+        cadence.recordCaptureRequest(1_000_000_000L)
+
+        assertEquals(300L, cadence.delayAfterCompletionMillis(1_200_000_000L))
+        assertEquals(0L, cadence.delayAfterCompletionMillis(1_600_000_000L))
+        cadence.update(5.0)
+        assertEquals(0L, cadence.delayAfterCompletionMillis(1_250_000_000L))
+    }
+
+    @Test
     fun headlessPreviewPrefersExactBoundedSize() {
         val selected = selectHeadlessPreviewSize(
             listOf(
