@@ -6,6 +6,58 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Android metric-depth resolution and relative-depth comparison — 2026-08-22
+
+Official Depth Anything V2 Metric Small Hypersim and VKITTI checkpoints were
+exported at static `336×336` and `392×392` resolution from the already pinned
+Apache-2.0 source revision. The export bakes the upstream DINO bicubic
+positional interpolation as a constant for each supported shape. Against the
+original runtime interpolation on the same non-personal image, maximum
+absolute ONNX differences were no more than `0.00000382 m` at 336 and
+`0.0000763 m` at 392. The generated ONNX graphs, QNN libraries, calibration
+inputs, outputs, SDK binaries, and checkpoints remained outside Git.
+
+QAIRT 2.48.40 converted and built all four FP16 graphs. Two complete physical
+runs on the Poco F7 Ultra executed 15 samples per graph through QNN HTP V79
+with six HVX threads. The first run's post-first medians were `84.51 ms`
+indoor/336, `108.18 ms` indoor/392, `86.19 ms` outdoor/336, and `106.36 ms`
+outdoor/392. A hardened repeat that SHA-256-verified every host-to-device
+transfer measured `84.44 ms`, `108.44 ms`, `87.34 ms`, and `111.43 ms`
+respectively. The benchmark helper used a unique bounded staging directory and
+removed it automatically. Three earlier task-owned Poco staging directories
+were also explicitly removed after their host-side evidence was retained.
+
+One-image QNN-versus-ONNX conversion checks produced mean relative differences
+of `1.44%` indoor/336, `2.00%` indoor/392, `3.41%` outdoor/336, and `3.97%`
+outdoor/392, all with Pearson correlation above `0.998`. Resized lower-resolution
+ONNX output tracked the 518 reference more closely at 392 than 336, but this is
+not representative task accuracy or physical metric calibration. The 518 FP16
+profiles therefore remain the current reference artifacts; 392 is only a
+balanced candidate and 336 only a degraded/low-latency candidate pending a
+representative accuracy suite, guided 0.6096 m/2.4384 m capture, and sustained
+thermal/energy measurement.
+
+Qualcomm AI Hub release 0.60.0's generic Depth Anything V2 Small package was
+also evaluated without committing its separately governed artifacts. Its
+float 518 DLC reported a QAIRT 2.45 cache-selection mismatch under QAIRT 2.48,
+then runtime-composed and executed on HTP at a `134.58 ms` post-first median
+over 25 runs. Its W8A16 DLC measured `703.36 ms`, and a local FP16 reconversion
+measured `1194.41 ms`; both were rejected for this runtime. The float result
+tracked its ONNX output on one image but remains relative depth. The Android
+calibrator now detects direct versus inverse monotonic representation, but no
+controlled two-distance physical capture was performed, so this model was not
+adopted.
+
+Final validation passed 207 Python tests, native CTest, 52 Android Node JVM
+tests, 78 Rokid Node JVM tests, the shared Android protocol test, Android Lint,
+strict Gradle dependency verification, both debug APK builds, and the minified
+Android Node release/R8 build. The Windows relay built warning-free with the
+Windows-capable .NET 8 SDK and all 156 tests passed. Formatting, repository
+policy, configuration, license, secret, Ruff, MyPy, workflow-YAML, protocol
+generation, diff-whitespace, and Python dependency-audit checks passed. The
+dependency audit found no known vulnerability in non-editable installed
+distributions.
+
 ## Android Node Machine Vision foundation — 2026-08-22
 
 The Android and Rokid APK labels were changed to **Machine Perception Layer,

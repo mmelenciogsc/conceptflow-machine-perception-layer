@@ -20,6 +20,7 @@ jobs:
       - run: python scripts/repository/check_policy.py
       - run: python scripts/repository/secret_scan.py
       - run: python scripts/repository/check_config_examples.py
+      - run: bash -n scripts/android-model-prepare scripts/android-qnn-build scripts/android-qnn-depth-build scripts/android-qnn-depth-benchmark
 
   python:
     name: Python 3.12

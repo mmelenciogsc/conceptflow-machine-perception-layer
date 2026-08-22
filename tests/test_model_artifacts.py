@@ -42,6 +42,19 @@ def test_depth_sources_are_pinned_to_official_small_metric_checkpoints() -> None
     assert outdoor.revision == "c725b8589bdf6ab04072cab74c0467830db80d6d"
 
 
+def test_depth_profiles_accept_only_validated_patch_aligned_sizes() -> None:
+    assert model_artifacts.depth_profile(336).width == 336
+    assert model_artifacts.depth_profile(392).name == "depth-392"
+    assert model_artifacts.depth_profile(518).height == 518
+    for unsupported in (0, 224, 384, 519):
+        try:
+            model_artifacts.depth_profile(unsupported)
+        except ValueError as error:
+            assert "unsupported depth input size" in str(error)
+        else:
+            raise AssertionError(f"unsupported depth size accepted: {unsupported}")
+
+
 def test_synthetic_calibration_is_deterministic_and_explicitly_not_representative(tmp_path: Path) -> None:
     first_output = tmp_path / "first"
     second_output = tmp_path / "second"
@@ -107,6 +120,55 @@ def test_export_manifest_verifies_exact_external_artifacts_and_detects_tampering
         assert "checksum mismatch" in str(error)
     else:
         raise AssertionError("tampered export was accepted")
+
+
+def test_depth_variant_manifest_requires_exact_sizes_sources_and_checksums(tmp_path: Path) -> None:
+    sizes = [336, 392]
+    records = []
+    for source in model_artifacts.DEPTH_SOURCES.values():
+        for size in sizes:
+            name = f"{source.output_stem}-{size}.onnx"
+            path = tmp_path / name
+            path.write_bytes(f"{source.profile}-{size}".encode())
+            records.append(
+                {
+                    "path": name,
+                    "input_size": size,
+                    "profile": source.profile,
+                    "sha256": model_artifacts.sha256_file(path),
+                }
+            )
+    manifest = {
+        "schema_version": 1,
+        "distribution": "private_external_artifacts_only",
+        "depth_source_revision": model_artifacts.DEPTH_SOURCE_REVISION,
+        "position_embedding": "baked_static_bicubic_equivalent",
+        "input_sizes": sizes,
+        "sources": {name: model_artifacts.asdict(source) for name, source in model_artifacts.DEPTH_SOURCES.items()},
+        "artifacts": records,
+    }
+    manifest_path = tmp_path / "depth-variant-export-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert model_artifacts.verify_depth_variant_manifest(tmp_path)["input_sizes"] == sizes
+    manifest["input_sizes"] = [392, 336]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        model_artifacts.verify_depth_variant_manifest(tmp_path)
+    except ValueError as error:
+        assert "unique and sorted" in str(error)
+    else:
+        raise AssertionError("unsorted depth sizes were accepted")
+
+    manifest["input_sizes"] = sizes
+    manifest["artifacts"][0]["profile"] = "wrong-profile"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        model_artifacts.verify_depth_variant_manifest(tmp_path)
+    except ValueError as error:
+        assert "input size mismatch" in str(error)
+    else:
+        raise AssertionError("mismatched depth profile was accepted")
 
 
 def test_image_calibration_letterboxes_to_qnn_nhwc(tmp_path: Path) -> None:

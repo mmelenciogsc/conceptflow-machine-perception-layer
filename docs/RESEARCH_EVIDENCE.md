@@ -19,6 +19,7 @@ proof of perceptual effectiveness, licensing permission, or device support.
 | [ExecuTorch Qualcomm backend](https://docs.pytorch.org/executorch/stable/android-qualcomm.html) | Qualcomm AI Engine Direct delegates to Snapdragon accelerators and documents HTP as the default backend | Treat QNN/HTP as the Poco deployment target, not legacy HTA or device-name inference |
 | [Depth Anything V2 Hypersim metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Hypersim-Small) | Official indoor checkpoint revision `3bc65d4e14a6786a61acec16453c50e12bf5f338`; card declares Apache-2.0 | Pin revision/checksum, use the 20 m metric head, and retain uncertainty |
 | [Depth Anything V2 VKITTI metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Small) | Official outdoor checkpoint revision `c725b8589bdf6ab04072cab74c0467830db80d6d`; card declares Apache-2.0 | Pin revision/checksum, use the 80 m metric head, and retain uncertainty |
+| [Qualcomm AI Hub Depth Anything V2](https://aihub.qualcomm.com/models/depth_anything_v2) and [release package](https://huggingface.co/qualcomm/Depth-Anything-V2) | Release 0.60.0 provides a 518×518 generic relative-depth Small wrapper and device-profiled ONNX/QNN assets; custom weights/shapes require a separately authenticated compilation path | Evaluate externally without committing artifacts; do not substitute its relative output for the metric indoor/outdoor heads without guided calibration |
 | [Rokid AI Glasses Style](https://global.rokid.com/products/rokid-ai-glasses-style) | Product is explicitly non-display | No visual wearer UI; direct Android/ADB path stays canonical |
 | [Camera2 capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests) | A configured session submits capture requests to target surfaces | Keep the JPEG `ImageReader` bounded and schedule capture requests independently of inference |
 | [`Bitmap.createScaledBitmap`](https://developer.android.com/reference/android/graphics/Bitmap#createScaledBitmap(android.graphics.Bitmap,int,int,boolean)) | Android exposes an explicit width/height scaling operation | Compute one aspect-fit scale first; never force a source into 16:9 |
@@ -42,6 +43,16 @@ proof of perceptual effectiveness, licensing permission, or device support.
   QNN HTP V79 with six HVX threads. This is backend/model compatibility
   evidence, not proof that the Android APK has integrated the proprietary
   runtime or that perception is accurate in use.
+- Static 336×336 and 392×392 metric Small variants required baking the DINO
+  positional interpolation before QNN conversion. Both then executed on HTP
+  V79. Post-first medians were 84.51/86.19 ms (indoor/outdoor 336) and
+  108.18/106.36 ms (392), while 518 remains the reference pending
+  representative accuracy testing. See `ANDROID_DEPTH_VARIANTS.md`.
+- The Qualcomm AI Hub 0.60.0 generic relative-depth float DLC executed through
+  HTP after runtime composition at 134.58 ms median on this QAIRT 2.48.40
+  setup, but emitted a cache-selection mismatch from its QAIRT 2.45 build.
+  W8A16 and a raw local ONNX reconversion were much slower. These results do
+  not reproduce or invalidate Qualcomm's separately published measurements.
 - Live Rokid characteristics exposed exact 1920×1080 JPEG and game-rotation,
   gyroscope, and linear-acceleration rates compatible with a 10 ms request. A
   bounded direct-app run observed 98.7 orientation samples/s. A preview-only

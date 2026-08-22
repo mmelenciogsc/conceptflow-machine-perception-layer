@@ -80,6 +80,15 @@ data class MetricDepthCalibration(
 class TwoAnchorMetricDepthCalibrator(
     private val table: KnownDimensionVectorTable = KnownDimensionVectorTable(),
 ) {
+    /**
+     * Selects the monotonic representation from the ordered calibration
+     * anchors. This avoids hard-coding vendor-specific relative-depth
+     * direction while retaining the same bounded two-anchor fit.
+     */
+    fun calibrateAuto(samples: List<GuidedCalibrationSample>): MetricDepthCalibration? =
+        calibrate(samples, RelativeDepthRepresentation.DEPTH)
+            ?: calibrate(samples, RelativeDepthRepresentation.INVERSE_DEPTH)
+
     fun calibrate(
         samples: List<GuidedCalibrationSample>,
         representation: RelativeDepthRepresentation,

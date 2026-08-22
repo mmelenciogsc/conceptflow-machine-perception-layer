@@ -377,6 +377,8 @@ creation only. Each product must remain independently operable. See
 - [Android Machine Vision](docs/ANDROID_MACHINE_VISION.md) — fixed BVI
   vocabulary, dual depth profiles, HTP boundary, dimension vectors, and
   relative-to-metric calibration.
+- [Android depth-resolution experiments](docs/ANDROID_DEPTH_VARIANTS.md) —
+  reproducible 336/392 exports, physical Poco HTP timings, and adoption gates.
 - [CUDA cluster](docs/CUDA_CLUSTER.md) — Python worker service, C++ primitives,
   CPU/sanitizer/CUDA-aware builds, and missing inference boundary.
 - [Latency benchmarking](docs/LATENCY_BENCHMARKING.md) — honest percentile and

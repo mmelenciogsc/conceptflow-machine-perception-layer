@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --serial SERIAL --qnn-sdk DIR --model-dir DIR --input-root DIR --output-dir DIR" \
+        "Runs the four verified 336/392 FP16 metric-depth libraries through QNN HTP." \
+        "Device files are staged in a unique bounded temporary directory and removed on exit."
+}
+
+serial=""
+qnn_sdk=""
+model_dir=""
+input_root=""
+output_dir=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        --qnn-sdk) qnn_sdk="${2:-}"; shift 2 ;;
+        --model-dir) model_dir="${2:-}"; shift 2 ;;
+        --input-root) input_root="${2:-}"; shift 2 ;;
+        --output-dir) output_dir="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "$serial" || -z "$qnn_sdk" || -z "$model_dir" || -z "$input_root" || -z "$output_dir" ]]; then
+    usage >&2
+    exit 2
+fi
+[[ "$serial" =~ ^[A-Za-z0-9._:-]+$ ]] || { printf 'Unsafe device serial.\n' >&2; exit 2; }
+command -v adb >/dev/null || { printf 'adb is unavailable.\n' >&2; exit 1; }
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+qnn_sdk="$(realpath -e -- "$qnn_sdk")"
+model_dir="$(realpath -e -- "$model_dir")"
+input_root="$(realpath -e -- "$input_root")"
+output_dir="$(realpath -m -- "$output_dir")"
+case "$output_dir/" in
+    "$repo_root/"*) printf 'Benchmark output must be outside the repository.\n' >&2; exit 2 ;;
+esac
+if [[ -d "$output_dir" && -n "$(find "$output_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    printf 'Benchmark output directory must be empty: %s\n' "$output_dir" >&2
+    exit 2
+fi
+mkdir -p -- "$output_dir"
+
+readonly net_run="$qnn_sdk/bin/aarch64-android/qnn-net-run"
+readonly profile_viewer="$qnn_sdk/bin/x86_64-linux-clang/qnn-profile-viewer"
+readonly runtime_root="$qnn_sdk/lib/aarch64-android"
+declare -a runtime_files=(
+    "$runtime_root/libQnnHtp.so"
+    "$runtime_root/libQnnHtpPrepare.so"
+    "$runtime_root/libQnnHtpV79Stub.so"
+    "$runtime_root/libQnnSystem.so"
+    "$qnn_sdk/lib/hexagon-v79/unsigned/libQnnHtpV79Skel.so"
+)
+[[ -x "$net_run" && -x "$profile_viewer" ]] || {
+    printf 'Required QNN tools are unavailable.\n' >&2
+    exit 1
+}
+for artifact in "${runtime_files[@]}"; do
+    [[ -f "$artifact" ]] || { printf 'Required QNN runtime is missing: %s\n' "$artifact" >&2; exit 1; }
+done
+adb -s "$serial" get-state 2>/dev/null | grep -qx device || {
+    printf 'Selected Android device is unavailable.\n' >&2
+    exit 1
+}
+
+readonly remote_dir="/data/local/tmp/conceptflow_mpl_depth_benchmark_$$"
+cleanup() {
+    if [[ "$remote_dir" == /data/local/tmp/conceptflow_mpl_depth_benchmark_[0-9]* ]]; then
+        adb -s "$serial" shell rm -rf -- "$remote_dir" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT INT TERM
+adb -s "$serial" shell mkdir -p -- "$remote_dir"
+
+push_verified() {
+    local source="$1"
+    local name host_hash device_hash
+    name="$(basename -- "$source")"
+    adb -s "$serial" push "$source" "$remote_dir/$name" >/dev/null
+    host_hash="$(sha256sum -- "$source" | awk '{print $1}')"
+    device_hash="$(adb -s "$serial" shell sha256sum "$remote_dir/$name" | awk '{print $1}')"
+    [[ "$host_hash" == "$device_hash" ]] || {
+        printf 'Device transfer checksum mismatch: %s\n' "$name" >&2
+        exit 1
+    }
+}
+
+push_verified "$net_run"
+for artifact in "${runtime_files[@]}"; do push_verified "$artifact"; done
+adb -s "$serial" shell chmod 755 "$remote_dir/qnn-net-run"
+
+for size in 336 392; do
+    input="$input_root/depth-$size/depth-$size-image-device-000.float32.raw"
+    input_list="$input_root/depth-$size/depth-$size-image-device-input-list.txt"
+    [[ -f "$input" && -f "$input_list" ]] || {
+        printf 'Missing input fixture for %s.\n' "$size" >&2
+        exit 1
+    }
+    push_verified "$input"
+    push_verified "$input_list"
+    for environment in indoor outdoor; do
+        library="libdepth_${environment}_${size}_fp16.so"
+        source="$model_dir/depth-$environment-$size-fp16/lib/aarch64-android/$library"
+        [[ -f "$source" ]] || { printf 'Missing model library: %s\n' "$source" >&2; exit 1; }
+        push_verified "$source"
+    done
+done
+
+for environment in indoor outdoor; do
+    for size in 336 392; do
+        name="$environment-$size"
+        mkdir -p -- "$output_dir/$name"
+        adb -s "$serial" shell "cd '$remote_dir' && export LD_LIBRARY_PATH='$remote_dir' && export ADSP_LIBRARY_PATH='$remote_dir' && ./qnn-net-run --backend=libQnnHtp.so --model=libdepth_${environment}_${size}_fp16.so --input_list=depth-${size}-image-device-input-list.txt --output_dir=out-$name --profiling_level=detailed --perf_profile=burst --keep_num_outputs=1 --log_level=warn" \
+            2>&1 | tee "$output_dir/$name/device.log"
+        adb -s "$serial" pull "$remote_dir/out-$name/." "$output_dir/$name/" >/dev/null
+        "$profile_viewer" \
+            --input_log "$output_dir/$name/qnn-profiling-data_0.log" \
+            --output "$output_dir/$name/profile.csv" >/dev/null
+    done
+done
+
+python3 - "$output_dir" <<'PY' | tee "$output_dir/summary.json"
+import csv
+import json
+import statistics
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+profiles = []
+for name in ("indoor-336", "indoor-392", "outdoor-336", "outdoor-392"):
+    values = []
+    with (root / name / "profile.csv").open(newline="", encoding="utf-8") as source:
+        for row in csv.reader(source):
+            if len(row) >= 7 and row[1] == "EXECUTE" and row[3:6] == ["US", "NETRUN", "ROOT"]:
+                values.append(int(row[2]) / 1_000.0)
+    if len(values) < 2:
+        raise SystemExit(f"No repeated client execution samples found for {name}")
+    warm = values[1:]
+    profiles.append(
+        {
+            "profile": name,
+            "samples": len(values),
+            "first_ms": values[0],
+            "post_first_median_ms": statistics.median(warm),
+            "post_first_min_ms": min(warm),
+            "post_first_max_ms": max(warm),
+        }
+    )
+print(json.dumps({"schema_version": 1, "profiles": profiles}, indent=2, sort_keys=True))
+PY

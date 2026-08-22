@@ -54,6 +54,11 @@ REQUIRED = (
 SOURCE_SUFFIXES = {".py", ".sh", ".kt", ".kts", ".java", ".cs", ".cpp", ".hpp", ".proto"}
 SOURCE_NAMES = {"CMakeLists.txt", "Makefile"}
 SCRIPT_NAMES = {
+    "android-model-install",
+    "android-model-prepare",
+    "android-qnn-build",
+    "android-qnn-depth-benchmark",
+    "android-qnn-depth-build",
     "benchmark",
     "bootstrap",
     "build",

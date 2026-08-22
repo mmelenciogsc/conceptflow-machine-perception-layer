@@ -42,6 +42,27 @@ class MetricDepthCalibrationTest {
     }
 
     @Test
+    fun autoCalibrationSelectsObservedRelativeDepthDirection() {
+        val direct = calibrator.calibrateAuto(
+            listOf(
+                sample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0),
+                sample("door", ReferenceDistance.FAR_EIGHT_FEET, 8.0),
+            ),
+        )!!
+        val inverse = calibrator.calibrateAuto(
+            listOf(
+                sample("door", ReferenceDistance.NEAR_TWO_FEET, 8.0),
+                sample("door", ReferenceDistance.FAR_EIGHT_FEET, 2.0),
+            ),
+        )!!
+
+        assertEquals(RelativeDepthRepresentation.DEPTH, direct.representation)
+        assertEquals(RelativeDepthRepresentation.INVERSE_DEPTH, inverse.representation)
+        assertEquals(0.6096, inverse.estimate(8.0)!!.distanceMeters, 1e-9)
+        assertEquals(2.4384, inverse.estimate(2.0)!!.distanceMeters, 1e-9)
+    }
+
+    @Test
     fun ignoresUnknownAndUnstableClassesAndRejectsMissingAnchor() {
         assertNull(
             calibrator.calibrate(

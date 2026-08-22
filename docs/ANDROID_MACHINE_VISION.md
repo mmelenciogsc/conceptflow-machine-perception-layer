@@ -75,10 +75,16 @@ held for at least ten seconds to prevent model thrashing.
 
 The two-anchor calibration is intentionally fast: fitting is O(n) over a small
 guided sample set and each estimate is O(1). It supports raw relative-depth and
-inverse-depth outputs. Pinhole dimension estimates may contribute calibration
+inverse-depth outputs, and `calibrateAuto` selects the monotonic direction from
+the observed near/far anchors instead of assuming vendor output semantics.
+Pinhole dimension estimates may contribute calibration
 evidence for stable classes, but they are never promoted to sensor-grade
 metric truth. Out-of-range estimates are marked extrapolated and receive an
 uncertainty penalty.
+
+The physically tested 336/392 variants, their current non-adoption decision,
+and reproducible HTP benchmark are documented in
+[Android depth-resolution experiments](ANDROID_DEPTH_VARIANTS.md).
 
 ## Local synthetic diagnostic
 

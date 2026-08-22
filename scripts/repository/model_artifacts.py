@@ -30,6 +30,7 @@ VOCABULARY_PATH = REPOSITORY_ROOT / "config/machine-vision/bvi_classes.txt"
 EXPECTED_VOCABULARY_SHA256 = "2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
 EXPECTED_YOLOE_CHECKPOINT_SHA256 = "48f24206bc8680d60cbbfa296b0140da849669b9515058b72f5a945142df0654"
 DEPTH_SOURCE_REVISION = "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf"
+DEPTH_INPUT_SIZES = (336, 392, 518)
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,13 @@ CALIBRATION_PROFILES = {
     "yoloe": CalibrationProfile("yoloe", 640, 640, "unit_rgb"),
     "depth": CalibrationProfile("depth", 518, 518, "imagenet_rgb"),
 }
+
+
+def depth_profile(input_size: int) -> CalibrationProfile:
+    if input_size not in DEPTH_INPUT_SIZES:
+        supported = ", ".join(str(value) for value in DEPTH_INPUT_SIZES)
+        raise ValueError(f"unsupported depth input size {input_size}; expected one of: {supported}")
+    return CalibrationProfile(f"depth-{input_size}", input_size, input_size, "imagenet_rgb")
 
 
 def sha256_file(path: Path) -> str:
@@ -327,14 +335,21 @@ def _onnx_metadata(model: Any) -> dict[str, str]:
     return {entry.key: entry.value for entry in model.metadata_props}
 
 
-def inspect_onnx(path: Path, profile_name: str) -> dict[str, Any]:
+def inspect_onnx(path: Path, profile_name: str, input_size: int | None = None) -> dict[str, Any]:
     try:
         import onnx
         import onnxruntime as ort
     except ImportError as error:
         raise RuntimeError("inspect-onnx requires onnx and onnxruntime") from error
 
-    expected = CALIBRATION_PROFILES["yoloe" if profile_name == "yoloe" else "depth"]
+    if profile_name == "yoloe":
+        if input_size not in (None, CALIBRATION_PROFILES["yoloe"].width):
+            raise ValueError("YOLOE input size is fixed at 640")
+        expected = CALIBRATION_PROFILES["yoloe"]
+    else:
+        expected = depth_profile(
+            input_size if input_size is not None else CALIBRATION_PROFILES["depth"].width,
+        )
     model = onnx.load(path, load_external_data=True)
     onnx.checker.check_model(model)
     inputs = [
@@ -426,6 +441,70 @@ def verify_export_manifest(directory: Path) -> dict[str, Any]:
     }
 
 
+def verify_depth_variant_manifest(directory: Path) -> dict[str, Any]:
+    resolved = directory.expanduser().resolve()
+    if resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents:
+        raise ValueError("private/generated model artifacts must remain outside the repository")
+    manifest_path = resolved / "depth-variant-export-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != 1 or manifest.get("distribution") != "private_external_artifacts_only":
+        raise ValueError("unsupported or unsafe depth variant manifest")
+    if manifest.get("depth_source_revision") != DEPTH_SOURCE_REVISION:
+        raise ValueError("depth variant source revision mismatch")
+    if manifest.get("position_embedding") != "baked_static_bicubic_equivalent":
+        raise ValueError("depth variant position embedding is not HTP-safe")
+    raw_sizes = manifest.get("input_sizes")
+    if not isinstance(raw_sizes, list) or not raw_sizes or any(type(value) is not int for value in raw_sizes):
+        raise ValueError("depth variant input sizes are missing")
+    sizes = tuple(raw_sizes)
+    if tuple(sorted(set(sizes))) != sizes:
+        raise ValueError("depth variant input sizes must be unique and sorted")
+    for size in sizes:
+        depth_profile(size)
+
+    sources = manifest.get("sources")
+    if not isinstance(sources, dict):
+        raise ValueError("depth variant sources are missing")
+    for name, expected in DEPTH_SOURCES.items():
+        actual = sources.get(name)
+        if not isinstance(actual, dict):
+            raise ValueError(f"depth variant source is missing: {name}")
+        for field in ("repository_id", "revision", "checkpoint_file", "checkpoint_sha256"):
+            if actual.get(field) != getattr(expected, field):
+                raise ValueError(f"depth variant source mismatch: {name}.{field}")
+
+    expected_artifacts = {
+        f"{source.output_stem}-{size}.onnx": (size, source.profile)
+        for source in DEPTH_SOURCES.values()
+        for size in sizes
+    }
+    expected_files = set(expected_artifacts)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("depth variant artifact records are missing")
+    records = {
+        record.get("path"): record
+        for record in artifacts
+        if isinstance(record, dict) and isinstance(record.get("path"), str)
+    }
+    if set(records) != expected_files or len(records) != len(artifacts):
+        raise ValueError("depth variant artifact set mismatch")
+    for name, record in records.items():
+        artifact = resolved / name
+        declared = record.get("sha256")
+        expected_size, expected_profile = expected_artifacts[name]
+        if record.get("input_size") != expected_size or record.get("profile") != expected_profile:
+            raise ValueError(f"depth variant input size mismatch: {name}")
+        if not artifact.is_file() or not isinstance(declared, str) or sha256_file(artifact) != declared:
+            raise ValueError(f"depth variant artifact checksum mismatch: {name}")
+    return {
+        "status": "verified",
+        "manifest": manifest_path.name,
+        "input_sizes": list(sizes),
+        "artifacts": sorted(expected_files),
+    }
+
+
 def _git_revision(path: Path) -> str:
     result = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "HEAD"],
@@ -436,20 +515,148 @@ def _git_revision(path: Path) -> str:
     return result.stdout.strip()
 
 
+def _validate_depth_inputs(
+    depth_source: Path,
+    indoor_checkpoint: Path,
+    outdoor_checkpoint: Path,
+) -> None:
+    if _git_revision(depth_source) != DEPTH_SOURCE_REVISION:
+        raise ValueError("Depth Anything V2 source checkout is not at the pinned revision")
+    for source, checkpoint in (
+        (DEPTH_SOURCES["depth-indoor"], indoor_checkpoint),
+        (DEPTH_SOURCES["depth-outdoor"], outdoor_checkpoint),
+    ):
+        if sha256_file(checkpoint) != source.checkpoint_sha256:
+            raise ValueError(f"unexpected checkpoint SHA-256 for {source.profile}")
+
+
+def _load_depth_model(depth_source: Path, source: DepthArtifactSource, checkpoint: Path, torch: Any) -> Any:
+    module_path = str(depth_source / "metric_depth")
+    if module_path not in sys.path:
+        sys.path.insert(0, module_path)
+    from depth_anything_v2.dpt import DepthAnythingV2
+
+    config = {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]}
+    model = DepthAnythingV2(**config, max_depth=source.max_depth_meters)
+    model.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True), strict=True)
+    model.eval()
+    return model
+
+
+def _bake_depth_position_embedding(model: Any, input_size: int, torch: Any) -> None:
+    """Replace DINO's native grid with its fixed-size interpolated equivalent.
+
+    Smaller static inputs otherwise leave a bicubic positional-embedding Resize
+    in the ONNX graph. QAIRT can convert that operation, but the target HTP V79
+    rejects the graph during composition. Baking the constant preserves the
+    upstream interpolation while removing it from the device graph.
+    """
+    import math
+
+    target_grid = input_size // 14
+    position = model.pretrained.pos_embed.detach().float()
+    patch_count = position.shape[1] - 1
+    source_grid = math.isqrt(patch_count)
+    if source_grid * source_grid != patch_count:
+        raise ValueError("depth position embedding does not contain a square patch grid")
+    if source_grid == target_grid:
+        return
+    class_position = position[:, :1]
+    patch_position = position[:, 1:].reshape(1, source_grid, source_grid, position.shape[-1])
+    patch_position = patch_position.permute(0, 3, 1, 2)
+    interpolation_offset = model.pretrained.interpolate_offset
+    scale = float(target_grid + interpolation_offset) / source_grid
+    patch_position = torch.nn.functional.interpolate(
+        patch_position,
+        scale_factor=(scale, scale),
+        mode="bicubic",
+        align_corners=False,
+        antialias=model.pretrained.interpolate_antialias,
+    )
+    if patch_position.shape[-2:] != (target_grid, target_grid):
+        raise ValueError("depth position embedding interpolation produced an unexpected grid")
+    patch_position = patch_position.permute(0, 2, 3, 1).reshape(1, target_grid * target_grid, -1)
+    baked = torch.cat((class_position, patch_position), dim=1).to(model.pretrained.pos_embed.dtype)
+    model.pretrained.pos_embed = torch.nn.Parameter(baked, requires_grad=False)
+
+
+def _export_depth_model(model: Any, output: Path, input_size: int, torch: Any) -> None:
+    with torch.inference_mode():
+        torch.onnx.export(
+            model,
+            torch.zeros(1, 3, input_size, input_size),
+            output,
+            input_names=["images"],
+            output_names=["depth_meters"],
+            opset_version=17,
+            dynamo=False,
+            do_constant_folding=True,
+        )
+
+
+def export_depth_variants(args: argparse.Namespace) -> dict[str, Any]:
+    output = ensure_external_output(args.output_dir)
+    sizes = tuple(sorted(set(args.sizes)))
+    if not sizes:
+        raise ValueError("at least one depth input size is required")
+    for size in sizes:
+        depth_profile(size)
+    _validate_depth_inputs(
+        args.depth_source,
+        args.depth_indoor_checkpoint,
+        args.depth_outdoor_checkpoint,
+    )
+    try:
+        import onnx
+        import onnxruntime
+        import torch
+    except ImportError as error:
+        raise RuntimeError("export-depth-variants requires torch, onnx, and onnxruntime") from error
+
+    artifacts: list[dict[str, Any]] = []
+    for source, checkpoint in (
+        (DEPTH_SOURCES["depth-indoor"], args.depth_indoor_checkpoint),
+        (DEPTH_SOURCES["depth-outdoor"], args.depth_outdoor_checkpoint),
+    ):
+        for size in sizes:
+            model = _load_depth_model(args.depth_source, source, checkpoint, torch)
+            _bake_depth_position_embedding(model, size, torch)
+            depth_output = output / f"{source.output_stem}-{size}.onnx"
+            _export_depth_model(model, depth_output, size, torch)
+            record = inspect_onnx(depth_output, "depth", size)
+            record["input_size"] = size
+            record["profile"] = source.profile
+            artifacts.append(record)
+
+    manifest = {
+        "schema_version": 1,
+        "created_utc": datetime.now(UTC).isoformat(),
+        "distribution": "private_external_artifacts_only",
+        "purpose": "static_metric_depth_resolution_comparison",
+        "accuracy_claim": False,
+        "position_embedding": "baked_static_bicubic_equivalent",
+        "torch_version": torch.__version__,
+        "onnx_version": onnx.__version__,
+        "onnxruntime_version": onnxruntime.__version__,
+        "depth_source_revision": DEPTH_SOURCE_REVISION,
+        "input_sizes": list(sizes),
+        "sources": {name: asdict(source) for name, source in DEPTH_SOURCES.items()},
+        "artifacts": artifacts,
+    }
+    (output / "depth-variant-export-manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def export_models(args: argparse.Namespace) -> dict[str, Any]:
     output = ensure_external_output(args.output_dir)
     if not args.acknowledge_ultralytics_terms:
         raise ValueError("YOLOE export requires --acknowledge-ultralytics-terms")
     if sha256_file(args.yoloe_checkpoint) != EXPECTED_YOLOE_CHECKPOINT_SHA256:
         raise ValueError("unexpected YOLOE-26S checkpoint SHA-256")
-    if _git_revision(args.depth_source) != DEPTH_SOURCE_REVISION:
-        raise ValueError("Depth Anything V2 source checkout is not at the pinned revision")
-    for source, checkpoint in (
-        (DEPTH_SOURCES["depth-indoor"], args.depth_indoor_checkpoint),
-        (DEPTH_SOURCES["depth-outdoor"], args.depth_outdoor_checkpoint),
-    ):
-        if sha256_file(checkpoint) != source.checkpoint_sha256:
-            raise ValueError(f"unexpected checkpoint SHA-256 for {source.profile}")
+    _validate_depth_inputs(args.depth_source, args.depth_indoor_checkpoint, args.depth_outdoor_checkpoint)
 
     try:
         import onnx
@@ -492,30 +699,14 @@ def export_models(args: argparse.Namespace) -> dict[str, Any]:
     if exported.resolve() != yoloe_onnx.resolve():
         shutil.move(exported, yoloe_onnx)
 
-    sys.path.insert(0, str(args.depth_source / "metric_depth"))
-    from depth_anything_v2.dpt import DepthAnythingV2
-
-    config = {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]}
     depth_outputs: list[Path] = []
     for source, checkpoint in (
         (DEPTH_SOURCES["depth-indoor"], args.depth_indoor_checkpoint),
         (DEPTH_SOURCES["depth-outdoor"], args.depth_outdoor_checkpoint),
     ):
-        model = DepthAnythingV2(**config, max_depth=source.max_depth_meters)
-        model.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True), strict=True)
-        model.eval()
+        model = _load_depth_model(args.depth_source, source, checkpoint, torch)
         depth_output = output / f"{source.output_stem}.onnx"
-        with torch.inference_mode():
-            torch.onnx.export(
-                model,
-                torch.zeros(1, 3, 518, 518),
-                depth_output,
-                input_names=["images"],
-                output_names=["depth_meters"],
-                opset_version=17,
-                dynamo=False,
-                do_constant_folding=True,
-            )
+        _export_depth_model(model, depth_output, 518, torch)
         depth_outputs.append(depth_output)
 
     artifacts = [inspect_onnx(yoloe_onnx, "yoloe")]
@@ -558,6 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibration.add_argument("--output-dir", type=Path, required=True)
     calibration.add_argument("--samples", type=int, default=4)
     calibration.add_argument("--device-runs", type=int, default=1)
+    calibration.add_argument("--size", type=int)
 
     calibration_images = commands.add_parser(
         "calibration-images",
@@ -568,13 +760,31 @@ def build_parser() -> argparse.ArgumentParser:
     calibration_images.add_argument("--output-dir", type=Path, required=True)
     calibration_images.add_argument("--limit", type=int, default=32)
     calibration_images.add_argument("--device-runs", type=int, default=1)
+    calibration_images.add_argument("--size", type=int)
 
     inspect = commands.add_parser("inspect-onnx", help="validate an exported ONNX contract")
     inspect.add_argument("--profile", choices=("yoloe", "depth"), required=True)
     inspect.add_argument("--model", type=Path, required=True)
+    inspect.add_argument("--size", type=int)
 
     verify = commands.add_parser("verify-export", help="verify a pinned external export manifest")
     verify.add_argument("--directory", type=Path, required=True)
+
+    verify_variants = commands.add_parser(
+        "verify-depth-variants",
+        help="verify a pinned external metric-depth variant manifest",
+    )
+    verify_variants.add_argument("--directory", type=Path, required=True)
+
+    export_variants = commands.add_parser(
+        "export-depth-variants",
+        help="export pinned metric-depth checkpoints at static comparison sizes",
+    )
+    export_variants.add_argument("--depth-source", type=Path, required=True)
+    export_variants.add_argument("--depth-indoor-checkpoint", type=Path, required=True)
+    export_variants.add_argument("--depth-outdoor-checkpoint", type=Path, required=True)
+    export_variants.add_argument("--output-dir", type=Path, required=True)
+    export_variants.add_argument("--sizes", type=int, nargs="+", default=[336, 392])
 
     export = commands.add_parser("export", help="export pinned checkpoints to static ONNX")
     export.add_argument("--yoloe-checkpoint", type=Path, required=True)
@@ -593,24 +803,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             prompts = load_vocabulary()
             value: Any = list(prompts) if args.json else "\n".join(prompts)
         elif args.command == "calibration":
+            profile = CALIBRATION_PROFILES[args.profile]
+            if args.size is not None:
+                if args.profile != "depth":
+                    raise ValueError("--size is supported only for the depth profile")
+                profile = depth_profile(args.size)
             value = write_calibration_set(
                 args.output_dir,
-                CALIBRATION_PROFILES[args.profile],
+                profile,
                 args.samples,
                 args.device_runs,
             )
         elif args.command == "calibration-images":
+            profile = CALIBRATION_PROFILES[args.profile]
+            if args.size is not None:
+                if args.profile != "depth":
+                    raise ValueError("--size is supported only for the depth profile")
+                profile = depth_profile(args.size)
             value = write_image_calibration_set(
                 args.output_dir,
-                CALIBRATION_PROFILES[args.profile],
+                profile,
                 args.images,
                 args.limit,
                 args.device_runs,
             )
         elif args.command == "inspect-onnx":
-            value = inspect_onnx(args.model, args.profile)
+            value = inspect_onnx(args.model, args.profile, args.size)
         elif args.command == "verify-export":
             value = verify_export_manifest(args.directory)
+        elif args.command == "verify-depth-variants":
+            value = verify_depth_variant_manifest(args.directory)
+        elif args.command == "export-depth-variants":
+            value = export_depth_variants(args)
         else:
             value = export_models(args)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:

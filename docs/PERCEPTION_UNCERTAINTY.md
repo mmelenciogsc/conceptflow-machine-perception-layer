@@ -37,6 +37,10 @@ the existing profile.
 `TwoAnchorMetricDepthCalibrator` uses dimension-stable semantic observations at
 exact 0.6096 m and 2.4384 m guided anchors. Extrapolated output is marked and
 penalized. This does not make monocular depth equivalent to measured depth.
+The calibrator can infer whether a relative model is direct or inverse from
+those ordered anchors; it still rejects missing or degenerate anchor spans.
+Lower 336/392 inputs remain experimental as described in
+[Android depth-resolution experiments](ANDROID_DEPTH_VARIANTS.md).
 
 Geometry older than 200 ms and semantics older than 350 ms are rejected in the
 reference. Those defaults are experimental contextual TTLs, not safety limits.

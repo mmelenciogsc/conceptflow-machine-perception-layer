@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --qnn-sdk DIR --ndk DIR --onnx-dir DIR --output-dir DIR [--precision fp16|w8a16] [--calibration-root DIR]" \
+        "Builds pinned metric Depth Anything V2 static-shape variants as private AArch64 QNN libraries." \
+        "Generated models must remain outside the repository."
+}
+
+qnn_sdk=""
+ndk=""
+onnx_dir=""
+output_dir=""
+calibration_root=""
+precision="fp16"
+while (($#)); do
+    case "$1" in
+        --qnn-sdk) qnn_sdk="${2:-}"; shift 2 ;;
+        --ndk) ndk="${2:-}"; shift 2 ;;
+        --onnx-dir) onnx_dir="${2:-}"; shift 2 ;;
+        --output-dir) output_dir="${2:-}"; shift 2 ;;
+        --calibration-root) calibration_root="${2:-}"; shift 2 ;;
+        --precision) precision="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "$qnn_sdk" || -z "$ndk" || -z "$onnx_dir" || -z "$output_dir" ]]; then
+    usage >&2
+    exit 2
+fi
+[[ "$precision" == "fp16" || "$precision" == "w8a16" ]] || {
+    printf 'Precision must be fp16 or w8a16.\n' >&2
+    exit 2
+}
+if [[ "$precision" == "w8a16" && -z "$calibration_root" ]]; then
+    printf 'W8A16 requires --calibration-root with a depth-SIZE directory for every variant.\n' >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+qnn_sdk="$(realpath -e -- "$qnn_sdk")"
+ndk="$(realpath -e -- "$ndk")"
+onnx_dir="$(realpath -e -- "$onnx_dir")"
+output_dir="$(realpath -m -- "$output_dir")"
+if [[ -n "$calibration_root" ]]; then calibration_root="$(realpath -e -- "$calibration_root")"; fi
+case "$output_dir/" in
+    "$repo_root/"*) printf 'QNN output must be outside the repository.\n' >&2; exit 2 ;;
+esac
+mkdir -p -- "$output_dir"
+manifest_json="$("$repo_root/scripts/android-model-prepare" verify-depth-variants --directory "$onnx_dir")"
+
+readonly converter="$qnn_sdk/bin/x86_64-linux-clang/qnn-onnx-converter"
+readonly generator="$qnn_sdk/bin/x86_64-linux-clang/qnn-model-lib-generator"
+[[ -x "$converter" && -x "$generator" ]] || {
+    printf 'The selected QNN SDK does not contain the required host tools.\n' >&2
+    exit 1
+}
+[[ -x "$ndk/ndk-build" ]] || { printf 'The selected Android NDK is incomplete.\n' >&2; exit 1; }
+
+export QNN_SDK_ROOT="$qnn_sdk"
+export ANDROID_NDK_ROOT="$ndk"
+export PATH="$qnn_sdk/venv/bin:$ndk:$PATH"
+export PYTHONPATH="$qnn_sdk/lib/python${PYTHONPATH:+:$PYTHONPATH}"
+export LD_LIBRARY_PATH="$qnn_sdk/lib/x86_64-linux-clang${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+mapfile -t sizes < <(python3 -c 'import json,sys; print("\n".join(map(str,json.load(sys.stdin)["input_sizes"])))' <<<"$manifest_json")
+declare -A stem=(
+    [depth-indoor]="depth-anything-v2-metric-indoor-hypersim-vits"
+    [depth-outdoor]="depth-anything-v2-metric-outdoor-vkitti-vits"
+)
+
+for size in "${sizes[@]}"; do
+    for key in depth-indoor depth-outdoor; do
+        source="$onnx_dir/${stem[$key]}-$size.onnx"
+        model_dir="$output_dir/$key-$size-$precision"
+        library="${key//-/_}_${size}_${precision}"
+        mkdir -p -- "$model_dir"
+        cpp="$model_dir/${stem[$key]}-$size.cpp"
+        args=(--input_network "$source" --output_path "$cpp")
+        if [[ "$precision" == "fp16" ]]; then
+            args+=(--float_bitwidth 16 --float_bias_bitwidth 16)
+        else
+            input_list="$calibration_root/depth-$size/depth-$size-image-input-list.txt"
+            [[ -f "$input_list" ]] || { printf 'Missing calibration list: %s\n' "$input_list" >&2; exit 1; }
+            args+=(--input_list "$input_list" --weights_bitwidth 8 --act_bitwidth 16 --bias_bitwidth 32)
+            args+=(--preserve_io datatype images depth_meters)
+        fi
+        printf 'Converting %s at %sx%s (%s).\n' "$key" "$size" "$size" "$precision"
+        (cd "$model_dir" && "$converter" "${args[@]}")
+        "$generator" \
+            --cpp "$cpp" \
+            --bin "$model_dir/${stem[$key]}-$size.bin" \
+            --lib_targets aarch64-android \
+            --lib_name "$library" \
+            --output_dir "$model_dir/lib"
+        artifact="$model_dir/lib/aarch64-android/lib$library.so"
+        [[ -f "$artifact" ]] || { printf 'Expected output missing: %s\n' "$artifact" >&2; exit 1; }
+        sha256sum -- "$artifact"
+    done
+done

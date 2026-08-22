@@ -14,6 +14,7 @@ relicense tools, plug-ins, model code, checkpoints, fonts, brands, or datasets.
 | Depth Anything V2 Hypersim Small | External checkpoint and generated model library only; none committed | Official code and checked model card declare Apache-2.0; pin revision/checksum and retain notices |
 | Depth Anything V2 VKITTI Small | External checkpoint and generated model library only; none committed | Official code and checked model card declare Apache-2.0; pin revision/checksum and retain notices |
 | Qualcomm AI Engine Direct / QNN | External conversion and physical HTP test only; no SDK binary committed | Accept SDK terms; keep proprietary tools/runtime outside the permissive source tree |
+| Qualcomm AI Hub Depth Anything V2 release artifacts | External evaluation only; no DLC, ONNX graph, package, or weight committed | Verify AI Hub artifact/model terms for the exact release before redistribution; upstream Small licensing does not automatically grant rights to every compiled vendor artifact |
 | Unity | Project source/settings only; no editor/runtime redistribution in Git | Unity editor/runtime license for target distribution |
 | Rokid/Android/NVIDIA SDKs | Platform boundary only; no proprietary SDK or driver binaries committed | Vendor terms for each deployed component |
 
