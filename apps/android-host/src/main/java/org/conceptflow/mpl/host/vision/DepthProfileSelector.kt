@@ -6,6 +6,7 @@ data class EnvironmentEvidence(
     val indoorProbability: Double,
     val outdoorProbability: Double,
     val independentSignalCount: Int,
+    val hasPrimaryVisualSignal: Boolean = false,
 ) {
     init {
         require(timestampNanos >= 0L)
@@ -21,6 +22,8 @@ data class DepthProfileSelectorConfig(
     val consecutiveEvidenceRequired: Int = 3,
     val minimumHoldNanos: Long = 10_000_000_000L,
     val maximumEvidenceAgeNanos: Long = 2_000_000_000L,
+    val maximumProfileReuseNanos: Long = 30_000_000_000L,
+    val singleVisualEnterProbability: Double = 0.88,
 ) {
     init {
         require(enterProbability in 0.5..1.0)
@@ -28,6 +31,9 @@ data class DepthProfileSelectorConfig(
         require(consecutiveEvidenceRequired in 1..20)
         require(minimumHoldNanos >= 0L)
         require(maximumEvidenceAgeNanos > 0L)
+        require(maximumProfileReuseNanos >= maximumEvidenceAgeNanos)
+        require(maximumProfileReuseNanos >= minimumHoldNanos)
+        require(singleVisualEnterProbability in enterProbability..1.0)
     }
 }
 
@@ -35,6 +41,9 @@ data class DepthProfileDecision(
     val environment: DepthEnvironment?,
     val changed: Boolean,
     val reason: String,
+    val sceneState: SceneEnvironmentState = environment.toSceneState(),
+    val confidence: Double = 0.0,
+    val evidenceTimestampNanos: Long? = null,
 )
 
 /**
@@ -48,6 +57,10 @@ class DepthProfileSelector(
     private var candidate: DepthEnvironment? = null
     private var candidateCount = 0
     private var lastSwitchNanos = Long.MIN_VALUE
+    private var lastConfirmedNanos = Long.MIN_VALUE
+    private var lastEvidenceTimestampNanos = Long.MIN_VALUE
+    private var lastSceneState = SceneEnvironmentState.UNKNOWN
+    private var lastConfidence = 0.0
 
     @Synchronized
     fun evaluate(evidence: EnvironmentEvidence, nowNanos: Long): DepthProfileDecision {
@@ -55,22 +68,63 @@ class DepthProfileSelector(
         val age = nowNanos - evidence.timestampNanos
         if (age < 0L || age > config.maximumEvidenceAgeNanos) {
             resetCandidate()
-            return DepthProfileDecision(current, false, "stale_or_future_evidence")
+            return holdOrExpire(nowNanos, "stale_or_future_evidence", SceneEnvironmentState.UNKNOWN, 0.0, null)
         }
+        if (evidence.timestampNanos <= lastEvidenceTimestampNanos) {
+            return holdOrExpire(
+                nowNanos,
+                "duplicate_or_out_of_order_evidence",
+                lastSceneState,
+                lastConfidence,
+                evidence.timestampNanos,
+            )
+        }
+        lastEvidenceTimestampNanos = evidence.timestampNanos
+        val confidence = maxOf(evidence.indoorProbability, evidence.outdoorProbability)
         val proposed = classify(evidence)
         if (proposed == null) {
             resetCandidate()
-            return DepthProfileDecision(current, false, "insufficient_environment_evidence")
+            val state = if (
+                evidence.independentSignalCount > 0 &&
+                kotlin.math.abs(evidence.indoorProbability - evidence.outdoorProbability) < config.minimumProbabilityMargin
+            ) {
+                SceneEnvironmentState.TRANSITION
+            } else {
+                SceneEnvironmentState.UNKNOWN
+            }
+            return holdOrExpire(
+                nowNanos,
+                "insufficient_environment_evidence",
+                state,
+                confidence,
+                evidence.timestampNanos,
+            )
         }
         if (proposed == current) {
             resetCandidate()
-            return DepthProfileDecision(current, false, "profile_unchanged")
+            lastConfirmedNanos = nowNanos
+            lastSceneState = proposed.toSceneState()
+            lastConfidence = confidence
+            return DepthProfileDecision(
+                current,
+                false,
+                "profile_unchanged",
+                lastSceneState,
+                confidence,
+                evidence.timestampNanos,
+            )
         }
         if (current != null && lastSwitchNanos != Long.MIN_VALUE &&
             nowNanos - lastSwitchNanos < config.minimumHoldNanos
         ) {
             resetCandidate()
-            return DepthProfileDecision(current, false, "minimum_hold_active")
+            return holdOrExpire(
+                nowNanos,
+                "minimum_hold_active",
+                SceneEnvironmentState.TRANSITION,
+                confidence,
+                evidence.timestampNanos,
+            )
         }
         if (candidate == proposed) {
             candidateCount += 1
@@ -79,12 +133,28 @@ class DepthProfileSelector(
             candidateCount = 1
         }
         if (candidateCount < config.consecutiveEvidenceRequired) {
-            return DepthProfileDecision(current, false, "environment_evidence_pending")
+            return holdOrExpire(
+                nowNanos,
+                "environment_evidence_pending",
+                SceneEnvironmentState.TRANSITION,
+                confidence,
+                evidence.timestampNanos,
+            )
         }
         current = proposed
         lastSwitchNanos = nowNanos
+        lastConfirmedNanos = nowNanos
+        lastSceneState = proposed.toSceneState()
+        lastConfidence = confidence
         resetCandidate()
-        return DepthProfileDecision(current, true, "profile_switched")
+        return DepthProfileDecision(
+            current,
+            true,
+            "profile_switched",
+            lastSceneState,
+            confidence,
+            evidence.timestampNanos,
+        )
     }
 
     @Synchronized
@@ -94,11 +164,18 @@ class DepthProfileSelector(
     fun reset() {
         current = null
         lastSwitchNanos = Long.MIN_VALUE
+        lastConfirmedNanos = Long.MIN_VALUE
+        lastEvidenceTimestampNanos = Long.MIN_VALUE
+        lastSceneState = SceneEnvironmentState.UNKNOWN
+        lastConfidence = 0.0
         resetCandidate()
     }
 
     private fun classify(evidence: EnvironmentEvidence): DepthEnvironment? {
-        if (evidence.independentSignalCount < 2) return null
+        val strongestProbability = maxOf(evidence.indoorProbability, evidence.outdoorProbability)
+        val hasQuorum = evidence.independentSignalCount >= 2 ||
+            evidence.hasPrimaryVisualSignal && strongestProbability >= config.singleVisualEnterProbability
+        if (!hasQuorum) return null
         val delta = evidence.indoorProbability - evidence.outdoorProbability
         return when {
             evidence.indoorProbability >= config.enterProbability && delta >= config.minimumProbabilityMargin -> {
@@ -115,4 +192,32 @@ class DepthProfileSelector(
         candidate = null
         candidateCount = 0
     }
+
+    private fun holdOrExpire(
+        nowNanos: Long,
+        reason: String,
+        state: SceneEnvironmentState,
+        confidence: Double,
+        evidenceTimestampNanos: Long?,
+    ): DepthProfileDecision {
+        if (current != null && lastConfirmedNanos != Long.MIN_VALUE &&
+            nowNanos - lastConfirmedNanos > config.maximumProfileReuseNanos
+        ) {
+            current = null
+            lastSwitchNanos = Long.MIN_VALUE
+            lastSceneState = SceneEnvironmentState.UNKNOWN
+            lastConfidence = 0.0
+            resetCandidate()
+            return DepthProfileDecision(null, true, "profile_expired")
+        }
+        lastSceneState = state
+        lastConfidence = confidence
+        return DepthProfileDecision(current, false, reason, state, confidence, evidenceTimestampNanos)
+    }
+}
+
+private fun DepthEnvironment?.toSceneState(): SceneEnvironmentState = when (this) {
+    DepthEnvironment.INDOOR -> SceneEnvironmentState.INDOOR
+    DepthEnvironment.OUTDOOR -> SceneEnvironmentState.OUTDOOR
+    null -> SceneEnvironmentState.UNKNOWN
 }

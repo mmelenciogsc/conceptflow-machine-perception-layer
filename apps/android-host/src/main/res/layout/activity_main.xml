@@ -58,6 +58,16 @@
             android:text="@string/no_cue_content_status"
             android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
 
+        <TextView
+            android:id="@+id/environment_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:accessibilityLiveRegion="polite"
+            android:focusable="true"
+            android:text="@string/environment_checking"
+            android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
+
         <Button
             android:id="@+id/connect"
             android:layout_width="match_parent"
@@ -83,9 +93,49 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
-            android:nextFocusDown="@id/cancel"
+            android:nextFocusDown="@id/environment_automatic"
             android:nextFocusUp="@id/process_frame"
             android:text="@string/run_machine_vision_diagnostic" />
+
+        <Button
+            android:id="@+id/environment_automatic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/environment_indoor"
+            android:nextFocusUp="@id/machine_vision_diagnostic"
+            android:text="@string/environment_automatic" />
+
+        <Button
+            android:id="@+id/environment_indoor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/environment_outdoor"
+            android:nextFocusUp="@id/environment_automatic"
+            android:text="@string/environment_indoor" />
+
+        <Button
+            android:id="@+id/environment_outdoor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/environment_diagnostic"
+            android:nextFocusUp="@id/environment_indoor"
+            android:text="@string/environment_outdoor" />
+
+        <Button
+            android:id="@+id/environment_diagnostic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/cancel"
+            android:nextFocusUp="@id/environment_outdoor"
+            android:text="@string/run_environment_diagnostic" />
 
         <Button
             android:id="@+id/cancel"
@@ -94,7 +144,7 @@
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
             android:nextFocusDown="@id/disconnect"
-            android:nextFocusUp="@id/machine_vision_diagnostic"
+            android:nextFocusUp="@id/environment_diagnostic"
             android:text="@string/cancel" />
 
         <Button

@@ -56,8 +56,16 @@ operational state.
 `apps/android-host/src/main/res/layout/activity_main.xml` uses stock `TextView`
 and `Button` controls, marks the title as a heading, exposes session status as a
 polite live region, sets 48 dp minimum button heights, and defines directional
-focus between Connect, Process, Cancel, and Disconnect. Matching keyboard
-shortcuts are handled in `MainActivity.onKeyUp` (`C`, `P`, `X`, `D`).
+focus between Connect, Process, environment mode, diagnostics, Cancel, and
+Disconnect. Matching keyboard shortcuts are handled in
+`MainActivity.onKeyUp`: `C`, `P`, `V`, `A`, `I`, `O`, `E`, `X`, and `D`.
+
+Automatic, manual-indoor, and manual-outdoor buttons expose selected state with
+`ViewCompat.setStateDescription`. The environment status is a polite live
+region and explains whether the app is awaiting camera evidence, taking a
+bounded optional GNSS sample, or applying a manual profile. Location permission
+is requested only after explicit activation of Automatic mode; denial leaves
+camera classification and both manual choices available.
 
 `MainActivity.announceState` updates visible status before optional speech. A
 separate polite `cue_status` live region receives bounded equivalent cue text
@@ -111,16 +119,21 @@ method, app revision, and transport mode.
 3. On the host, activate Connect, Process synthetic frame, Cancel, and
    Disconnect. Confirm each state is visible and announced once, and that app
    TTS does not talk over TalkBack.
-4. From the phone host, deny camera permission and confirm the denial is
+4. Activate Automatic, Manual indoor, and Manual outdoor. Confirm each selected
+   state is announced and exposed to accessibility services. Deny the optional
+   location request and confirm automatic camera classification and manual
+   selection remain available. Run the synthetic environment diagnostic and
+   confirm it explicitly identifies test data.
+5. From the phone host, deny camera permission and confirm the denial is
    announced and glasses capture remains stopped. Grant permission, start and
    stop capture, disconnect, and confirm state remains available nonvisually.
-5. Trigger left and right synthetic cues. Confirm equivalent text remains
+6. Trigger left and right synthetic cues. Confirm equivalent text remains
    available and that stereo/haptic feedback is distinguishable without being
    painful, startling, or mistaken for a safety instruction.
-6. Cause a malformed, stale, timeout, transport-loss, and overload condition in
+7. Cause a malformed, stale, timeout, transport-loss, and overload condition in
    a synthetic environment. Confirm the user can identify the failure and
    return to a safe stopped state.
-7. On the phone, increase display/font size, enable high contrast or color
+8. On the phone, increase display/font size, enable high contrast or color
    correction, and test supported orientations. Confirm controls remain usable.
 
 Status: not yet manually validated on the attached Rokid consumer device or a

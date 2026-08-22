@@ -18,8 +18,11 @@ semantic/depth fusion path:
 3. `PrivateModelBundleVerifier` requires an artifact checksum for every model
    and the exact baked-vocabulary fingerprint for segmentation. Nothing is
    downloaded implicitly or packaged in the APK.
-4. `DepthProfileSelector` changes indoor/outdoor profiles only after fresh,
-   independent, repeated evidence and applies a minimum hold interval.
+4. `EnvironmentAwareMachineVisionPipeline` runs fixed-vocabulary segmentation
+   before depth, fuses timestamped visual and optional privacy-minimized GNSS
+   quality evidence, and invokes only the selected indoor/outdoor graph.
+   `DepthProfileSelector` changes profiles only after fresh, independent,
+   repeated evidence and applies hold and expiry intervals.
 5. `KnownDimensionVectorTable` contains exactly two records for every class:
    `0.6096` m (approximately two feet) and `2.4384` m (approximately eight
    feet). Each record includes representative length, width, height, angular
@@ -69,9 +72,18 @@ copied into this public repository.
 ## Depth profiles and calibration
 
 Indoor and outdoor selection is evidence-driven rather than GPS- or
-device-name-driven. Ambiguous, stale, or single-signal evidence holds the
-current profile. A switch requires three qualifying samples by default and is
-held for at least ten seconds to prevent model thrashing.
+device-name-driven. The fixed-vocabulary semantic result supplies the primary
+camera evidence before depth executes. Optional GNSS reception quality can
+reinforce outdoor evidence, but no coordinates are retained, GNSS alone cannot
+select a profile, and weak reception never proves an indoor setting. Ambiguous,
+stale, duplicate, or out-of-order evidence cannot advance selection. A switch
+requires three qualifying samples by default, is held for at least ten seconds
+to prevent model thrashing, and expires after 30 seconds without confirmation.
+Manual indoor/outdoor modes are immediate and accessible.
+
+See [Indoor/outdoor classification and depth routing](ENVIRONMENT_CLASSIFICATION.md)
+for the exact stages, thresholds, uncertainty behavior, clock boundary, and
+current validation status.
 
 The two-anchor calibration is intentionally fast: fitting is O(n) over a small
 guided sample set and each estimate is O(1). It supports raw relative-depth and

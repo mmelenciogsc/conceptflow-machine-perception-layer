@@ -13,12 +13,15 @@ protobuf contract without changing this boundary.
 
 Its first product sublayer is Machine Vision. The implemented pure-Kotlin core
 has a fixed 40-class BVI vocabulary, dual indoor/outdoor Depth Anything profile
-selection, an 80-record two-distance dimension-vector table, bounded relative-
-to-metric calibration, fixed-vocabulary artifact verification, and truthful
-QNN HTP capability planning for the Poco F7 Ultra. See
-[Android Machine Vision](ANDROID_MACHINE_VISION.md). No model runtime or model
-weight is bundled. External FP16 model libraries have been executed through
-standalone QNN tooling on the Poco; the APK does not yet load them in-process.
+selection, segmentation-first timestamped environment routing, an 80-record
+two-distance dimension-vector table, bounded relative-to-metric calibration,
+fixed-vocabulary artifact verification, and truthful QNN HTP capability
+planning for the Poco F7 Ultra. See
+[Android Machine Vision](ANDROID_MACHINE_VISION.md) and
+[Environment classification](ENVIRONMENT_CLASSIFICATION.md). No model runtime
+or model weight is bundled. External FP16 model libraries have been executed
+through standalone QNN tooling on the Poco; the APK does not yet load them
+in-process.
 
 ## Build baseline
 
@@ -60,6 +63,8 @@ The debug APK is produced at
 | `GlassesStreamIngress.accept` | Lease/session validation, ordered camera chunk assembly with SHA-256, absolute IMU batch validation, explicit microphone authorization, and latest-unread camera retention. |
 | `AccessibilityAwareSpeechFeedback.speak` | Text-to-speech when available, suppressed when an accessibility service is enabled. |
 | `MachineVisionPipeline.process` | Correlated, freshness-bounded, fixed-vocabulary semantic-mask/depth fusion using the selected environment profile. |
+| `EnvironmentAwareMachineVisionPipeline.process` | Fixed-vocabulary segmentation, frame-correlated environment fusion, selected depth graph, and metric track fusion in enforced order. |
+| `AndroidGnssEnvironmentSource.startBurst` | Optional foreground-only, power-bounded reception-quality evidence without reading or retaining coordinates. |
 | `TwoAnchorMetricDepthCalibrator.calibrate` | Robust 0.6096 m / 2.4384 m relative-depth calibration with uncertainty and extrapolation reporting. |
 | `QualcommAcceleratorPlanner.select` | HTP only after QNN and HTP initialization; otherwise explicit reference/unavailable state. |
 
@@ -110,7 +115,13 @@ Expected current behavior:
 3. Process synthetic frame produces an inspectable local cue.
 4. Run synthetic Machine Vision diagnostic (or press `V`) exercises the
    bounded semantic/depth/calibration path without loading a model.
-5. Cancel or Disconnect closes the current sample session.
+5. Automatic (`A`), Manual indoor (`I`), and Manual outdoor (`O`) expose the
+   selected depth-routing mode. Automatic requests optional foreground precise
+   location only after explicit activation; denial does not disable camera or
+   manual classification.
+6. Run synthetic environment diagnostic (or press `E`) exercises timestamped
+   camera/GNSS evidence fusion and outdoor-profile routing with test data.
+7. Cancel or Disconnect closes the current sample session.
 
 This does not validate phone-to-glasses transport or the Python service.
 
@@ -145,8 +156,8 @@ cleartext globally.
 
 ## Verified status
 
-The current validation record reports 129 JVM tests across the Android apps and
-shared protocol module: 51 Android Node tests, 78 Rokid Node tests, and one
+The current validation record reports 153 JVM tests across the Android apps and
+shared protocol module: 74 Android Node tests, 78 Rokid Node tests, and one
 byte-exact Python/Java protocol vector. Both debug APK builds succeeded using
 JDK 17 and an installed Android SDK. The host source includes the capability,
 preprocessing, routing, session, correlation, scheduler, Machine Vision, gRPC,

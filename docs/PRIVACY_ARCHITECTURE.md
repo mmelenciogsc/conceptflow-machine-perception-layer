@@ -13,6 +13,7 @@ privacy failures.
 | --- | --- | --- |
 | Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture and one-shot development transport from the glasses app | None implemented |
 | Pose and intrinsics | Optional frame context in the protocol; Android pose sampling | None implemented |
+| Environment evidence | Ephemeral semantic probabilities and optional aggregate GNSS reception quality | In-memory only; selected manual mode only is persisted |
 | Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
 | Observations and cues | Assistive scheduling and rendering | In-memory queues; inspectable status history may display cue text |
@@ -49,6 +50,16 @@ product consent interface.
 The current Android host demo generates a synthetic frame after the user
 connects and presses Process. Its activity does not receive real glasses frames
 because inter-device transport is not implemented.
+
+Automatic depth-profile routing treats camera semantics as primary evidence.
+The Android host requests precise location only after the user explicitly
+selects Automatic mode, samples GNSS in a bounded foreground burst, and stops
+sampling when the activity stops or a manual profile is selected. The source
+copies only monotonic fix time and horizontal accuracy from `Location`; it
+never reads or stores latitude, longitude, altitude, speed, or bearing. GNSS
+satellite count and aggregate carrier-to-noise are short-lived supporting
+evidence, never sole scene truth. Microphone and Wi-Fi identifiers are excluded
+from environment classification by default.
 
 The Windows WPF relay starts with capture off. Its sole current choice is a
 fixed synthetic one-pixel PNG. `RelaySession.SubmitAsync` calls

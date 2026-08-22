@@ -25,6 +25,11 @@ proof of perceptual effectiveness, licensing permission, or device support.
 | [`Bitmap.createScaledBitmap`](https://developer.android.com/reference/android/graphics/Bitmap#createScaledBitmap(android.graphics.Bitmap,int,int,boolean)) | Android exposes an explicit width/height scaling operation | Compute one aspect-fit scale first; never force a source into 16:9 |
 | [Android motion sensors](https://developer.android.com/develop/sensors-and-location/sensors/sensors_motion) | Game rotation excludes geomagnetic north; rotation vectors and gyroscope/linear acceleration have distinct semantics | Prefer game rotation for relative head orientation and carry angular velocity/linear acceleration separately |
 | [`SensorManager.registerListener`](https://developer.android.com/reference/android/hardware/SensorManager#registerListener(android.hardware.SensorEventListener,android.hardware.Sensor,int,int)) | Sampling period and report latency are requested parameters rather than guaranteed delivery | Request unbatched 10 ms samples and measure observed rate/gaps |
+| [Optimize location for battery](https://developer.android.com/develop/sensors-and-location/location/battery) | Update frequency, accuracy, latency, and duration materially affect power | Use a bounded foreground GNSS burst rather than continuous location updates |
+| [`GnssStatus`](https://developer.android.com/reference/android/location/GnssStatus) | Android exposes satellite count, carrier-to-noise density, and used-in-fix state | Derive bounded reception-quality evidence without retaining coordinates |
+| [`Location.getElapsedRealtimeNanos`](https://developer.android.com/reference/android/location/Location#getElapsedRealtimeNanos()) | Location fixes carry monotonic elapsed-realtime timestamps | Compute freshness in the host monotonic domain rather than wall-clock time |
+| [Android location permissions](https://developer.android.com/develop/sensors-and-location/location/permissions) | Precise location is separately user-controlled and background access is distinct | Request foreground fine location only on explicit Automatic-mode activation; declare no background permission |
+| [Android Wi-Fi scanning restrictions](https://developer.android.com/develop/connectivity/wifi/wifi-scan) | Wi-Fi scans are permission- and throttling-sensitive | Exclude SSID/BSSID and active Wi-Fi scanning from the default classifier |
 | [Human navigation for visually impaired people: systematic review](https://pmc.ncbi.nlm.nih.gov/articles/PMC11991376/) | 2025 review describes heterogeneous assistive navigation technologies and evaluation limits | Treat audio/haptics as supplemental; evaluate with users |
 | [Visual-to-auditory sensory substitution learning](https://pmc.ncbi.nlm.nih.gov/articles/PMC12783664/) | 2025 study reports learned mappings and flexibility rather than universal intuitiveness | Keep vocabulary small, trainable, and configurable |
 
@@ -43,6 +48,11 @@ proof of perceptual effectiveness, licensing permission, or device support.
   QNN HTP V79 with six HVX threads. This is backend/model compatibility
   evidence, not proof that the Android APK has integrated the proprietary
   runtime or that perception is accurate in use.
+- The same Poco reported location enabled with GPS, network, and passive
+  providers and a light sensor; no barometer feature was declared. These are
+  capability observations only. The environment router uses optional GNSS
+  reception quality, not stored coordinates, and does not use the light sensor
+  as scene truth.
 - Static 336×336 and 392×392 metric Small variants required baking the DINO
   positional interpolation before QNN conversion. Both then executed on HTP
   V79. Post-first medians were 84.51/86.19 ms (indoor/outdoor 336) and

@@ -6,6 +6,43 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Android environment classification and depth routing — 2026-08-22
+
+The Android Node now enforces fixed-vocabulary semantic segmentation before
+indoor/outdoor selection and invokes only the selected 518×518 Depth Anything
+V2 Metric Small Hypersim or VKITTI graph. Camera evidence is primary. Optional
+GNSS evidence is limited to satellite counts, aggregate carrier-to-noise,
+horizontal-accuracy metadata, and monotonic fix age; GPS coordinates are never
+read or retained, missing reception never proves indoors, and GNSS alone cannot
+select a profile. Automatic routing rejects stale, future, duplicate, and
+out-of-order evidence, requires three confirmations by default, holds a profile
+for at least 10 seconds, and expires it after 30 seconds without confirmation.
+Accessible manual indoor/outdoor overrides remain immediate.
+
+The focused Android host suite passed all 74 JVM tests with no skips, including
+the staged segmentation-to-selected-depth vertical slice, evidence-family
+fusion, hysteresis, expiry, manual override, bounded shadow comparison, and
+failure paths. Android Lint, debug assembly, and minified release/R8 assembly
+passed. Repository-wide validation passed 207 Python tests, native CTest, both
+Android APK test/build paths, and all 156 .NET tests. Repository policy, secret
+scan, configuration checks, Ruff, MyPy, protocol regeneration/diff, and the
+locked Python dependency audit passed; the audit reported no known
+vulnerabilities. All five cited official Android location/GNSS/Wi-Fi pages
+returned HTTP 200 on the validation date.
+
+The debug APK was installed in place on the attached Poco F7 Ultra. UI
+Automation exposed the app title, available location-provider capability,
+environment live region, and four named environment controls. Hardware-key
+activation of Manual indoor and Manual outdoor reported the corresponding
+metric-depth profile. The synthetic environment diagnostic reported that
+timestamped camera semantics plus synthetic GNSS quality selected the outdoor
+profile and explicitly identified itself as test data. Activating Automatic
+opened Android's location permission dialog; canceling it left fine and coarse
+location permissions denied, and the app reported that camera classification
+and manual selection remained available. No location permission was granted,
+no coordinates or live GNSS sample were retrieved, and no real scene/model
+accuracy, TalkBack behavior, energy use, or profile-switch quality was inferred.
+
 ## Android metric-depth resolution and relative-depth comparison — 2026-08-22
 
 Official Depth Anything V2 Metric Small Hypersim and VKITTI checkpoints were

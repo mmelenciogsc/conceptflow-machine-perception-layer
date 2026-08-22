@@ -16,6 +16,7 @@ data class RuntimeCapabilities(
     val gyroscope: Boolean,
     val audioOutput: Boolean,
     val haptics: Boolean,
+    val locationProvider: Boolean,
     val validatedNetwork: Boolean,
     val meteredNetwork: Boolean,
 )
@@ -42,6 +43,7 @@ class AndroidCapabilityDetector(context: Context) : CapabilityDetector {
             gyroscope = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null,
             audioOutput = audio.isMusicActive || packageManager.hasSystemFeature(PackageManager.FEATURE_AUDIO_OUTPUT),
             haptics = vibrator.hasVibrator(),
+            locationProvider = packageManager.hasSystemFeature(PackageManager.FEATURE_LOCATION),
             validatedNetwork = network?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
             meteredNetwork = connectivity.isActiveNetworkMetered,
         )

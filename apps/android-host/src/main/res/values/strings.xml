@@ -10,7 +10,20 @@
     <string name="machine_vision_backend_unavailable">no verified inference backend</string>
     <string name="machine_vision_diagnostic_passed">Synthetic Machine Vision diagnostic passed. %1$s calibrated to %2$.2f metres. This is test data, not live perception.</string>
     <string name="machine_vision_diagnostic_failed">Synthetic Machine Vision diagnostic failed.</string>
-    <string name="capability_summary">Capabilities. Camera: %1$s. Motion: %2$s. Audio: %3$s. Haptics: %4$s. Validated network: %5$s.</string>
+    <string name="capability_summary">Capabilities. Camera: %1$s. Motion: %2$s. Audio: %3$s. Haptics: %4$s. Location provider: %5$s. Validated network: %6$s.</string>
+    <string name="environment_checking">Environment routing. Automatic mode. Awaiting timestamped camera evidence.</string>
+    <string name="environment_automatic_status">Environment routing: Automatic. %1$s The current profile is held briefly during uncertainty, then expires.</string>
+    <string name="environment_manual_status">Environment routing: Manual %1$s. Using the %2$s metric-depth profile until Automatic mode is restored.</string>
+    <string name="environment_camera_pending">Awaiting timestamped camera evidence</string>
+    <string name="environment_gnss_available">Transient GNSS quality evidence was observed and expires quickly; awaiting timestamped camera evidence</string>
+    <string name="environment_gnss_started">A bounded GNSS quality sample has started. Coordinates are not retained</string>
+    <string name="environment_gnss_throttled">The GNSS quality sample is rate limited to conserve power</string>
+    <string name="environment_location_permission_required">Precise location permission is required only for optional GNSS quality evidence. Camera classification and manual selection remain available</string>
+    <string name="environment_location_unavailable">GNSS quality evidence is unavailable. Camera classification and manual selection remain available</string>
+    <string name="environment_diagnostic_passed">Synthetic environment diagnostic passed. Timestamped camera semantics and GNSS quality selected the outdoor depth profile. This is test data, not live scene classification.</string>
+    <string name="environment_diagnostic_failed">Synthetic environment diagnostic failed.</string>
+    <string name="environment_mode_selected">selected</string>
+    <string name="environment_mode_not_selected">not selected</string>
     <string name="available">available</string>
     <string name="unavailable">unavailable</string>
     <string name="idle_status">Session idle. Press C to connect.</string>
@@ -30,6 +43,10 @@
     <string name="connect">Connect session — C key</string>
     <string name="process_frame">Process synthetic frame (P)</string>
     <string name="run_machine_vision_diagnostic">Run synthetic Machine Vision diagnostic (V)</string>
+    <string name="environment_automatic">Automatic environment mode (A)</string>
+    <string name="environment_indoor">Manual indoor profile (I)</string>
+    <string name="environment_outdoor">Manual outdoor profile (O)</string>
+    <string name="run_environment_diagnostic">Run synthetic environment diagnostic (E)</string>
     <string name="cancel">Cancel current work (X)</string>
     <string name="disconnect">Disconnect session (D)</string>
 </resources>

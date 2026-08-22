@@ -51,10 +51,62 @@ class DepthProfileSelectorTest {
         assertEquals(null, selector.current())
     }
 
-    private fun evidence(timestamp: Long, indoor: Double, outdoor: Double) = EnvironmentEvidence(
+    @Test
+    fun strongPrimaryVisualEvidenceCanQualifyWithoutGpsButDuplicatesCannotVoteTwice() {
+        val selector = DepthProfileSelector(
+            config.copy(singleVisualEnterProbability = 0.85),
+        )
+        val first = selector.evaluate(evidence(10L, 0.90, 0.10, 1, true), 10L)
+        val duplicate = selector.evaluate(evidence(10L, 0.90, 0.10, 1, true), 11L)
+        val second = selector.evaluate(evidence(12L, 0.91, 0.09, 1, true), 12L)
+
+        assertEquals(SceneEnvironmentState.TRANSITION, first.sceneState)
+        assertEquals("duplicate_or_out_of_order_evidence", duplicate.reason)
+        assertEquals(null, duplicate.environment)
+        assertEquals(DepthEnvironment.INDOOR, second.environment)
+    }
+
+    @Test
+    fun aHeldProfileExpiresAfterEvidenceIsNoLongerFresh() {
+        val selector = DepthProfileSelector(
+            config.copy(minimumHoldNanos = 0L, maximumProfileReuseNanos = 200L),
+        )
+        selector.evaluate(evidence(10L, 0.90, 0.02), 10L)
+        selector.evaluate(evidence(20L, 0.90, 0.02), 20L)
+
+        val expired = selector.evaluate(evidence(20L, 0.90, 0.02), 221L)
+
+        assertEquals(null, expired.environment)
+        assertEquals(SceneEnvironmentState.UNKNOWN, expired.sceneState)
+        assertEquals("profile_expired", expired.reason)
+    }
+
+    @Test
+    fun heldProfileExpiresDuringUnconfirmedContradictoryEvidence() {
+        val selector = DepthProfileSelector(
+            config.copy(minimumHoldNanos = 0L, maximumProfileReuseNanos = 200L),
+        )
+        selector.evaluate(evidence(10L, 0.90, 0.02), 10L)
+        selector.evaluate(evidence(20L, 0.90, 0.02), 20L)
+
+        val expired = selector.evaluate(evidence(221L, 0.02, 0.92), 221L)
+
+        assertEquals(null, expired.environment)
+        assertTrue(expired.changed)
+        assertEquals("profile_expired", expired.reason)
+    }
+
+    private fun evidence(
+        timestamp: Long,
+        indoor: Double,
+        outdoor: Double,
+        signals: Int = 2,
+        primaryVisual: Boolean = false,
+    ) = EnvironmentEvidence(
         timestampNanos = timestamp,
         indoorProbability = indoor,
         outdoorProbability = outdoor,
-        independentSignalCount = 2,
+        independentSignalCount = signals,
+        hasPrimaryVisualSignal = primaryVisual,
     )
 }
