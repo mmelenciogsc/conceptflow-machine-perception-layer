@@ -5,7 +5,8 @@ The target is **Rokid AI Glasses Style (Non-Display)**. It has no wearer-facing
 display. The Android-reported framebuffer is a compatibility surface inside the
 system and must never be treated as a HUD, user interface, or acceptance target.
 
-CONCEPTFlow installs a standalone Android APK directly on the glasses through
+The installed application label is **Machine Perception Layer, Rokid Node**.
+CONCEPTFlow installs this standalone Android APK directly on the glasses through
 the magnetic 5-pin data cable and authorized ADB. The runtime does not use Hi
 Rokid, CXR-L, CXR-S, Glasses SDK/Phone SDK, client secrets, or a phone-mediated
 installer. The Poco application is a separate CONCEPTFlow host. The implemented

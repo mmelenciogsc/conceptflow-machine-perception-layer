@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
-# Android host
+# Machine Perception Layer, Android Node
 
-The Android host is the phone-side policy and cue-dispatch reference. It detects
+The Android Node is the phone-side policy and cue-dispatch reference. It detects
 available platform capabilities, validates and queues frames, chooses a local
 or remote route, tracks session and result state, schedules cues, and exposes
 accessible feedback. Its current activity runs an in-process synthetic
@@ -10,6 +10,14 @@ host now also contains a bounded `GlassesStreamIngress` for the shared leased
 sensor envelopes, but no physical phone-to-glasses network adapter is wired to
 it. A separate direct Rokid-to-Ubuntu development trace exercises the shared
 protobuf contract without changing this boundary.
+
+Its first product sublayer is Machine Vision. The implemented pure-Kotlin core
+has a fixed 40-class BVI vocabulary, dual indoor/outdoor Depth Anything profile
+selection, an 80-record two-distance dimension-vector table, bounded relative-
+to-metric calibration, fixed-vocabulary artifact verification, and truthful
+QNN HTP capability planning for the Poco F7 Ultra. See
+[Android Machine Vision](ANDROID_MACHINE_VISION.md). No model runtime or model
+weight is bundled, and no real model inference is claimed.
 
 ## Build baseline
 
@@ -50,6 +58,9 @@ The debug APK is produced at
 | `GrpcPerceptionTransport.secure` | TLS gRPC unary negotiation and frame processing with deadlines and caller cancellation. |
 | `GlassesStreamIngress.accept` | Lease/session validation, ordered camera chunk assembly with SHA-256, absolute IMU batch validation, explicit microphone authorization, and latest-unread camera retention. |
 | `AccessibilityAwareSpeechFeedback.speak` | Text-to-speech when available, suppressed when an accessibility service is enabled. |
+| `MachineVisionPipeline.process` | Correlated, freshness-bounded, fixed-vocabulary semantic-mask/depth fusion using the selected environment profile. |
+| `TwoAnchorMetricDepthCalibrator.calibrate` | Robust 0.6096 m / 2.4384 m relative-depth calibration with uncertainty and extrapolation reporting. |
+| `QualcommAcceleratorPlanner.select` | HTP only after QNN and HTP initialization; otherwise explicit reference/unavailable state. |
 
 `apps/android-host/src/main/res/xml/network_security_config.xml` disables
 cleartext traffic. The secure transport accepts a host and port through
@@ -96,7 +107,9 @@ Expected current behavior:
 1. The app reports detected capabilities and an idle session.
 2. Connect creates an in-process synthetic session.
 3. Process synthetic frame produces an inspectable local cue.
-4. Cancel or Disconnect closes the current sample session.
+4. Run synthetic Machine Vision diagnostic (or press `V`) exercises the
+   bounded semantic/depth/calibration path without loading a model.
+5. Cancel or Disconnect closes the current sample session.
 
 This does not validate phone-to-glasses transport or the Python service.
 
@@ -131,11 +144,12 @@ cleartext globally.
 
 ## Verified status
 
-The current validation record reports 73 JVM tests across the Android apps and
-shared protocol module, including a byte-exact Python/Java protocol
-vector. Both debug APK builds succeeded using JDK 17 and an installed Android
-SDK. The host source includes the capability, preprocessing, routing, session,
-correlation, scheduler, gRPC, and TalkBack-aware semantics described above.
+The current validation record reports 129 JVM tests across the Android apps and
+shared protocol module: 50 Android Node tests, 78 Rokid Node tests, and one
+byte-exact Python/Java protocol vector. Both debug APK builds succeeded using
+JDK 17 and an installed Android SDK. The host source includes the capability,
+preprocessing, routing, session, correlation, scheduler, Machine Vision, gRPC,
+and TalkBack-aware semantics described above.
 
 Not verified: real phone-to-glasses transport, real Python-service transport
 from the app activity, instrumentation tests, Android hardware cue quality, or

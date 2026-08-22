@@ -11,6 +11,9 @@ relicense tools, plug-ins, model code, checkpoints, fonts, brands, or datasets.
 | Ultralytics / YOLOE-26S | Model-neutral boundary only; no package or weight | AGPL-3.0 obligations or applicable enterprise authorization; checkpoint terms |
 | Depth Anything V2 indoor Large | External model ID only; no package or weight | Model card currently exposes no license metadata in the checked API response; obtain explicit terms |
 | Depth Anything V2 outdoor Large | External model ID only; no package or weight | Checked model card reports Apache-2.0; pin revision and retain notices |
+| Depth Anything V2 indoor Small | Android external model slot only; no package, conversion, or weight | Checked model API did not declare a license; obtain explicit terms before use or distribution |
+| Depth Anything V2 outdoor Small | Android external model slot only; no package, conversion, or weight | Checked model card reports Apache-2.0; pin revision and retain notices |
+| Qualcomm AI Engine Direct / QNN | Interface and capability plan only; no SDK binary committed | Accept SDK terms; keep proprietary tools/runtime outside the permissive source tree |
 | Unity | Project source/settings only; no editor/runtime redistribution in Git | Unity editor/runtime license for target distribution |
 | Rokid/Android/NVIDIA SDKs | Platform boundary only; no proprietary SDK or driver binaries committed | Vendor terms for each deployed component |
 

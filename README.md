@@ -104,7 +104,7 @@ Bubble is a calibrated body-surface offset field with an exact default radius of
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
 | Python | 199 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
-| Android | Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; JVM tests include the shared wire vector, leased stream ingress, adaptive Rokid capture/IMU gates, gRPC correlation/input gates, and haptic capability planner; Android Lint; both debug APKs built; Poco installation plus keyboard-triggered audio/haptic dispatch | Physical phone-to-glasses transport, instrumentation, and manual TalkBack/BVI acceptance |
+| Android | Named Rokid Node and Android Node APKs; Gradle 8.11.1 / AGP 8.10.1 / Kotlin 2.0.21; JVM tests include the shared wire vector, leased stream ingress, adaptive Rokid capture/IMU gates, gRPC correlation/input gates, haptic capability planning, fixed BVI vocabulary, dual depth-profile selection, dimension vectors, metric calibration, model artifact verification, and semantic/depth fusion; Android Lint; both debug APKs built; Poco installation plus keyboard-triggered audio/haptic dispatch | Physical phone-to-glasses transport, real YOLOE/Depth Anything/QNN HTP inference, instrumentation, and manual TalkBack/BVI acceptance |
 | Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; distortion-free 1920×1080 gate; physical capture cadence near 2 FPS stable/up to 5 FPS after change; dark/blur gate; nominal 100 Hz fused head-IMU acquisition with duplicate suppression and ≤20 ms batches; explicit short microphone lease; bounded ADB-reverse gRPC development trace; no vendor SDK | Physical WebRTC path to Poco, production authenticated pairing, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, and sustained thermal validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
@@ -192,6 +192,10 @@ scene state to an on-demand description request. Output is inspectable JSON or
 text; it is not evidence of physical spatial accuracy.
 
 ## Physical Rokid and Poco deployment
+
+The installed application labels are **Machine Perception Layer, Rokid Node**
+and **Machine Perception Layer, Android Node**. Machine Vision is currently the
+first Android Node sublayer; later sublayers remain separate additions.
 
 Build both applications:
 
@@ -370,6 +374,9 @@ creation only. Each product must remain independently operable. See
   Windows acceptance boundary.
 - [Android host](docs/ANDROID_HOST.md) — host policy, build, install, and real
   transport contract.
+- [Android Machine Vision](docs/ANDROID_MACHINE_VISION.md) — fixed BVI
+  vocabulary, dual depth profiles, HTP boundary, dimension vectors, and
+  relative-to-metric calibration.
 - [CUDA cluster](docs/CUDA_CLUSTER.md) — Python worker service, C++ primitives,
   CPU/sanitizer/CUDA-aware builds, and missing inference boundary.
 - [Latency benchmarking](docs/LATENCY_BENCHMARKING.md) — honest percentile and

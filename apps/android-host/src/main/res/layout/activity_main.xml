@@ -39,6 +39,16 @@
             android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
 
         <TextView
+            android:id="@+id/machine_vision_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:accessibilityLiveRegion="polite"
+            android:focusable="true"
+            android:text="@string/machine_vision_checking"
+            android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
+
+        <TextView
             android:id="@+id/cue_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -63,9 +73,19 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
-            android:nextFocusDown="@id/cancel"
+            android:nextFocusDown="@id/machine_vision_diagnostic"
             android:nextFocusUp="@id/connect"
             android:text="@string/process_frame" />
+
+        <Button
+            android:id="@+id/machine_vision_diagnostic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/cancel"
+            android:nextFocusUp="@id/process_frame"
+            android:text="@string/run_machine_vision_diagnostic" />
 
         <Button
             android:id="@+id/cancel"
@@ -74,7 +94,7 @@
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
             android:nextFocusDown="@id/disconnect"
-            android:nextFocusUp="@id/process_frame"
+            android:nextFocusUp="@id/machine_vision_diagnostic"
             android:text="@string/cancel" />
 
         <Button

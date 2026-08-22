@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+readonly PACKAGE="org.conceptflow.mpl.androidhost"
+readonly VOCABULARY_SHA256="2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --serial SERIAL --yoloe FILE --depth-indoor FILE --depth-outdoor FILE" \
+        "Privately provisions already converted, licensed QNN artifacts into a debuggable Android Node install." \
+        "The script never downloads models and never copies them into this repository."
+}
+
+serial=""
+yoloe=""
+depth_indoor=""
+depth_outdoor=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        --yoloe) yoloe="${2:-}"; shift 2 ;;
+        --depth-indoor) depth_indoor="${2:-}"; shift 2 ;;
+        --depth-outdoor) depth_outdoor="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "$serial" || -z "$yoloe" || -z "$depth_indoor" || -z "$depth_outdoor" ]]; then
+    usage >&2
+    exit 2
+fi
+command -v adb >/dev/null || { printf 'adb is required.\n' >&2; exit 1; }
+command -v sha256sum >/dev/null || { printf 'sha256sum is required.\n' >&2; exit 1; }
+
+device_state="$(adb -s "$serial" get-state 2>/dev/null || true)"
+[[ "$device_state" == "device" ]] || { printf 'Selected Android device is not authorized and online.\n' >&2; exit 1; }
+adb -s "$serial" shell pm path "$PACKAGE" >/dev/null 2>&1 || {
+    printf 'Install the debuggable Android Node APK before provisioning models.\n' >&2
+    exit 1
+}
+adb -s "$serial" shell run-as "$PACKAGE" mkdir -p files/models || {
+    printf 'run-as failed; this provisioning helper requires a debuggable app build.\n' >&2
+    exit 1
+}
+adb -s "$serial" shell run-as "$PACKAGE" chmod 700 files/models
+
+provision() {
+    local source_path="$1"
+    local target_name="$2"
+    local maximum_bytes="$3"
+    [[ -f "$source_path" ]] || { printf 'Missing artifact: %s\n' "$source_path" >&2; exit 1; }
+    local size_bytes
+    size_bytes="$(stat -c '%s' -- "$source_path")"
+    if ((size_bytes < 1 || size_bytes > maximum_bytes)); then
+        printf 'Artifact size is outside the allowed bound for %s.\n' "$target_name" >&2
+        exit 1
+    fi
+    local checksum
+    checksum="$(sha256sum -- "$source_path")"
+    checksum="${checksum%% *}"
+    printf 'Provisioning %s (%s bytes).\n' "$target_name" "$size_bytes"
+    adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp"
+    if ! adb -s "$serial" exec-in run-as "$PACKAGE" sh -c \
+        "umask 077; cat > files/models/$target_name.tmp" < "$source_path"; then
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp" || true
+        printf 'Transfer interrupted for %s; the previous installed artifact was preserved.\n' "$target_name" >&2
+        exit 1
+    fi
+    local installed_checksum
+    installed_checksum="$(adb -s "$serial" shell run-as "$PACKAGE" sha256sum "files/models/$target_name.tmp")"
+    installed_checksum="${installed_checksum%% *}"
+    [[ "$installed_checksum" == "$checksum" ]] || {
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp" || true
+        printf 'Post-transfer checksum mismatch for %s.\n' "$target_name" >&2
+        exit 1
+    }
+    adb -s "$serial" shell run-as "$PACKAGE" mv \
+        "files/models/$target_name.tmp" "files/models/$target_name"
+    adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/models/$target_name"
+    write_sidecar "$target_name.sha256" "$checksum"
+}
+
+write_sidecar() {
+    local target_name="$1"
+    local value="$2"
+    if ! printf '%s\n' "$value" | adb -s "$serial" exec-in run-as "$PACKAGE" sh -c \
+        "cat > files/models/$target_name.tmp"; then
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp" || true
+        printf 'Sidecar transfer interrupted for %s.\n' "$target_name" >&2
+        exit 1
+    fi
+    if ! adb -s "$serial" shell run-as "$PACKAGE" mv \
+        "files/models/$target_name.tmp" "files/models/$target_name"; then
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp" || true
+        printf 'Sidecar commit failed for %s.\n' "$target_name" >&2
+        exit 1
+    fi
+    adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/models/$target_name"
+}
+
+provision "$yoloe" "yoloe-26s-bvi-seg-qnn-htp.bin" $((256 * 1024 * 1024))
+write_sidecar "yoloe-26s-bvi-seg-qnn-htp.bin.vocabulary.sha256" "$VOCABULARY_SHA256"
+provision "$depth_indoor" "depth-anything-v2-metric-indoor-small-qnn-htp.bin" $((512 * 1024 * 1024))
+provision "$depth_outdoor" "depth-anything-v2-metric-outdoor-small-qnn-htp.bin" $((512 * 1024 * 1024))
+
+printf 'All three private model artifacts passed byte-for-byte transfer verification.\n'
+printf 'Restart the Android Node to refresh its model readiness status.\n'

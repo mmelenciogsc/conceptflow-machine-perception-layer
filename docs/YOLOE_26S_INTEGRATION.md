@@ -16,6 +16,15 @@ No Ultralytics Python package, source, model weight, generated engine, or sample
 is vendored or downloaded by repository scripts. The public vertical slice uses
 deterministic permissive fixtures.
 
+The Android Node uses the closed `BviClassCatalog` vocabulary. An acceptable
+export must call the upstream static-class mechanism before export, use a
+quantized static input shape suitable for QNN HTP, and provide both artifact
+SHA-256 and the exact baked-vocabulary SHA-256. Runtime prompts and YOLOE's
+prompt-free/open-knowledge class set are out of scope. A locally available
+legacy ONNX export was inspected as static `1x3x640x640`, but its embedded
+330-class custom vocabulary does not match the Android Node list and the app
+therefore rejects it rather than silently using broader knowledge.
+
 ## Licensing decision
 
 The inspected upstream `ultralytics` project declares AGPL-3.0 and Ultralytics

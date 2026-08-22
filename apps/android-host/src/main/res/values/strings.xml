@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <resources>
-    <string name="app_name">CONCEPTFlow Android host</string>
+    <string name="app_name">Machine Perception Layer, Android Node</string>
     <string name="checking_capabilities">Checking device capabilities.</string>
+    <string name="machine_vision_checking">Checking Machine Vision readiness.</string>
+    <string name="machine_vision_readiness">Machine Vision sublayer. Fixed BVI classes: %1$d. Integrity-checked private artifact slots: %2$d of %3$d. Backend: %4$s. Geometry awareness remains independent of semantic recognition.</string>
+    <string name="machine_vision_backend_htp">QNN HTP initialized</string>
+    <string name="machine_vision_backend_reference">CPU reference mode; %1$s</string>
+    <string name="machine_vision_backend_unavailable">no verified inference backend</string>
+    <string name="machine_vision_diagnostic_passed">Synthetic Machine Vision diagnostic passed. %1$s calibrated to %2$.2f metres. This is test data, not live perception.</string>
+    <string name="machine_vision_diagnostic_failed">Synthetic Machine Vision diagnostic failed.</string>
     <string name="capability_summary">Capabilities. Camera: %1$s. Motion: %2$s. Audio: %3$s. Haptics: %4$s. Validated network: %5$s.</string>
     <string name="available">available</string>
     <string name="unavailable">unavailable</string>
@@ -22,6 +29,7 @@
     <string name="disconnected_status">Session disconnected.</string>
     <string name="connect">Connect session — C key</string>
     <string name="process_frame">Process synthetic frame (P)</string>
+    <string name="run_machine_vision_diagnostic">Run synthetic Machine Vision diagnostic (V)</string>
     <string name="cancel">Cancel current work (X)</string>
     <string name="disconnect">Disconnect session (D)</string>
 </resources>

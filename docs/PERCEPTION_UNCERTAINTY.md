@@ -27,6 +27,15 @@ camera/environment, and propagate observed uncertainty. The code refuses an
 unsecured non-loopback endpoint. It never upgrades monocular estimates to
 sensor-grade truth.
 
+The CUDA/backend boundary above retains the Large profiles. The power- and
+thermal-constrained Android Node separately declares Metric **Small** indoor
+and outdoor profiles at fixed 518×518 input for eventual quantized QNN HTP
+deployment. `DepthProfileSelector` requires multiple fresh independent signals,
+probability margin, quorum, and hold time; ambiguity keeps the existing profile.
+`TwoAnchorMetricDepthCalibrator` uses dimension-stable semantic observations at
+exact 0.6096 m and 2.4384 m guided anchors. Extrapolated output is marked and
+penalized. This does not make monocular depth equivalent to measured depth.
+
 Geometry older than 200 ms and semantics older than 350 ms are rejected in the
 reference. Those defaults are experimental contextual TTLs, not safety limits.
 Delay-injection tests at 50, 100, and 200 ms pass; 400 and 800 ms observations

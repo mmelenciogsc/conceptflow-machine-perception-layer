@@ -15,6 +15,7 @@ lint_repository() {
     bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark \
         scripts/fmod-lab scripts/generate scripts/perception-benchmark scripts/perception-calibration scripts/perception-demo \
         scripts/perception-training \
+        scripts/android-model-install \
         scripts/rokid-install scripts/rokid-control scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }
 lint_python() {

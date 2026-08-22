@@ -6,6 +6,46 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Android Node Machine Vision foundation — 2026-08-22
+
+The Android and Rokid APK labels were changed to **Machine Perception Layer,
+Android Node** and **Machine Perception Layer, Rokid Node**. `aapt2 dump
+badging` confirmed both packaged labels. Both APKs were installed through
+serial-qualified ADB on Poco `793a73a1` and Rokid `2001092545610702`; the
+Rokid install remained inert after installation.
+
+The Android Node gained a closed 40-class BVI vocabulary; 80 immutable
+dimension-vector records at exact 0.6096 m and 2.4384 m anchors; indoor/outdoor
+Depth Anything profile hysteresis; a two-anchor relative/inverse-depth metric
+calibrator; mask-associated semantic/depth fusion; checksummed private artifact
+slots; an exact baked-vocabulary fingerprint; and a planner that selects QNN
+HTP only after the project adapter and HTP backend actually initialize. It does
+not select legacy HTA. No model, QNN binary, or proprietary SDK artifact was
+added to the repository or APK.
+
+Strict Android dependency verification, Android Lint, debug assembly, and
+release/R8 assembly passed. JVM tests passed with 50 Android Node tests, 78
+Rokid Node tests, and
+one shared-protocol test, with no failures or skips. On the physical Poco, the
+keyboard `V` path produced an accessible result: `door` calibrated to 1.52 m
+from deterministic data. UI Automation exposed the 40-class count, zero of
+three integrity-checked private artifact slots, and `CPU reference mode; QNN adapter
+unavailable`. This is an executable synthetic diagnostic, not model inference.
+
+The private-model provisioning helper was exercised with three small
+repository-safe stand-ins. Its first physical run exposed an ADB shell quoting
+defect that left sidecars under temporary names; the app verifier failed closed.
+Upload and atomic rename were separated, file/directory modes were restricted,
+and the rerun passed byte-for-byte SHA-256 checks for all three transfers. All
+stand-ins and sidecars were then removed from the phone, and the app was
+restarted to confirm zero of three artifacts. Real weights were never copied.
+
+Not validated: YOLOE-26S execution, Depth Anything execution, QNN context
+conversion/load, HTP/NPU execution, inference accuracy/FPS, metric accuracy,
+thermal behavior, or BVI usability. Ultralytics remains a separately governed
+AGPL/commercial integration; the checked indoor-small depth model did not
+declare license metadata and remains blocked from provisioning.
+
 ## Map. Morph. Move. extension — 2026-08-22
 
 The extension was validated on the same Ubuntu host after a full power cycle.

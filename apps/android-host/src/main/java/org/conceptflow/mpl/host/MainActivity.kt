@@ -2,6 +2,7 @@
 package org.conceptflow.mpl.host
 
 import android.os.Bundle
+import android.os.Build
 import android.view.KeyEvent
 import android.widget.Button
 import android.widget.TextView
@@ -26,6 +27,22 @@ import org.conceptflow.mpl.host.feedback.AccessibilityAwareSpeechFeedback
 import org.conceptflow.mpl.host.feedback.HostCueDispatcher
 import org.conceptflow.mpl.host.feedback.PlatformHostAudioFeedback
 import org.conceptflow.mpl.host.feedback.PlatformHostHapticFeedback
+import org.conceptflow.mpl.host.vision.AcceleratorTarget
+import org.conceptflow.mpl.host.vision.BviClassCatalog
+import org.conceptflow.mpl.host.vision.DepthEnvironment
+import org.conceptflow.mpl.host.vision.GuidedCalibrationSample
+import org.conceptflow.mpl.host.vision.MachineVisionInference
+import org.conceptflow.mpl.host.vision.MachineVisionInferenceAdapter
+import org.conceptflow.mpl.host.vision.MachineVisionModelProfiles
+import org.conceptflow.mpl.host.vision.MachineVisionPipeline
+import org.conceptflow.mpl.host.vision.PrivateModelBundleVerifier
+import org.conceptflow.mpl.host.vision.QualcommAcceleratorPlanner
+import org.conceptflow.mpl.host.vision.QualcommRuntimeEvidence
+import org.conceptflow.mpl.host.vision.ReferenceDistance
+import org.conceptflow.mpl.host.vision.RelativeDepthRepresentation
+import org.conceptflow.mpl.host.vision.SemanticMaskObservation
+import org.conceptflow.mpl.host.vision.TwoAnchorMetricDepthCalibrator
+import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.protocol.SyntheticImageFixtures
 import org.conceptflow.mpl.v1.CapabilitySet
 import org.conceptflow.mpl.v1.CueCategory
@@ -51,6 +68,7 @@ import java.util.concurrent.atomic.AtomicLong
 class MainActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var capabilityView: TextView
+    private lateinit var machineVisionView: TextView
     private lateinit var cueStatusView: TextView
     private val clock = ElapsedHostClock
     private val session = SessionStateMachine(clock)
@@ -80,6 +98,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         statusView = findViewById(R.id.session_status)
         capabilityView = findViewById(R.id.capability_status)
+        machineVisionView = findViewById(R.id.machine_vision_status)
         cueStatusView = findViewById(R.id.cue_status)
         audio = PlatformHostAudioFeedback()
         haptics = PlatformHostHapticFeedback(this)
@@ -118,9 +137,11 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.connect).setOnClickListener { connect() }
         findViewById<Button>(R.id.process_frame).setOnClickListener { processSyntheticFrame() }
+        findViewById<Button>(R.id.machine_vision_diagnostic).setOnClickListener { runMachineVisionDiagnostic() }
         findViewById<Button>(R.id.cancel).setOnClickListener { cancelCurrent() }
         findViewById<Button>(R.id.disconnect).setOnClickListener { disconnect() }
         showCapabilities(capabilities)
+        showMachineVisionReadiness()
         announceState(getString(R.string.idle_status), speak = false)
     }
 
@@ -136,6 +157,7 @@ class MainActivity : AppCompatActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
         KeyEvent.KEYCODE_C -> true.also { connect() }
         KeyEvent.KEYCODE_P -> true.also { processSyntheticFrame() }
+        KeyEvent.KEYCODE_V -> true.also { runMachineVisionDiagnostic() }
         KeyEvent.KEYCODE_X -> true.also { cancelCurrent() }
         KeyEvent.KEYCODE_D -> true.also { disconnect() }
         else -> super.onKeyUp(keyCode, event)
@@ -149,6 +171,92 @@ class MainActivity : AppCompatActivity() {
             yesNo(capabilities.audioOutput),
             yesNo(capabilities.haptics),
             yesNo(capabilities.validatedNetwork),
+        )
+    }
+
+    private fun showMachineVisionReadiness() {
+        val modelStatus = PrivateModelBundleVerifier().inspect(filesDir.resolve("models"))
+        val availableModels = modelStatus.artifacts.count { it.available }
+        val socManufacturer: String
+        val socModel: String
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            socManufacturer = Build.SOC_MANUFACTURER
+            socModel = Build.SOC_MODEL
+        } else {
+            socManufacturer = Build.MANUFACTURER
+            socModel = Build.HARDWARE
+        }
+        val plan = QualcommAcceleratorPlanner.select(
+            QualcommRuntimeEvidence(
+                socManufacturer = socManufacturer,
+                socModel = socModel,
+                supportedAbis = Build.SUPPORTED_ABIS.toList(),
+                qnnAdapterInitialized = false,
+                htpBackendInitialized = false,
+                cpuReferenceBackendAvailable = true,
+            ),
+        )
+        val backend = when (plan.target) {
+            AcceleratorTarget.QNN_HTP -> getString(R.string.machine_vision_backend_htp)
+            AcceleratorTarget.CPU_REFERENCE -> getString(R.string.machine_vision_backend_reference, plan.reason)
+            AcceleratorTarget.UNAVAILABLE -> getString(R.string.machine_vision_backend_unavailable)
+        }
+        machineVisionView.text = getString(
+            R.string.machine_vision_readiness,
+            BviClassCatalog.bviClassesList.size,
+            availableModels,
+            MachineVisionModelProfiles.requiredProfiles.size,
+            backend,
+        )
+    }
+
+    private fun runMachineVisionDiagnostic() {
+        val calibration = TwoAnchorMetricDepthCalibrator().calibrate(
+            listOf(
+                GuidedCalibrationSample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0, 0.95),
+                GuidedCalibrationSample("door", ReferenceDistance.FAR_EIGHT_FEET, 8.0, 0.95),
+            ),
+            RelativeDepthRepresentation.DEPTH,
+        ) ?: run {
+            announceState(getString(R.string.machine_vision_diagnostic_failed))
+            return
+        }
+        val now = clock.nowNanos()
+        val frame = VisionFrame(
+            frameId = frameIds.incrementAndGet(),
+            captureMonotonicTimestampNanos = (now - 1L).coerceAtLeast(0L),
+            width = 1_920,
+            height = 1_080,
+            synthetic = true,
+        )
+        val adapter = MachineVisionInferenceAdapter { requestedFrame, profile ->
+            MachineVisionInference(
+                frameId = requestedFrame.frameId,
+                completedMonotonicTimestampNanos = now,
+                fixedVocabularySha256 = MachineVisionModelProfiles.fixedVocabularySha256,
+                depthProfileId = profile.id,
+                observations = listOf(
+                    SemanticMaskObservation(
+                        trackId = "synthetic-door",
+                        classId = "door",
+                        confidence = 0.95,
+                        relativeDepthSamples = listOf(4.5, 5.0, 5.5),
+                    ),
+                ),
+            )
+        }
+        val result = MachineVisionPipeline(adapter, calibration).process(frame, DepthEnvironment.INDOOR, now)
+        val track = result.tracks.singleOrNull()
+        if (track == null) {
+            announceState(getString(R.string.machine_vision_diagnostic_failed))
+            return
+        }
+        announceState(
+            getString(
+                R.string.machine_vision_diagnostic_passed,
+                track.classId,
+                track.representativeDistance.distanceMeters,
+            ),
         )
     }
 
