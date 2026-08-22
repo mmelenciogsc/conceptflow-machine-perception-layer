@@ -73,16 +73,27 @@ class AdaptiveCaptureTest {
     }
 
     @Test
-    fun stableQualityFramesUseRelaxedTwoFrameCadence() {
+    fun stableQualityFramesUseRelaxedThreeFrameCadence() {
         val gate = AdaptiveFrameGate()
         val image = checkerFrame()
 
         assertTrue(gate.evaluate(1_000_000_000L, image).emit)
         assertFalse(gate.evaluate(1_200_000_000L, image).emit)
-        assertFalse(gate.evaluate(1_400_000_000L, image).emit)
-        assertTrue(gate.evaluate(1_600_000_000L, image).emit)
-        assertFalse(gate.evaluate(1_800_000_000L, image).emit)
+        assertTrue(gate.evaluate(1_400_000_000L, image).emit)
+        assertFalse(gate.evaluate(1_600_000_000L, image).emit)
+        assertTrue(gate.evaluate(1_800_000_000L, image).emit)
         assertTrue(gate.evaluate(2_000_000_000L, image).emit)
+    }
+
+    @Test
+    fun roundedPhysicalThreeFrameCadenceDoesNotGetHalvedByLogicalGate() {
+        val gate = AdaptiveFrameGate()
+        val image = checkerFrame()
+
+        assertTrue(gate.evaluate(1_000_000_000L, image).emit)
+        assertTrue(gate.evaluate(1_334_000_000L, image).emit)
+        assertTrue(gate.evaluate(1_668_000_000L, image).emit)
+        assertTrue(gate.evaluate(2_002_000_000L, image).emit)
     }
 
     @Test
@@ -101,7 +112,7 @@ class AdaptiveCaptureTest {
         assertTrue(gate.evaluate(1_400_000_000L, moved).emit)
         assertEquals(5.0, gate.evaluate(2_600_000_000L, moved).targetFramesPerSecond, 0.0)
         val relaxed = gate.evaluate(2_600_000_001L, moved)
-        assertEquals(2.0, relaxed.targetFramesPerSecond, 0.0)
+        assertEquals(3.0, relaxed.targetFramesPerSecond, 0.0)
         assertFalse(relaxed.emit)
     }
 

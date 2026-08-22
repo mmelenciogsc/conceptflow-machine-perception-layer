@@ -26,7 +26,7 @@ The directly sideloaded Rokid client implements:
 - a single-owner monotonic `StreamLeaseController` with bounded duration,
   explicit microphone authorization, owner-checked close/renew, and no silent
   microphone-consent extension;
-- physical Camera2 request cadence that begins near 2 FPS and moves toward a
+- physical Camera2 request cadence that begins near 3 FPS and moves toward a
   5 FPS ceiling only after the image-change gate detects material motion;
 - darkness and blur rejection before packetization;
 - nominal 100 Hz local IMU acquisition, semantic duplicate suppression,
@@ -58,7 +58,7 @@ channel between the glasses and Poco.
 
 | Stream | Default state | Active behavior | Queue policy |
 | --- | --- | --- | --- |
-| Camera | Camera closed | Native 1920×1080 JPEG where supported; 2 FPS stable and up to 5 FPS after material change; dark/blur gate | One frame being assembled and one latest unread frame; newer frame supersedes incomplete/old work |
+| Camera | Camera closed | Native 1920×1080 JPEG where supported; 3 FPS relaxed and up to 5 FPS after material change; dark/blur gate | One frame being assembled and one latest unread frame; newer frame supersedes incomplete/old work |
 | IMU | Sensor listener closed | Near-100 Hz local sampling; meaningful changes selected; maximum 20 ms batch delay; one-second absolute refresh | Bounded batch; old/out-of-order sequences rejected |
 | Microphone | `AudioRecord` absent | 16 kHz mono PCM only inside explicit, separately bounded user-request window | Latest bounded chunk; no replay after expiry |
 
@@ -69,7 +69,7 @@ Reconnect does not renew consent or replay expired sensor data.
 
 The camera dominates the observed data volume. A prior 18-frame hardware run
 produced 19,417,222 JPEG bytes, approximately 1.08 MB per accepted frame. At
-that observed size, 2 FPS is about 17.3 Mbit/s of JPEG payload and 5 FPS is
+that observed size, 3 FPS is about 26.0 Mbit/s of JPEG payload and 5 FPS is
 about 43.1 Mbit/s before framing and link overhead. Those are arithmetic from
 one run, not sustained radio or battery measurements. In the final 2026-08-22
 leased diagnostic, 12 source-gate frames contained 12,932,054 transient JPEG
@@ -78,12 +78,39 @@ bytes; 11 frames reached packetization before lease closure and produced
 the motion tier. This is a bounded functional measurement, not a sustained
 radio, power, or thermal benchmark.
 
+A 2026-08-23 repeat with the 3 FPS relaxed policy passed all three stream
+presence checks and selected the motion tier for 12 of 13 analyzed frames, but
+still analyzed only 13 frames during the complete 8.44-second cold-start lease.
+That interval includes one-second 3A warm-up and JPEG-session creation, and the
+older diagnostic did not expose a first-to-last-frame steady-state percentile.
+Accordingly, the policy and its deterministic timing tests are validated, but
+sustained 3–5 FPS physical throughput is not claimed.
+
+Aggregate timing identified serialized Camera2 request latency—not analysis—as
+the limiting stage: 433.8 ms p50 request-to-image, 2.4 ms p50 image acquisition,
+40.2 ms p50 processing, and 6.5 ms p50 listener/packetization. The current
+source therefore uses a single monotonic opportunity timer with a strict
+three-request ceiling. Missed opportunities are counted and discarded rather
+than replayed, and request tags are matched to image sensor timestamps. A
+subsequent physical run analyzed 26 frames at 4.497 FPS and emitted 23 frames at
+3.967 FPS over their respective first-to-last active spans. It recorded no
+backpressure, superseded requests, unmatched images, capture failures, or late
+callbacks. This is a bounded functional run, not a sustained power or thermal
+result.
+
+A final physical run with no motion-tier samples analyzed 18 frames at
+3.058 FPS and emitted 17 at 2.885 FPS. It reached two outstanding requests and
+recorded zero backpressure, supersession, unmatched images, capture failures,
+or late callbacks; terminal telemetry reported zero outstanding requests.
+Together the runs exercise the relaxed and motion-responsive paths; longer
+thermal and energy tests remain open.
+
 Native Camera2 JPEG avoids a CPU decode/re-encode pass. A future MediaCodec
 video mode may reduce radio bytes, but its total sensor, encoder, decoder,
 thermal, latency, and perception-quality cost must be measured on the actual
 Rokid/Poco pair before it replaces the JPEG reference path.
 
-The stable 2 FPS mode can take up to roughly 500 ms to observe motion that is
+The relaxed 3 FPS mode can take up to roughly 334 ms to observe motion that is
 visible only in camera pixels. IMU motion can be delivered much faster, but it
 cannot prove that an external object moved. This tradeoff is why the layer is
 supplemental awareness, not a collision-avoidance or safety system.

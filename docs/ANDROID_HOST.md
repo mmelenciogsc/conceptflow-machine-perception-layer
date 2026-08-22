@@ -156,8 +156,8 @@ cleartext globally.
 
 ## Verified status
 
-The current validation record reports 153 JVM tests across the Android apps and
-shared protocol module: 74 Android Node tests, 78 Rokid Node tests, and one
+The current validation record reports 194 JVM tests across the Android apps and
+shared protocol module: 98 Android Node tests, 95 Rokid Node tests, and one
 byte-exact Python/Java protocol vector. Both debug APK builds succeeded using
 JDK 17 and an installed Android SDK. The host source includes the capability,
 preprocessing, routing, session, correlation, scheduler, Machine Vision, gRPC,

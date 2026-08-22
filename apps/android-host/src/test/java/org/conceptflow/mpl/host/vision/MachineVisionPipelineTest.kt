@@ -27,6 +27,7 @@ class MachineVisionPipelineTest {
         assertEquals("door", result.tracks.single().classId)
         assertEquals(1.524, result.tracks.single().representativeDistance.distanceMeters, 1e-9)
         assertEquals(DepthEnvironment.INDOOR, result.tracks.single().depthEnvironment)
+        assertEquals(TemporalMotionEvidence.UNKNOWN, result.tracks.single().temporalMotionEvidence)
     }
 
     @Test
@@ -52,6 +53,62 @@ class MachineVisionPipelineTest {
         val result = pipeline.process(frame(), DepthEnvironment.INDOOR, nowNanos = 150L)
         assertEquals("adapter_failure", result.reason)
         assertTrue(result.tracks.isEmpty())
+    }
+
+    @Test
+    fun exactRoutedProfileAndCalibrationContextAreEnforced() {
+        val intrinsics = CameraIntrinsics(1_920, 1_080, 1_000.0, 1_000.0, 960.0, 540.0)
+        val selected = MachineVisionModelProfiles.depthIndoorLowPower
+        val boundCalibration = TwoAnchorMetricDepthCalibrator().calibrate(
+            listOf(
+                GuidedCalibrationSample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0, 0.9),
+                GuidedCalibrationSample("door", ReferenceDistance.FAR_EIGHT_FEET, 8.0, 0.9),
+            ),
+            RelativeDepthRepresentation.DEPTH,
+            MetricDepthCalibrationBinding.forProfile(selected, intrinsics),
+        )!!
+        var receivedProfile: MachineVisionModelProfile? = null
+        val exactAdapter = MachineVisionInferenceAdapter { inputFrame, profile ->
+            receivedProfile = profile
+            MachineVisionInference(
+                inputFrame.frameId,
+                120L,
+                MachineVisionModelProfiles.fixedVocabularySha256,
+                profile.id,
+                listOf(SemanticMaskObservation("track-1", "door", 0.9, listOf(5.0))),
+            )
+        }
+        val pipeline = MachineVisionPipeline(
+            exactAdapter,
+            boundCalibration,
+            calibrationBindingPolicy = CalibrationBindingPolicy.REQUIRE_BOUND,
+        )
+        val productionFrame = VisionFrame(1L, 100L, 1_920, 1_080, false, intrinsics)
+
+        assertEquals("processed", pipeline.process(productionFrame, selected, 150L).reason)
+        assertEquals(selected, receivedProfile)
+        assertEquals(
+            "calibration_depth_profile_mismatch",
+            pipeline.process(productionFrame, MachineVisionModelProfiles.depthOutdoorLowPower, 150L).reason,
+        )
+        assertEquals(
+            "calibration_depth_profile_mismatch",
+            pipeline.process(productionFrame, MachineVisionModelProfiles.depthIndoorBalanced, 150L).reason,
+        )
+        val changedIntrinsics = CameraIntrinsics(1_920, 1_080, 1_001.0, 1_000.0, 960.0, 540.0)
+        assertEquals(
+            "calibration_intrinsics_mismatch",
+            pipeline.process(productionFrame.copy(cameraIntrinsics = changedIntrinsics), selected, 150L).reason,
+        )
+    }
+
+    @Test
+    fun productionFrameRejectsExplicitlyUnboundLegacyCalibration() {
+        val productionFrame = frame().copy(synthetic = false)
+        val result = MachineVisionPipeline(adapter(120L), calibration)
+            .process(productionFrame, MachineVisionModelProfiles.depthIndoorBalanced, 150L)
+
+        assertEquals("calibration_unbound", result.reason)
     }
 
     private fun frame() = VisionFrame(1L, 100L, 1_920, 1_080, synthetic = true)

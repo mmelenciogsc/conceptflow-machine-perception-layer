@@ -36,7 +36,7 @@ explicit `--grant-camera` and `--grant-microphone` operator actions.
 `rokid-control capture-start`, the bounded eight-second `stream-test`, and the
 one-shot `physical-trace` are separate authorized-ADB commands.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
-byte limit, and adaptive physical requests near 2 FPS stable/up to 5 FPS after
+byte limit, and adaptive physical requests near 3 FPS relaxed/up to 5 FPS after
 material change. Stopping the nonvisual
 activity unbinds the service and closes camera, IMU, and microphone resources.
 `stream-test` uses a local eight-second stream lease, separately limits the

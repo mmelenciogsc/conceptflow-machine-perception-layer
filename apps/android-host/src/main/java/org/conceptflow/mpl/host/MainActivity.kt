@@ -34,25 +34,37 @@ import org.conceptflow.mpl.host.feedback.PlatformHostAudioFeedback
 import org.conceptflow.mpl.host.feedback.PlatformHostHapticFeedback
 import org.conceptflow.mpl.host.vision.AcceleratorTarget
 import org.conceptflow.mpl.host.vision.AndroidGnssEnvironmentSource
+import org.conceptflow.mpl.host.vision.BoundedMetricDepthCalibrationStore
 import org.conceptflow.mpl.host.vision.BviClassCatalog
+import org.conceptflow.mpl.host.vision.CameraIntrinsics
 import org.conceptflow.mpl.host.vision.DepthEnvironment
+import org.conceptflow.mpl.host.vision.DepthModelRoutingRequest
+import org.conceptflow.mpl.host.vision.DepthStageResult
 import org.conceptflow.mpl.host.vision.EnvironmentDepthCoordinator
+import org.conceptflow.mpl.host.vision.EnvironmentAwareMachineVisionPipeline
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.GnssAcquisitionState
 import org.conceptflow.mpl.host.vision.GnssQualitySample
 import org.conceptflow.mpl.host.vision.GuidedCalibrationSample
-import org.conceptflow.mpl.host.vision.MachineVisionInference
-import org.conceptflow.mpl.host.vision.MachineVisionInferenceAdapter
+import org.conceptflow.mpl.host.vision.InstanceMaskGeometry
+import org.conceptflow.mpl.host.vision.MetricDepthCalibrationBinding
+import org.conceptflow.mpl.host.vision.MachineVisionModelProfile
 import org.conceptflow.mpl.host.vision.MachineVisionModelProfiles
-import org.conceptflow.mpl.host.vision.MachineVisionPipeline
 import org.conceptflow.mpl.host.vision.PrivateModelBundleVerifier
 import org.conceptflow.mpl.host.vision.QualcommAcceleratorPlanner
 import org.conceptflow.mpl.host.vision.QualcommRuntimeEvidence
 import org.conceptflow.mpl.host.vision.ReferenceDistance
 import org.conceptflow.mpl.host.vision.RelativeDepthRepresentation
 import org.conceptflow.mpl.host.vision.SceneSemanticDetection
-import org.conceptflow.mpl.host.vision.SemanticMaskObservation
+import org.conceptflow.mpl.host.vision.SegmentationStageResult
+import org.conceptflow.mpl.host.vision.SegmentedObject
+import org.conceptflow.mpl.host.vision.StagedMachineVisionInferenceAdapter
+import org.conceptflow.mpl.host.vision.TemporalEnvironmentAwareMachineVisionPipeline
+import org.conceptflow.mpl.host.vision.TemporalMotionEvidence
+import org.conceptflow.mpl.host.vision.TimestampedPose
 import org.conceptflow.mpl.host.vision.TwoAnchorMetricDepthCalibrator
+import org.conceptflow.mpl.host.vision.UnitQuaternion
+import org.conceptflow.mpl.host.vision.VisualKeyframeSignal
 import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.protocol.SyntheticImageFixtures
 import org.conceptflow.mpl.v1.CapabilitySet
@@ -288,53 +300,120 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runMachineVisionDiagnostic() {
-        val calibration = TwoAnchorMetricDepthCalibrator().calibrate(
-            listOf(
-                GuidedCalibrationSample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0, 0.95),
-                GuidedCalibrationSample("door", ReferenceDistance.FAR_EIGHT_FEET, 8.0, 0.95),
-            ),
-            RelativeDepthRepresentation.DEPTH,
-        ) ?: run {
-            announceState(getString(R.string.machine_vision_diagnostic_failed))
-            return
-        }
-        val now = clock.nowNanos()
-        val frame = VisionFrame(
-            frameId = frameIds.incrementAndGet(),
-            captureMonotonicTimestampNanos = (now - 1L).coerceAtLeast(0L),
-            width = 1_920,
-            height = 1_080,
-            synthetic = true,
-        )
-        val adapter = MachineVisionInferenceAdapter { requestedFrame, profile ->
-            MachineVisionInference(
-                frameId = requestedFrame.frameId,
-                completedMonotonicTimestampNanos = now,
-                fixedVocabularySha256 = MachineVisionModelProfiles.fixedVocabularySha256,
-                depthProfileId = profile.id,
-                observations = listOf(
-                    SemanticMaskObservation(
-                        trackId = "synthetic-door",
-                        classId = "door",
-                        confidence = 0.95,
-                        relativeDepthSamples = listOf(4.5, 5.0, 5.5),
+        val message = runCatching {
+            val intrinsics = CameraIntrinsics(1_920, 1_080, 1_000.0, 1_000.0, 960.0, 540.0)
+            val balancedProfile = MachineVisionModelProfiles.depthIndoorBalanced
+            val lowPowerProfile = MachineVisionModelProfiles.depthIndoorLowPower
+            val calibration = requireNotNull(
+                TwoAnchorMetricDepthCalibrator().calibrate(
+                    listOf(
+                        GuidedCalibrationSample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0, 0.95),
+                        GuidedCalibrationSample("door", ReferenceDistance.FAR_EIGHT_FEET, 8.0, 0.95),
                     ),
+                    RelativeDepthRepresentation.DEPTH,
+                    MetricDepthCalibrationBinding.forProfile(balancedProfile, intrinsics),
                 ),
             )
-        }
-        val result = MachineVisionPipeline(adapter, calibration).process(frame, DepthEnvironment.INDOOR, now)
-        val track = result.tracks.singleOrNull()
-        if (track == null) {
-            announceState(getString(R.string.machine_vision_diagnostic_failed))
-            return
-        }
-        announceState(
+            val calibrationStore = BoundedMetricDepthCalibrationStore(listOf(calibration))
+            val now = clock.nowNanos()
+            val captureTimestamp = (now - 2L).coerceAtLeast(0L)
+            val frame = VisionFrame(
+                frameId = frameIds.incrementAndGet(),
+                captureMonotonicTimestampNanos = captureTimestamp,
+                width = 1_920,
+                height = 1_080,
+                synthetic = true,
+                cameraIntrinsics = intrinsics,
+            )
+            val adapter = object : StagedMachineVisionInferenceAdapter {
+                override fun segment(frame: VisionFrame) = SegmentationStageResult(
+                    frame.frameId,
+                    frame.captureMonotonicTimestampNanos + 1L,
+                    MachineVisionModelProfiles.fixedVocabularySha256,
+                    listOf(
+                        SegmentedObject(
+                            trackId = "synthetic-door",
+                            classId = "door",
+                            confidence = 0.95,
+                            maskGeometry = InstanceMaskGeometry(
+                                1_920,
+                                1_080,
+                                735,
+                                27,
+                                1_185,
+                                1_052,
+                                960.0,
+                                539.5,
+                                400_000,
+                            ),
+                            maskFingerprint = SYNTHETIC_MASK_FINGERPRINT,
+                            temporalMotionEvidence = TemporalMotionEvidence.CONFIRMED_STATIC_WORLD,
+                        ),
+                    ),
+                )
+
+                override fun inferDepth(
+                    frame: VisionFrame,
+                    depthProfile: MachineVisionModelProfile,
+                    segmentedObjects: List<SegmentedObject>,
+                ): DepthStageResult {
+                    check(depthProfile.id == balancedProfile.id)
+                    check(segmentedObjects.singleOrNull()?.trackId == "synthetic-door")
+                    return DepthStageResult(
+                        frame.frameId,
+                        frame.captureMonotonicTimestampNanos + 2L,
+                        depthProfile.id,
+                        mapOf("synthetic-door" to listOf(4.5, 5.0, 5.5)),
+                        mapOf("synthetic-door" to SYNTHETIC_MASK_FINGERPRINT),
+                    )
+                }
+            }
+            val staged = EnvironmentAwareMachineVisionPipeline(adapter, calibrationStore).also {
+                it.setEnvironmentMode(EnvironmentSelectionMode.FORCE_INDOOR)
+            }
+            val temporal = TemporalEnvironmentAwareMachineVisionPipeline(staged)
+            val initial = temporal.processFrame(
+                frame = frame,
+                pose = TimestampedPose(captureTimestamp, UnitQuaternion.IDENTITY),
+                signal = VisualKeyframeSignal(0.0, 0.0),
+                nowNanos = now,
+                depthRoutingRequest = DepthModelRoutingRequest(
+                    environment = DepthEnvironment.INDOOR,
+                    maximumEndToEndLatencyMillis = 140.0,
+                ),
+                availableDepthProfileIds = setOf(lowPowerProfile.id, balancedProfile.id),
+            )
+            val metricTrack = initial.stagedResult?.perception?.tracks?.singleOrNull()
+                ?: error("missing synthetic metric track")
+            val initialTemporalTrack = initial.temporalTracks.singleOrNull()
+                ?: error("missing synthetic temporal track")
+            check(initial.reason == "keyframe_updated")
+            check(initial.stagedResult.profileDecision?.selectedProfile?.id == balancedProfile.id)
+            check(!initialTemporalTrack.propagated)
+
+            val propagated = temporal.updatePose(
+                TimestampedPose(
+                    captureTimestamp + 100_000_000L,
+                    UnitQuaternion(0.7071067811865476, 0.0, 0.7071067811865475, 0.0),
+                ),
+            )
+            val propagatedTrack = propagated.tracks.singleOrNull()
+                ?: error("missing propagated synthetic track")
+            check(propagated.accepted)
+            check(propagatedTrack.stableTrackId == "synthetic-door")
+            check(propagatedTrack.propagated && !propagatedTrack.translationApplied)
+            check(propagatedTrack.uncertaintyMeters > initialTemporalTrack.uncertaintyMeters)
+
             getString(
                 R.string.machine_vision_diagnostic_passed,
-                track.classId,
-                track.representativeDistance.distanceMeters,
-            ),
-        )
+                metricTrack.classId,
+                metricTrack.representativeDistance.distanceMeters,
+            )
+        }.getOrElse {
+            getString(R.string.machine_vision_diagnostic_failed)
+        }
+        machineVisionView.text = message
+        speech.speak(message)
     }
 
     private fun runEnvironmentDiagnostic() {
@@ -627,6 +706,7 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val ENVIRONMENT_MODE_KEY = "environment_selection_mode"
         const val GNSS_EVIDENCE_MAXIMUM_AGE_NANOS = 15_000_000_000L
+        val SYNTHETIC_MASK_FINGERPRINT = "d".repeat(64)
         val OUTDOOR_DIAGNOSTIC_DETECTIONS = listOf(
             SceneSemanticDetection("crosswalk", 0.95),
             SceneSemanticDetection("traffic_light", 0.95),

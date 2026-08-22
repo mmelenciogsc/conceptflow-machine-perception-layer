@@ -122,9 +122,12 @@ second so the standard Camera2 auto-exposure and white-balance loops can
 settle. It then closes that preview session and creates a JPEG-only session;
 this sequence is required because the tested vendor HAL stalls JPEG output
 when preview and JPEG requests overlap. The client begins physical JPEG capture
-near 2 FPS and raises it toward a 5 FPS ceiling after material pixel change.
+near 3 FPS and raises it toward a 5 FPS ceiling after material pixel change.
 The delay is budgeted from capture-request time so JPEG processing is not added
-on top of the intended period. Every image is processed in memory and discarded
+on top of the intended period. A single monotonic opportunity timer permits at
+most three outstanding requests, discards rather than replays backpressured
+opportunities, and associates request tags with image sensor timestamps. Every
+image is processed in memory and discarded
 after the current decision. Capture-size selection prefers an exact 1920×1080
 source. If it is unavailable, it chooses the closest aspect-compatible source
 and aspect-fits it inside 1920×1080 using one uniform scale; it never crops,
@@ -142,7 +145,7 @@ The gate analyzes a bounded luma thumbnail (maximum 160×90):
   cell term preserves small moving actions that would be diluted by a highly
   similar full frame.
 
-Usable stable imagery is emitted at approximately 2 FPS. Material temporal
+Usable relaxed imagery is emitted at approximately 3 FPS. Material temporal
 change raises the target to approximately 5 FPS for a 1.5-second hysteresis
 window, which is extended by continued change. The 5 FPS value is a ceiling,
 not a guarantee: exposure time, Camera2 scheduling, processing load, and

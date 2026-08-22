@@ -21,6 +21,8 @@ import android.os.HandlerThread
 import android.util.Size
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
+import org.conceptflow.mpl.rokid.core.CapturePipelineSnapshot
+import org.conceptflow.mpl.rokid.core.CaptureTimingEvent
 import org.conceptflow.mpl.rokid.core.FrameLimits
 import org.conceptflow.mpl.rokid.core.FrameSource
 import org.conceptflow.mpl.rokid.core.MonotonicFrameSequence
@@ -42,6 +44,7 @@ class Camera2FrameSource(
     private val sequence = MonotonicFrameSequence()
     private val processor = AdaptiveJpegProcessor(limits)
     private val captureCadence = AdaptivePhysicalCaptureCadence()
+    private val capturePipeline = BoundedCaptureRequestPipeline()
     private val sessionId = "camera-${UUID.randomUUID()}"
     private var listener: FrameSource.Listener? = null
     private var cameraThread: HandlerThread? = null
@@ -50,7 +53,9 @@ class Camera2FrameSource(
     private var imageReader: ImageReader? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var captureRequest: CaptureRequest? = null
+    private var captureRequestBuilder: CaptureRequest.Builder? = null
+    private var scheduledCaptureOpportunity: Runnable? = null
+    private var teardownInProgress = false
 
     override val isRunning: Boolean get() = lifecycle.isRunning
 
@@ -61,8 +66,10 @@ class Camera2FrameSource(
         }
 
         val runId = synchronized(stateLock) {
+            check(!teardownInProgress) { "Camera frame source teardown is still in progress" }
             val id = lifecycle.begin()
             processor.reset()
+            capturePipeline.beginRun(id)
             this.listener = listener
             id
         }
@@ -128,8 +135,12 @@ class Camera2FrameSource(
         reader.setOnImageAvailableListener(
             { source ->
                 try {
-                    consumeLatestImage(source, runId)
-                    scheduleNextCapture(runId, handler)
+                    consumeLatestImage(
+                        source,
+                        runId,
+                        handler,
+                        imageAvailableMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos(),
+                    )
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
@@ -310,15 +321,18 @@ class Camera2FrameSource(
         reader: ImageReader,
         handler: Handler,
     ) {
-        val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+        val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(reader.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-        }.build()
-        if (!attachCaptureRequest(runId, request)) return
+        }
+        if (!attachCaptureRequestBuilder(runId, requestBuilder)) return
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) {
                 if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
-                captureNext(runId, handler)
+                dispatchToListener(runId) {
+                    it.onCaptureSessionReady(ElapsedRealtimeClock.nowNanos())
+                }
+                runCaptureOpportunity(runId, handler)
             }
 
             override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -336,79 +350,179 @@ class Camera2FrameSource(
         )
     }
 
-    private fun captureNext(runId: Long, handler: Handler) {
-        val capture = synchronized(stateLock) {
-            if (!lifecycle.isActive(runId)) return
-            val session = captureSession ?: return
-            val request = captureRequest ?: return
-            session to request
-        }
+    private fun runCaptureOpportunity(runId: Long, handler: Handler) {
+        var ticket: CaptureRequestTicket? = null
         try {
-            captureCadence.recordCaptureRequest(ElapsedRealtimeClock.nowNanos())
-            capture.first.capture(capture.second, object : CameraCaptureSession.CaptureCallback() {
-                override fun onCaptureCompleted(
-                    session: CameraCaptureSession,
-                    request: CaptureRequest,
-                    result: TotalCaptureResult,
-                ) = Unit
-
-                override fun onCaptureFailed(
-                    session: CameraCaptureSession,
-                    request: CaptureRequest,
-                    failure: CaptureFailure,
-                ) {
-                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            synchronized(stateLock) {
+                if (!lifecycle.isActive(runId)) return
+                val session = captureSession ?: return
+                val requestBuilder = captureRequestBuilder ?: return
+                val requestTimestampNanos = ElapsedRealtimeClock.nowNanos()
+                captureCadence.recordOpportunity(requestTimestampNanos)
+                ticket = capturePipeline.tryAcquire(runId, requestTimestampNanos)
+                ticket?.let {
+                    val request = requestBuilder.apply { setTag(it) }.build()
+                    session.capture(request, captureCallback(runId), handler)
                 }
-            }, handler)
+            }
+            publishCapturePipelineSnapshot(runId)
+            scheduleNextCaptureOpportunity(runId, handler)
         } catch (_: CameraAccessException) {
+            ticket?.let(capturePipeline::recordCaptureFailed)
+            publishCapturePipelineSnapshot(runId)
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
         } catch (_: RuntimeException) {
+            ticket?.let(capturePipeline::recordCaptureFailed)
+            publishCapturePipelineSnapshot(runId)
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
         }
     }
 
-    private fun scheduleNextCapture(runId: Long, handler: Handler) {
-        if (lifecycle.isActive(runId) &&
-            !handler.postDelayed(
-                { captureNext(runId, handler) },
-                captureCadence.delayAfterCompletionMillis(ElapsedRealtimeClock.nowNanos()),
-            )
-        ) {
+    private fun captureCallback(runId: Long): CameraCaptureSession.CaptureCallback =
+        object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureStarted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                timestamp: Long,
+                frameNumber: Long,
+            ) {
+                val ticket = request.tag as? CaptureRequestTicket ?: return
+                synchronized(stateLock) {
+                    if (!lifecycle.isActive(runId)) return
+                    capturePipeline.recordCaptureStarted(ticket, timestamp)
+                }
+                publishCapturePipelineSnapshot(runId)
+            }
+
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult,
+            ) = Unit
+
+            override fun onCaptureFailed(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                failure: CaptureFailure,
+            ) {
+                synchronized(stateLock) {
+                    if (!lifecycle.isActive(runId)) return
+                    (request.tag as? CaptureRequestTicket)?.let(capturePipeline::recordCaptureFailed)
+                }
+                publishCapturePipelineSnapshot(runId)
+                failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            }
+        }
+
+    private fun scheduleNextCaptureOpportunity(runId: Long, handler: Handler) {
+        lateinit var opportunity: Runnable
+        opportunity = Runnable {
+            val shouldRun = synchronized(stateLock) {
+                if (scheduledCaptureOpportunity !== opportunity) {
+                    false
+                } else {
+                    scheduledCaptureOpportunity = null
+                    lifecycle.isActive(runId)
+                }
+            }
+            if (shouldRun) runCaptureOpportunity(runId, handler)
+        }
+        val attached = synchronized(stateLock) {
+            if (!lifecycle.isActive(runId) || scheduledCaptureOpportunity != null) {
+                false
+            } else {
+                scheduledCaptureOpportunity = opportunity
+                true
+            }
+        }
+        if (!attached) return
+        val delayMillis = captureCadence.delayUntilNextOpportunityMillis(ElapsedRealtimeClock.nowNanos())
+        if (!handler.postDelayed(opportunity, delayMillis)) {
+            synchronized(stateLock) {
+                if (scheduledCaptureOpportunity === opportunity) scheduledCaptureOpportunity = null
+            }
             failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            return
+        }
+        val stillScheduled = synchronized(stateLock) {
+            lifecycle.isActive(runId) && scheduledCaptureOpportunity === opportunity
+        }
+        if (!stillScheduled) {
+            handler.removeCallbacks(opportunity)
         }
     }
 
-    private fun consumeLatestImage(reader: ImageReader, runId: Long) {
+    private fun rescheduleNextCaptureOpportunity(runId: Long, handler: Handler) {
+        val previous = synchronized(stateLock) {
+            if (!lifecycle.isActive(runId)) return
+            scheduledCaptureOpportunity.also { scheduledCaptureOpportunity = null }
+        }
+        previous?.let(handler::removeCallbacks)
+        scheduleNextCaptureOpportunity(runId, handler)
+    }
+
+    private fun publishCapturePipelineSnapshot(runId: Long) {
+        val snapshot = capturePipeline.snapshot()
+        dispatchToListener(runId) { it.onCapturePipelineSnapshot(snapshot) }
+    }
+
+    private fun consumeLatestImage(
+        reader: ImageReader,
+        runId: Long,
+        handler: Handler,
+        imageAvailableMonotonicTimestampNanos: Long,
+    ) {
         val image = reader.acquireLatestImage() ?: return
         image.use {
-            if (!lifecycle.isActive(runId)) return
-            val buffer = image.planes.singleOrNull()?.buffer ?: return
+            val sensorTimestamp = if (image.timestamp > 0L) image.timestamp else ElapsedRealtimeClock.nowNanos()
+            val (association, pipelineSnapshot) = synchronized(stateLock) {
+                if (!lifecycle.isActive(runId)) return
+                capturePipeline.associateLatestImage(runId, sensorTimestamp) to capturePipeline.snapshot()
+            }
+            val buffer = image.planes.singleOrNull()?.buffer ?: run {
+                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
+                return
+            }
             val size = buffer.remaining()
-            if (size <= 0 || size > MAX_SOURCE_JPEG_BYTES) return
+            if (size <= 0 || size > MAX_SOURCE_JPEG_BYTES) {
+                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
+                return
+            }
             val bytes = ByteArray(size)
             buffer.get(bytes)
-            val sensorTimestamp = if (image.timestamp > 0L) image.timestamp else ElapsedRealtimeClock.nowNanos()
             val timestamp = sequence.normalizeTimestamp(sensorTimestamp)
-            val target = listenerFor(runId) ?: return
-            val processed = processor.process(bytes, timestamp) ?: return
-            target.onCaptureGate(
-                CaptureGateEvent(
-                    inputDimensions = processed.inputDimensions,
-                    outputDimensions = processed.dimensions,
-                    emitted = processed.decision.emit,
-                    dropReason = processed.decision.reason,
-                    targetFramesPerSecond = processed.decision.targetFramesPerSecond,
-                    meanLuma = processed.decision.analysis.meanLuma,
-                    darkFraction = processed.decision.analysis.darkFraction,
-                    laplacianVariance = processed.decision.analysis.laplacianVariance,
-                    motionScore = processed.decision.analysis.motionScore,
-                ),
+            if (listenerFor(runId) == null) return
+            val processorStartedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos()
+            val processed = processor.process(bytes, timestamp) ?: run {
+                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
+                return
+            }
+            val processorFinishedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos()
+            val gateEvent = CaptureGateEvent(
+                inputDimensions = processed.inputDimensions,
+                outputDimensions = processed.dimensions,
+                emitted = processed.decision.emit,
+                dropReason = processed.decision.reason,
+                targetFramesPerSecond = processed.decision.targetFramesPerSecond,
+                meanLuma = processed.decision.analysis.meanLuma,
+                darkFraction = processed.decision.analysis.darkFraction,
+                laplacianVariance = processed.decision.analysis.laplacianVariance,
+                motionScore = processed.decision.analysis.motionScore,
             )
-            captureCadence.update(processed.decision.targetFramesPerSecond)
-            val output = processed.jpeg ?: return
-            val frameId = sequence.nextId()
-            target.onFrame(
-                buildJpegFrame(
+            if (!dispatchToListener(runId) { it.onCaptureGate(gateEvent) }) return
+            val cadenceChanged = synchronized(stateLock) {
+                if (!lifecycle.isActive(runId)) return
+                captureCadence.update(processed.decision.targetFramesPerSecond)
+            }
+            if (cadenceChanged) {
+                rescheduleNextCaptureOpportunity(runId, handler)
+            }
+            val output = processed.jpeg
+            val emittedMonotonicTimestampNanos = if (output == null) {
+                null
+            } else {
+                val frameId = sequence.nextId()
+                val frame = buildJpegFrame(
                     requestId = "camera-$frameId",
                     sessionId = sessionId,
                     streamId = "camera2-jpeg",
@@ -419,34 +533,92 @@ class Camera2FrameSource(
                     height = processed.dimensions.height,
                     bytes = output,
                     synthetic = false,
-                ),
+                )
+                if (!dispatchToListener(runId) { it.onFrame(frame) }) return
+                ElapsedRealtimeClock.nowNanos()
+            }
+            val listenerFinishedMonotonicTimestampNanos =
+                emittedMonotonicTimestampNanos ?: ElapsedRealtimeClock.nowNanos()
+            val timingEvent = CaptureTimingEvent(
+                analyzedMonotonicTimestampNanos = processorFinishedMonotonicTimestampNanos,
+                emittedMonotonicTimestampNanos = emittedMonotonicTimestampNanos,
+                requestToImageLatencyNanos = association.requestedAtMonotonicTimestampNanos?.let {
+                    (imageAvailableMonotonicTimestampNanos - it).coerceAtLeast(0L)
+                },
+                imageAcquisitionDurationNanos =
+                    (processorStartedMonotonicTimestampNanos - imageAvailableMonotonicTimestampNanos)
+                        .coerceAtLeast(0L),
+                processorDurationNanos =
+                    (processorFinishedMonotonicTimestampNanos - processorStartedMonotonicTimestampNanos)
+                        .coerceAtLeast(0L),
+                listenerPathDurationNanos =
+                    (listenerFinishedMonotonicTimestampNanos - processorFinishedMonotonicTimestampNanos)
+                        .coerceAtLeast(0L),
             )
+            if (!dispatchToListener(runId) { it.onCaptureTiming(timingEvent) }) return
+            dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
         }
     }
 
     override fun stop() {
         val resources = synchronized(stateLock) {
-            lifecycle.finishCurrent() ?: return
+            val runId = lifecycle.finishCurrent() ?: return
+            teardownInProgress = true
+            val terminalSnapshot = checkNotNull(capturePipeline.endRun(runId))
+            val target = listener
+            deliverTerminalPipelineSnapshot(target, terminalSnapshot)
             listener = null
             detachResourcesLocked()
         }
-        processor.reset()
-        captureCadence.reset()
-        closeResources(resources)
+        completeTeardown(resources)
     }
 
     private fun failRun(runId: Long, message: String, callbackCamera: CameraDevice? = null): Boolean {
         val stopped = synchronized(stateLock) {
             if (!lifecycle.finish(runId)) return false
+            teardownInProgress = true
+            val terminalSnapshot = checkNotNull(capturePipeline.endRun(runId))
             val target = listener
+            deliverTerminalPipelineSnapshot(target, terminalSnapshot)
             listener = null
             target to detachResourcesLocked(callbackCamera)
         }
-        processor.reset()
-        captureCadence.reset()
-        closeResources(stopped.second)
-        stopped.first?.onError(message)
+        completeTeardown(stopped.second) { stopped.first?.onError(message) }
         return true
+    }
+
+    private fun dispatchToListener(
+        runId: Long,
+        action: (FrameSource.Listener) -> Unit,
+    ): Boolean = synchronized(stateLock) {
+        val target = listener ?: return@synchronized false
+        lifecycle.runIfActive(runId) { action(target) }
+    }
+
+    private fun deliverTerminalPipelineSnapshot(
+        target: FrameSource.Listener?,
+        snapshot: CapturePipelineSnapshot,
+    ) {
+        try {
+            target?.onCapturePipelineSnapshot(snapshot)
+        } catch (_: RuntimeException) {
+            // Teardown must remain fail-closed even if a diagnostic listener fails.
+        }
+    }
+
+    private fun completeTeardown(
+        resources: CameraResourceCloser,
+        afterReset: () -> Unit = {},
+    ) {
+        try {
+            drainCameraCallbacksBeforeReset(resources) {
+                processor.reset()
+                captureCadence.reset()
+            }
+            afterReset()
+        } finally {
+            synchronized(stateLock) { teardownInProgress = false }
+        }
     }
 
     private fun attachImageReaders(
@@ -466,9 +638,12 @@ class Camera2FrameSource(
         true
     }
 
-    private fun attachCaptureRequest(runId: Long, request: CaptureRequest): Boolean = synchronized(stateLock) {
+    private fun attachCaptureRequestBuilder(
+        runId: Long,
+        requestBuilder: CaptureRequest.Builder,
+    ): Boolean = synchronized(stateLock) {
         if (!lifecycle.isActive(runId)) return@synchronized false
-        captureRequest = request
+        captureRequestBuilder = requestBuilder
         true
     }
 
@@ -496,15 +671,18 @@ class Camera2FrameSource(
         val reader = imageReader
         val device = cameraDevice
         val session = captureSession
+        val captureOpportunity = scheduledCaptureOpportunity
         cameraHandler = null
         cameraThread = null
         previewReader = null
         imageReader = null
         cameraDevice = null
         captureSession = null
-        captureRequest = null
+        captureRequestBuilder = null
+        scheduledCaptureOpportunity = null
         return CameraResourceCloser(
             listOf(
+                { captureOpportunity?.let { handler?.removeCallbacks(it) } },
                 { handler?.removeCallbacksAndMessages(null) },
                 { session?.close() },
                 { if (device !== callbackCamera) device?.close() },
@@ -519,11 +697,11 @@ class Camera2FrameSource(
 }
 
 internal class AdaptivePhysicalCaptureCadence(
-    private val relaxedFramesPerSecond: Double = 2.0,
+    private val relaxedFramesPerSecond: Double = 3.0,
     private val motionFramesPerSecond: Double = 5.0,
 ) {
     @Volatile private var currentFramesPerSecond = relaxedFramesPerSecond
-    @Volatile private var lastCaptureRequestNanos = 0L
+    @Volatile private var lastOpportunityNanos = 0L
 
     init {
         require(relaxedFramesPerSecond.isFinite() && motionFramesPerSecond.isFinite())
@@ -531,31 +709,186 @@ internal class AdaptivePhysicalCaptureCadence(
         require(motionFramesPerSecond <= 10.0)
     }
 
-    fun update(targetFramesPerSecond: Double) {
+    fun update(targetFramesPerSecond: Double): Boolean {
         require(targetFramesPerSecond.isFinite() && targetFramesPerSecond > 0.0)
-        currentFramesPerSecond = targetFramesPerSecond.coerceIn(relaxedFramesPerSecond, motionFramesPerSecond)
+        val updated = targetFramesPerSecond.coerceIn(relaxedFramesPerSecond, motionFramesPerSecond)
+        if (updated == currentFramesPerSecond) return false
+        currentFramesPerSecond = updated
+        return true
     }
 
-    fun intervalMillis(): Long = kotlin.math.floor(1_000.0 / currentFramesPerSecond).toLong().coerceAtLeast(1L)
+    fun intervalMillis(): Long = kotlin.math.ceil(1_000.0 / currentFramesPerSecond).toLong().coerceAtLeast(1L)
 
-    fun recordCaptureRequest(timestampNanos: Long) {
+    fun recordOpportunity(timestampNanos: Long) {
         require(timestampNanos > 0L)
-        lastCaptureRequestNanos = timestampNanos
+        lastOpportunityNanos = timestampNanos
     }
 
-    fun delayAfterCompletionMillis(nowNanos: Long): Long {
+    fun delayUntilNextOpportunityMillis(nowNanos: Long): Long {
         require(nowNanos >= 0L)
-        val requestNanos = lastCaptureRequestNanos
-        if (requestNanos == 0L || nowNanos <= requestNanos) return intervalMillis()
+        val opportunityNanos = lastOpportunityNanos
+        if (opportunityNanos == 0L || nowNanos <= opportunityNanos) return intervalMillis()
         val periodNanos = intervalMillis() * 1_000_000L
-        val remainingNanos = (periodNanos - (nowNanos - requestNanos)).coerceAtLeast(0L)
+        val remainingNanos = (periodNanos - (nowNanos - opportunityNanos)).coerceAtLeast(0L)
         return (remainingNanos + 999_999L) / 1_000_000L
     }
 
     fun reset() {
         currentFramesPerSecond = relaxedFramesPerSecond
-        lastCaptureRequestNanos = 0L
+        lastOpportunityNanos = 0L
     }
+}
+
+internal data class CaptureRequestTicket(
+    val runId: Long,
+    val sequence: Long,
+    val requestedAtMonotonicTimestampNanos: Long,
+)
+
+internal data class CaptureImageAssociation(
+    val requestedAtMonotonicTimestampNanos: Long?,
+    val exactTimestampMatch: Boolean,
+    val supersededRequestCount: Int,
+)
+
+/**
+ * Caps Camera2/HAL work without retaining missed opportunities. Three slots
+ * cover 600 ms at 5 FPS, above the observed 433.8 ms median request latency.
+ */
+internal class BoundedCaptureRequestPipeline(private val maximumOutstandingRequests: Int = 3) {
+    private data class PendingRequest(
+        val ticket: CaptureRequestTicket,
+        var sensorTimestampNanos: Long? = null,
+    )
+
+    private var activeRunId = 0L
+    private var nextSequence = 0L
+    private val pending = LinkedHashMap<Long, PendingRequest>()
+    private var requestsSubmitted = 0L
+    private var opportunitiesBackpressured = 0L
+    private var requestsSuperseded = 0L
+    private var imagesWithoutExactRequestMatch = 0L
+    private var captureFailures = 0L
+    private var lateCallbacks = 0L
+    private var maximumOutstandingObserved = 0
+
+    init {
+        require(maximumOutstandingRequests in 1..MAX_CAPTURE_PIPELINE_DEPTH)
+    }
+
+    @Synchronized
+    fun beginRun(runId: Long) {
+        require(runId > 0L)
+        activeRunId = runId
+        pending.clear()
+        requestsSubmitted = 0L
+        opportunitiesBackpressured = 0L
+        requestsSuperseded = 0L
+        imagesWithoutExactRequestMatch = 0L
+        captureFailures = 0L
+        lateCallbacks = 0L
+        maximumOutstandingObserved = 0
+    }
+
+    @Synchronized
+    fun tryAcquire(runId: Long, requestedAtMonotonicTimestampNanos: Long): CaptureRequestTicket? {
+        require(requestedAtMonotonicTimestampNanos > 0L)
+        if (runId != activeRunId) return null
+        if (pending.size >= maximumOutstandingRequests) {
+            opportunitiesBackpressured += 1L
+            return null
+        }
+        check(nextSequence < Long.MAX_VALUE) { "Capture request sequence exhausted" }
+        val ticket = CaptureRequestTicket(runId, ++nextSequence, requestedAtMonotonicTimestampNanos)
+        pending[ticket.sequence] = PendingRequest(ticket)
+        requestsSubmitted += 1L
+        maximumOutstandingObserved = maxOf(maximumOutstandingObserved, pending.size)
+        return ticket
+    }
+
+    @Synchronized
+    fun recordCaptureStarted(ticket: CaptureRequestTicket, sensorTimestampNanos: Long): Boolean {
+        if (ticket.runId != activeRunId) return false
+        val request = pending[ticket.sequence]
+        if (request?.ticket != ticket || sensorTimestampNanos <= 0L) {
+            lateCallbacks += 1L
+            return false
+        }
+        val existingTimestamp = request.sensorTimestampNanos
+        if (existingTimestamp != null) {
+            if (existingTimestamp == sensorTimestampNanos) return true
+            lateCallbacks += 1L
+            return false
+        }
+        if (pending.values.any { it.sensorTimestampNanos == sensorTimestampNanos }) {
+            lateCallbacks += 1L
+            return false
+        }
+        request.sensorTimestampNanos = sensorTimestampNanos
+        return true
+    }
+
+    @Synchronized
+    fun associateLatestImage(runId: Long, sensorTimestampNanos: Long): CaptureImageAssociation {
+        require(sensorTimestampNanos > 0L)
+        if (runId != activeRunId) {
+            return CaptureImageAssociation(null, exactTimestampMatch = false, supersededRequestCount = 0)
+        }
+        if (pending.isEmpty()) {
+            imagesWithoutExactRequestMatch += 1L
+            return CaptureImageAssociation(null, exactTimestampMatch = false, supersededRequestCount = 0)
+        }
+        val exact = pending.values.firstOrNull { it.sensorTimestampNanos == sensorTimestampNanos }
+        val selected = exact ?: pending.values
+            .filter { timestamped ->
+                timestamped.sensorTimestampNanos?.let { it <= sensorTimestampNanos } == true
+            }
+            .maxByOrNull { it.sensorTimestampNanos ?: Long.MIN_VALUE }
+            ?: pending.values.first()
+        val retiredSequences = pending.keys.filter { it <= selected.ticket.sequence }
+        retiredSequences.forEach(pending::remove)
+        val superseded = (retiredSequences.size - 1).coerceAtLeast(0)
+        requestsSuperseded += superseded.toLong()
+        if (exact == null) imagesWithoutExactRequestMatch += 1L
+        return CaptureImageAssociation(
+            requestedAtMonotonicTimestampNanos = selected.ticket.requestedAtMonotonicTimestampNanos
+                .takeIf { exact != null },
+            exactTimestampMatch = exact != null,
+            supersededRequestCount = superseded,
+        )
+    }
+
+    @Synchronized
+    fun recordCaptureFailed(ticket: CaptureRequestTicket): Boolean {
+        if (ticket.runId != activeRunId) return false
+        val removed = pending.remove(ticket.sequence)
+        if (removed?.ticket == ticket) {
+            captureFailures += 1L
+            return true
+        }
+        lateCallbacks += 1L
+        return false
+    }
+
+    @Synchronized
+    fun endRun(runId: Long): CapturePipelineSnapshot? {
+        if (runId != activeRunId) return null
+        activeRunId = 0L
+        pending.clear()
+        return snapshot()
+    }
+
+    @Synchronized
+    fun snapshot(): CapturePipelineSnapshot = CapturePipelineSnapshot(
+        requestsSubmitted = requestsSubmitted,
+        opportunitiesBackpressured = opportunitiesBackpressured,
+        requestsSuperseded = requestsSuperseded,
+        imagesWithoutExactRequestMatch = imagesWithoutExactRequestMatch,
+        captureFailures = captureFailures,
+        lateCallbacks = lateCallbacks,
+        outstandingRequests = pending.size,
+        maximumOutstandingRequests = maximumOutstandingObserved,
+    )
 }
 
 internal class CameraResourceCloser(private var closeActions: List<() -> Unit>) {
@@ -565,6 +898,14 @@ internal class CameraResourceCloser(private var closeActions: List<() -> Unit>) 
         closeActions = emptyList()
         actions.forEach(::closeSafely)
     }
+}
+
+internal fun drainCameraCallbacksBeforeReset(
+    resources: CameraResourceCloser,
+    resetState: () -> Unit,
+) {
+    resources.close()
+    resetState()
 }
 
 internal class CallbackResourceCloser<T>(private val closeAction: (T) -> Unit) {
@@ -662,6 +1003,7 @@ private fun closeUnownedThread(thread: HandlerThread?) {
 private const val MAX_SOURCE_JPEG_BYTES = 20 * 1_024 * 1_024
 private const val THREE_A_WARMUP_MILLIS = 1_000L
 private const val MAX_PREVIEW_PIXELS = 1_280L * 720L
+private const val MAX_CAPTURE_PIPELINE_DEPTH = 8
 
 internal fun selectHeadlessPreviewSize(
     candidates: Collection<PixelDimensions>,

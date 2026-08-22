@@ -7,11 +7,20 @@ data class VisionFrame(
     val width: Int,
     val height: Int,
     val synthetic: Boolean,
+    val cameraIntrinsics: CameraIntrinsics? = null,
 ) {
     init {
         require(frameId > 0L && captureMonotonicTimestampNanos >= 0L)
         require(width in 1..7_680 && height in 1..4_320)
+        require(cameraIntrinsics == null ||
+            (cameraIntrinsics.imageWidthPixels == width && cameraIntrinsics.imageHeightPixels == height))
     }
+}
+
+enum class TemporalMotionEvidence {
+    CONFIRMED_STATIC_WORLD,
+    DYNAMIC,
+    UNKNOWN,
 }
 
 data class SemanticMaskObservation(
@@ -19,6 +28,8 @@ data class SemanticMaskObservation(
     val classId: String,
     val confidence: Double,
     val relativeDepthSamples: List<Double>,
+    val maskGeometry: InstanceMaskGeometry? = null,
+    val temporalMotionEvidence: TemporalMotionEvidence = TemporalMotionEvidence.UNKNOWN,
 ) {
     init {
         require(trackId.isNotBlank() && trackId.length <= 128)
@@ -41,6 +52,7 @@ data class MachineVisionInference(
         require(SHA256.matches(fixedVocabularySha256))
         require(depthProfileId.isNotBlank() && depthProfileId.length <= 128)
         require(observations.size <= MAX_OBSERVATIONS)
+        require(observations.map(SemanticMaskObservation::trackId).toSet().size == observations.size)
     }
 
     private companion object {
@@ -60,7 +72,19 @@ data class MetricSemanticTrack(
     val confidence: Double,
     val representativeDistance: MetricDepthEstimate,
     val depthEnvironment: DepthEnvironment,
-)
+    val sourceCaptureMonotonicTimestampNanos: Long = 0L,
+    val sourceInferenceMonotonicTimestampNanos: Long = sourceCaptureMonotonicTimestampNanos,
+    val maskGeometry: InstanceMaskGeometry? = null,
+    val cameraVectorMeters: MetricVector3? = null,
+    val usedDimensionPrior: Boolean = false,
+    val rejectedDimensionPriorAsOutlier: Boolean = false,
+    val temporalMotionEvidence: TemporalMotionEvidence = TemporalMotionEvidence.UNKNOWN,
+) {
+    init {
+        require(sourceCaptureMonotonicTimestampNanos >= 0L)
+        require(sourceInferenceMonotonicTimestampNanos >= sourceCaptureMonotonicTimestampNanos)
+    }
+}
 
 data class MachineVisionPipelineResult(
     val tracks: List<MetricSemanticTrack>,
@@ -68,7 +92,13 @@ data class MachineVisionPipelineResult(
     val rejectedLowConfidence: Int,
     val rejectedStale: Boolean,
     val reason: String,
+    val rejectedInvalidGeometry: Int = 0,
 )
+
+enum class CalibrationBindingPolicy {
+    REQUIRE_BOUND,
+    ALLOW_SYNTHETIC_UNBOUND,
+}
 
 /**
  * Model-neutral semantic/depth fusion. Immediate body-clearance geometry stays
@@ -79,6 +109,8 @@ class MachineVisionPipeline(
     private val calibration: MetricDepthCalibration,
     private val maximumResultAgeNanos: Long = 350_000_000L,
     private val minimumSemanticConfidence: Double = 0.55,
+    private val calibrationBindingPolicy: CalibrationBindingPolicy =
+        CalibrationBindingPolicy.ALLOW_SYNTHETIC_UNBOUND,
 ) {
     init {
         require(maximumResultAgeNanos in 1_000_000L..5_000_000_000L)
@@ -89,10 +121,57 @@ class MachineVisionPipeline(
         frame: VisionFrame,
         environment: DepthEnvironment,
         nowNanos: Long,
+    ): MachineVisionPipelineResult = process(
+        frame,
+        MachineVisionModelProfiles.depth(environment),
+        nowNanos,
+    )
+
+    fun process(
+        frame: VisionFrame,
+        depthRoutingRequest: DepthModelRoutingRequest,
+        availableDepthProfileIds: Set<String>,
+        nowNanos: Long,
+    ): MachineVisionPipelineResult {
+        val routingDecision = DepthModelRoutingPolicy.select(depthRoutingRequest, availableDepthProfileIds)
+        val selectedProfile = routingDecision.profile ?: return MachineVisionPipelineResult(
+            emptyList(),
+            0,
+            0,
+            false,
+            "depth_routing_${routingDecision.reason}",
+        )
+        return process(frame, selectedProfile, nowNanos)
+    }
+
+    fun process(
+        frame: VisionFrame,
+        depthRoutingRequest: DepthModelRoutingRequest,
+        modelBundleStatus: ModelBundleStatus,
+        nowNanos: Long,
+    ): MachineVisionPipelineResult = process(
+        frame,
+        depthRoutingRequest,
+        modelBundleStatus.availableProfileIds,
+        nowNanos,
+    )
+
+    fun process(
+        frame: VisionFrame,
+        selectedDepthProfile: MachineVisionModelProfile,
+        nowNanos: Long,
     ): MachineVisionPipelineResult {
         require(nowNanos >= frame.captureMonotonicTimestampNanos)
-        val profile = MachineVisionModelProfiles.depth(environment)
-        val inference = runCatching { adapter.infer(frame, profile) }.getOrElse {
+        if (selectedDepthProfile.kind != MachineVisionModelKind.METRIC_DEPTH ||
+            selectedDepthProfile.depthEnvironment == null
+        ) {
+            return MachineVisionPipelineResult(emptyList(), 0, 0, false, "invalid_depth_profile")
+        }
+        calibrationBindingFailure(frame, selectedDepthProfile)?.let { reason ->
+            return MachineVisionPipelineResult(emptyList(), 0, 0, false, reason)
+        }
+        val environment = requireNotNull(selectedDepthProfile.depthEnvironment)
+        val inference = runCatching { adapter.infer(frame, selectedDepthProfile) }.getOrElse {
             return MachineVisionPipelineResult(emptyList(), 0, 0, false, "adapter_failure")
         }
         if (inference.frameId != frame.frameId || inference.completedMonotonicTimestampNanos < frame.captureMonotonicTimestampNanos) {
@@ -106,11 +185,12 @@ class MachineVisionPipeline(
         if (inference.fixedVocabularySha256 != MachineVisionModelProfiles.fixedVocabularySha256) {
             return MachineVisionPipelineResult(emptyList(), 0, 0, false, "fixed_vocabulary_mismatch")
         }
-        if (inference.depthProfileId != profile.id) {
+        if (inference.depthProfileId != selectedDepthProfile.id) {
             return MachineVisionPipelineResult(emptyList(), 0, 0, false, "depth_profile_mismatch")
         }
         var unknown = 0
         var lowConfidence = 0
+        var invalidGeometry = 0
         val tracks = inference.observations.mapNotNull { observation ->
             if (BviClassCatalog.find(observation.classId) == null) {
                 unknown += 1
@@ -120,18 +200,89 @@ class MachineVisionPipeline(
                 lowConfidence += 1
                 return@mapNotNull null
             }
+            val geometry = observation.maskGeometry
+            if (geometry != null && !geometry.matches(frame)) {
+                invalidGeometry += 1
+                return@mapNotNull null
+            }
             val relativeMedian = median(observation.relativeDepthSamples)
-            val estimate = calibration.estimate(relativeMedian) ?: return@mapNotNull null
+            val calibratedEstimate = calibration.estimate(relativeMedian) ?: return@mapNotNull null
+            val intrinsics = frame.cameraIntrinsics
+            val dimensionPrior = if (geometry != null && intrinsics != null) {
+                PinholeDimensionEstimator.estimate(
+                    MaskExtentObservation(
+                        classId = observation.classId,
+                        maskWidthPixels = geometry.widthPixels,
+                        maskHeightPixels = geometry.heightPixels,
+                        focalLengthXPixels = intrinsics.focalLengthXPixels,
+                        focalLengthYPixels = intrinsics.focalLengthYPixels,
+                        confidence = observation.confidence,
+                    ),
+                )
+            } else {
+                null
+            }
+            val fused = RobustMetricDepthFusion.fuse(
+                calibratedDepth = calibratedEstimate,
+                calibratedConfidence = observation.confidence,
+                dimensionPrior = dimensionPrior,
+                dimensionConfidence = observation.confidence,
+            )
+            val cameraVector = if (geometry != null && intrinsics != null) {
+                intrinsics.vectorAtDepth(
+                    geometry.centroidXPixels,
+                    geometry.centroidYPixels,
+                    fused.estimate.distanceMeters,
+                )
+            } else {
+                null
+            }
             MetricSemanticTrack(
                 frameId = frame.frameId,
                 trackId = observation.trackId,
                 classId = observation.classId,
                 confidence = observation.confidence,
-                representativeDistance = estimate,
+                representativeDistance = fused.estimate,
                 depthEnvironment = environment,
+                sourceCaptureMonotonicTimestampNanos = frame.captureMonotonicTimestampNanos,
+                sourceInferenceMonotonicTimestampNanos = inference.completedMonotonicTimestampNanos,
+                maskGeometry = geometry,
+                cameraVectorMeters = cameraVector,
+                usedDimensionPrior = fused.usedDimensionPrior,
+                rejectedDimensionPriorAsOutlier = fused.rejectedDimensionPriorAsOutlier,
+                temporalMotionEvidence = observation.temporalMotionEvidence,
             )
         }
-        return MachineVisionPipelineResult(tracks, unknown, lowConfidence, false, "processed")
+        return MachineVisionPipelineResult(
+            tracks,
+            unknown,
+            lowConfidence,
+            false,
+            "processed",
+            invalidGeometry,
+        )
+    }
+
+    private fun calibrationBindingFailure(
+        frame: VisionFrame,
+        selectedDepthProfile: MachineVisionModelProfile,
+    ): String? {
+        val binding = calibration.binding
+        if (binding == null) {
+            return if (calibrationBindingPolicy == CalibrationBindingPolicy.ALLOW_SYNTHETIC_UNBOUND &&
+                frame.synthetic
+            ) {
+                null
+            } else {
+                "calibration_unbound"
+            }
+        }
+        if (binding.depthProfileId != selectedDepthProfile.id) return "calibration_depth_profile_mismatch"
+        val intrinsics = frame.cameraIntrinsics ?: return "calibration_intrinsics_missing"
+        if (binding.cameraIntrinsicsFingerprint != intrinsics.calibrationFingerprint) {
+            return "calibration_intrinsics_mismatch"
+        }
+        return null
     }
 
     private fun median(values: List<Double>): Double {

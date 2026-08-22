@@ -14,6 +14,8 @@ import org.conceptflow.mpl.rokid.core.AudioInputSource
 import org.conceptflow.mpl.rokid.core.ActiveStreamLease
 import org.conceptflow.mpl.rokid.core.AuthenticatedStreamPeer
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
+import org.conceptflow.mpl.rokid.core.CapturePipelineSnapshot
+import org.conceptflow.mpl.rokid.core.CaptureTimingEvent
 import org.conceptflow.mpl.rokid.core.CueEnvelope
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.FrameSource
@@ -237,8 +239,20 @@ class RokidRuntimeService : Service() {
         val camera = Camera2FrameSource(this)
         if (frameSources.attach(camera)) {
             camera.start(object : FrameSource.Listener {
+                override fun onCaptureSessionReady(readyMonotonicTimestampNanos: Long) {
+                    diagnostic.recordCameraJpegSessionReady(readyMonotonicTimestampNanos)
+                }
+
                 override fun onCaptureGate(event: CaptureGateEvent) {
                     diagnostic.recordCaptureGate(event)
+                }
+
+                override fun onCaptureTiming(event: CaptureTimingEvent) {
+                    diagnostic.recordCaptureTiming(event)
+                }
+
+                override fun onCapturePipelineSnapshot(snapshot: CapturePipelineSnapshot) {
+                    diagnostic.recordCapturePipelineSnapshot(snapshot)
                 }
 
                 override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
@@ -330,6 +344,38 @@ class RokidRuntimeService : Service() {
                 "camera_dark_fraction_min=${snapshot.cameraMinimumDarkFraction.formatThreeDecimals()} " +
                 "camera_focus_max=${snapshot.cameraMaximumLaplacianVariance.formatOneDecimal()} " +
                 "camera_motion_max=${snapshot.cameraMaximumMotionScore.formatThreeDecimals()} " +
+                "camera_jpeg_session_ready=${snapshot.cameraJpegSessionReady} " +
+                "camera_jpeg_startup_ms=${snapshot.cameraJpegSessionStartupMillis.formatOneDecimal()} " +
+                "camera_timing_samples=${snapshot.cameraTimingSamples} " +
+                "camera_timing_retained=${snapshot.cameraTimingRetainedSamples} " +
+                "camera_timing_rejected=${snapshot.cameraTimingRejectedEvents} " +
+                "camera_request_timing_samples=${snapshot.cameraRequestTimingSamples} " +
+                "camera_request_timing_retained=${snapshot.cameraRequestTimingRetainedSamples} " +
+                "camera_analyzed_active_ms=${snapshot.cameraAnalyzedActiveMillis.formatOneDecimal()} " +
+                "camera_analyzed_fps=${snapshot.cameraAnalyzedObservedFramesPerSecond.formatThreeDecimals()} " +
+                "camera_emitted_timing_samples=${snapshot.cameraEmittedTimingSamples} " +
+                "camera_emitted_active_ms=${snapshot.cameraEmittedActiveMillis.formatOneDecimal()} " +
+                "camera_emitted_fps=${snapshot.cameraEmittedObservedFramesPerSecond.formatThreeDecimals()} " +
+                "camera_request_image_ms_p50=${snapshot.cameraRequestToImageP50Millis.formatOneDecimal()} " +
+                "camera_request_image_ms_p95=${snapshot.cameraRequestToImageP95Millis.formatOneDecimal()} " +
+                "camera_request_image_ms_max=${snapshot.cameraRequestToImageMaximumMillis.formatOneDecimal()} " +
+                "camera_image_acquire_ms_p50=${snapshot.cameraImageAcquisitionP50Millis.formatOneDecimal()} " +
+                "camera_image_acquire_ms_p95=${snapshot.cameraImageAcquisitionP95Millis.formatOneDecimal()} " +
+                "camera_image_acquire_ms_max=${snapshot.cameraImageAcquisitionMaximumMillis.formatOneDecimal()} " +
+                "camera_processor_ms_p50=${snapshot.cameraProcessorP50Millis.formatOneDecimal()} " +
+                "camera_processor_ms_p95=${snapshot.cameraProcessorP95Millis.formatOneDecimal()} " +
+                "camera_processor_ms_max=${snapshot.cameraProcessorMaximumMillis.formatOneDecimal()} " +
+                "camera_listener_path_ms_p50=${snapshot.cameraListenerPathP50Millis.formatOneDecimal()} " +
+                "camera_listener_path_ms_p95=${snapshot.cameraListenerPathP95Millis.formatOneDecimal()} " +
+                "camera_listener_path_ms_max=${snapshot.cameraListenerPathMaximumMillis.formatOneDecimal()} " +
+                "camera_requests_submitted=${snapshot.cameraRequestsSubmitted} " +
+                "camera_opportunities_backpressured=${snapshot.cameraOpportunitiesBackpressured} " +
+                "camera_requests_superseded=${snapshot.cameraRequestsSuperseded} " +
+                "camera_images_unmatched=${snapshot.cameraImagesWithoutExactRequestMatch} " +
+                "camera_capture_failures=${snapshot.cameraCaptureFailures} " +
+                "camera_late_callbacks=${snapshot.cameraLateCallbacks} " +
+                "camera_outstanding=${snapshot.cameraOutstandingRequests} " +
+                "camera_max_outstanding=${snapshot.cameraMaximumOutstandingRequests} " +
                 "imu_samples=${snapshot.imuSamples} imu_signal_samples=${snapshot.imuSignalSamples} " +
                 "imu_observed_hz=${snapshot.imuObservedSamplesPerSecond.formatOneDecimal()} " +
                 "imu_max_gap_ms=${snapshot.imuMaximumGapMillis.formatOneDecimal()} " +
@@ -345,7 +391,7 @@ class RokidRuntimeService : Service() {
                 "imu_tx_samples=${transmission.imuSamples.get()} " +
                 "microphone_tx_packets=${transmission.microphonePackets.get()} " +
                 "microphone_tx_payload_bytes=${transmission.microphonePayloadBytes.get()} " +
-                "duration_ms=${snapshot.durationMillis}",
+                "cold_start_duration_ms=${snapshot.durationMillis}",
         )
         mainHandler.post(onTerminal)
     }

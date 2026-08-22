@@ -43,6 +43,54 @@ data class CaptureGateEvent(
     }
 }
 
+/**
+ * Aggregate-only timing for one successfully analyzed camera image. The event
+ * intentionally carries no frame bytes, identifiers, or wall-clock time.
+ */
+data class CaptureTimingEvent(
+    val analyzedMonotonicTimestampNanos: Long,
+    val emittedMonotonicTimestampNanos: Long?,
+    val requestToImageLatencyNanos: Long?,
+    val imageAcquisitionDurationNanos: Long,
+    val processorDurationNanos: Long,
+    val listenerPathDurationNanos: Long,
+) {
+    init {
+        require(analyzedMonotonicTimestampNanos > 0L)
+        require(
+            emittedMonotonicTimestampNanos == null ||
+                emittedMonotonicTimestampNanos >= analyzedMonotonicTimestampNanos,
+        )
+        require(requestToImageLatencyNanos == null || requestToImageLatencyNanos >= 0L)
+        require(imageAcquisitionDurationNanos >= 0L)
+        require(processorDurationNanos >= 0L)
+        require(listenerPathDurationNanos >= 0L)
+    }
+}
+
+/** Cumulative, payload-free counters for the bounded physical capture pipeline. */
+data class CapturePipelineSnapshot(
+    val requestsSubmitted: Long,
+    val opportunitiesBackpressured: Long,
+    val requestsSuperseded: Long,
+    val imagesWithoutExactRequestMatch: Long,
+    val captureFailures: Long,
+    val lateCallbacks: Long,
+    val outstandingRequests: Int,
+    val maximumOutstandingRequests: Int,
+) {
+    init {
+        require(requestsSubmitted >= 0L)
+        require(opportunitiesBackpressured >= 0L)
+        require(requestsSuperseded >= 0L)
+        require(imagesWithoutExactRequestMatch >= 0L)
+        require(captureFailures >= 0L)
+        require(lateCallbacks >= 0L)
+        require(outstandingRequests >= 0)
+        require(maximumOutstandingRequests >= outstandingRequests)
+    }
+}
+
 enum class FrameRejection {
     MISSING_IDENTITY,
     INVALID_DIMENSIONS,
@@ -115,6 +163,9 @@ interface FrameSource : AutoCloseable {
     interface Listener {
         fun onFrame(frame: FramePayload)
         fun onCaptureGate(event: CaptureGateEvent) = Unit
+        fun onCaptureSessionReady(readyMonotonicTimestampNanos: Long) = Unit
+        fun onCaptureTiming(event: CaptureTimingEvent) = Unit
+        fun onCapturePipelineSnapshot(snapshot: CapturePipelineSnapshot) = Unit
         fun onError(message: String)
     }
 
@@ -126,13 +177,14 @@ interface FrameSource : AutoCloseable {
 
 class FrameSourceStateController {
     private var activeSource: FrameSource? = null
+    private var closingSource: FrameSource? = null
 
     @get:Synchronized
-    val hasActiveSource: Boolean get() = activeSource != null
+    val hasActiveSource: Boolean get() = activeSource != null || closingSource != null
 
     @Synchronized
     fun attach(source: FrameSource): Boolean {
-        if (activeSource != null) return false
+        if (activeSource != null || closingSource != null) return false
         activeSource = source
         return true
     }
@@ -140,20 +192,40 @@ class FrameSourceStateController {
     @Synchronized
     fun isCurrent(source: FrameSource): Boolean = activeSource === source
 
-    @Synchronized
     fun stopIfCurrent(source: FrameSource): Boolean {
-        if (activeSource !== source) return false
-        activeSource = null
-        source.close()
+        val detached = synchronized(this) {
+            if (activeSource !== source) {
+                false
+            } else {
+                activeSource = null
+                closingSource = source
+                true
+            }
+        }
+        if (!detached) return false
+        closeDetached(source)
         return true
     }
 
-    @Synchronized
     fun stopCurrent(): Boolean {
-        val source = activeSource ?: return false
-        activeSource = null
-        source.close()
+        val source = synchronized(this) {
+            activeSource?.also {
+                activeSource = null
+                closingSource = it
+            }
+        } ?: return false
+        closeDetached(source)
         return true
+    }
+
+    private fun closeDetached(source: FrameSource) {
+        try {
+            source.close()
+        } finally {
+            synchronized(this) {
+                if (closingSource === source) closingSource = null
+            }
+        }
     }
 }
 

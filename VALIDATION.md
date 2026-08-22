@@ -8,9 +8,12 @@ accessibility, safety, or performance validation.
 
 ## Android environment classification and depth routing — 2026-08-22
 
-The Android Node now enforces fixed-vocabulary semantic segmentation before
-indoor/outdoor selection and invokes only the selected 518×518 Depth Anything
-V2 Metric Small Hypersim or VKITTI graph. Camera evidence is primary. Optional
+At this validation checkpoint, the Android Node enforced fixed-vocabulary
+YOLOE instance segmentation, including class semantics, before indoor/outdoor
+selection and invoked only the selected 518×518 Depth Anything V2 Metric Small
+Hypersim or VKITTI graph. The current 392/336/518 tier policy documented in the
+2026-08-23 section below supersedes that resolution choice. Camera evidence was
+primary. Optional
 GNSS evidence is limited to satellite counts, aggregate carrier-to-noise,
 horizontal-accuracy metadata, and monotonic fix age; GPS coordinates are never
 read or retained, missing reception never proves indoors, and GNSS alone cannot
@@ -68,11 +71,14 @@ One-image QNN-versus-ONNX conversion checks produced mean relative differences
 of `1.44%` indoor/336, `2.00%` indoor/392, `3.41%` outdoor/336, and `3.97%`
 outdoor/392, all with Pearson correlation above `0.998`. Resized lower-resolution
 ONNX output tracked the 518 reference more closely at 392 than 336, but this is
-not representative task accuracy or physical metric calibration. The 518 FP16
-profiles therefore remain the current reference artifacts; 392 is only a
-balanced candidate and 336 only a degraded/low-latency candidate pending a
-representative accuracy suite, guided 0.6096 m/2.4384 m capture, and sustained
-thermal/energy measurement.
+not representative task accuracy or physical metric calibration. At the time
+of that experiment, the 518 FP16 profiles remained the current reference slots,
+392 was an unadopted balanced candidate, and 336 was a degraded/low-latency
+candidate. The later runtime-policy implementation supersedes that selection:
+392 is now balanced, 336 is low-power/degraded, and 518 is sparse
+reference/calibration. The missing representative accuracy suite, guided
+0.6096 m/2.4384 m capture, and sustained thermal/energy measurements remain
+missing.
 
 Qualcomm AI Hub release 0.60.0's generic Depth Anything V2 Small package was
 also evaluated without committing its separately governed artifacts. Its
@@ -94,6 +100,98 @@ policy, configuration, license, secret, Ruff, MyPy, workflow-YAML, protocol
 generation, diff-whitespace, and Python dependency-audit checks passed. The
 dependency audit found no known vulnerability in non-editable installed
 distributions.
+
+## Current Machine Vision correlation and temporal policy — 2026-08-23
+
+The current Kotlin boundary routes one exact environment/resolution profile:
+392 balanced, 336 low-power/degraded, or 518 for explicit reference,
+calibration, and sparse ambiguity work. It fails closed if the selected artifact
+is unavailable, and a depth-stage response must repeat the selected profile ID.
+Real frames also require calibration from an immutable bounded registry keyed
+by that complete profile ID and a SHA-256 fingerprint of the active camera
+intrinsics. Instance-mask depth is accepted only for eligible fixed-vocabulary
+tracks, and a mask fingerprint emitted by segmentation must match the
+depth-stage fingerprint for the same image/track.
+
+Pinhole class-dimension estimates are same-image priors, not independent metric
+truth. Outliers are rejected, and an agreeing prior is explicitly prevented
+from reducing calibrated-depth uncertainty. The observed-keyframe gate admits
+relaxed frames at 3 FPS and permits at most 5 FPS for meaningful motion or
+uncertainty. Between successful visual keyframes, pose updates can transform
+only existing anchors carrying explicit confirmed-static-world evidence;
+eligibility defaults to unknown/non-propagatable, and a class allowlist or mask
+geometry is never sufficient. Person/mobility-aid and vehicle groups do not
+become anchors even if upstream marks them static; dynamic and unknown-motion
+tracks are also rejected. A later dynamic or unknown observation with a reused
+ID removes its former static anchor. Translation requires explicit
+position evidence at both ends with the same VIO/external-tracking source and
+coordinate origin; otherwise only orientation is applied. Confidence decays,
+uncertainty grows, and a stale pose produces no propagated snapshot. TTL,
+confidence/uncertainty bounds, explicit occlusion, and bounded capacity remove
+tracks. Pose/IMU ticks cannot create depth or new objects and cannot observe
+moving or newly visible objects.
+
+This is an implemented and deterministic source boundary, not new physical
+model evidence. The public APK still has no in-process QNN adapter. Real-model
+app dispatch, full camera-to-cue latency, representative metric/task accuracy,
+sustained thermals/energy, and BVI usability remain unvalidated.
+
+The 2026-08-23 Android Node debug APK was installed on the attached Poco and
+its keyboard-accessible `V` diagnostic was exercised. UI Automator exposed the
+expected accessible text: the deterministic door track was calibrated to
+1.54 metres, the exact 392-pixel balanced profile was selected, and the stable
+track was propagated with an orientation-only pose tick. The result explicitly
+identified itself as synthetic test data rather than live inference. The
+current source now explicitly marks only that synthetic door as confirmed
+static; production observations default to unknown/non-propagatable. This
+debugger change was not reinstalled or physically re-exercised in this pass.
+
+The matching Rokid Node debug APK was installed directly over ADB and two
+eight-second, aggregate-only stream diagnostics passed. The repeat run observed
+13 usable 1920×1080 JPEG frames, 781 nonzero IMU samples at 98.7 Hz with a
+17.7 ms maximum gap, and 16 microphone chunks before the two-second microphone
+lease expired. The process and service stopped afterward. Although the capture
+policy requested 3 FPS relaxed and up to 5 FPS during motion, only 13 frames
+were analyzed during the complete 8.44-second cold-start session, including
+camera warm-up and session creation. This run validates acquisition and gating,
+but did not establish a sustained 3 FPS physical camera rate; steady-state
+capture timing was measured and the bounded path was repaired in the follow-up
+below.
+No raw frame, PCM, or IMU payload was persisted or logged.
+
+A follow-up timing build separated the bottleneck: with the serialized path,
+request-to-image latency was 433.8 ms p50, versus 2.4 ms image acquisition,
+40.2 ms processing, and 6.5 ms listener/packetization work. The repaired source
+therefore uses one monotonic opportunity timer and at most three outstanding
+Camera2 requests; a missed opportunity is counted and discarded rather than
+queued for replay. Request tags and sensor timestamps preserve exact image
+association, and late callbacks are run-scoped.
+
+The bounded pipeline's physical run passed with 26 analyzed frames over a
+5.5595-second first-to-last active span (`4.497 FPS`) and 23 emitted frames over
+5.5452 seconds (`3.967 FPS`). It submitted 29 requests and reached the configured
+three-request ceiling without backpressure, supersession, unmatched images,
+capture failures, or late callbacks. Request-to-image latency was 425.4 ms p50,
+445.2 ms p95, and 541.5 ms maximum; processor time was 33.9 ms p50 and 50.9 ms
+p95; listener/packetization time was 6.1 ms p50 and 10.1 ms p95. The same run
+observed 781 nonzero IMU samples at 98.7 Hz with a 17.7 ms maximum gap and 16
+microphone chunks before expiry. The 8.448-second cold-start result validates a
+bounded approximately 3–5 FPS acquisition/gating slice, not sustained thermal,
+wireless, in-app QNN inference, or end-to-end perception performance.
+
+A final physical run with no material-motion samples exercised the relaxed
+tier after lifecycle hardening: 18 frames were analyzed at 3.058 FPS and 17
+were emitted at 2.885 FPS over their first-to-last active spans. It submitted
+20 requests, reached two outstanding requests, and recorded zero backpressure,
+supersession, unmatched images, capture failures, or late callbacks. Terminal
+telemetry reported zero outstanding requests, and the app and runtime service
+stopped.
+
+The final installed debug APKs both passed APK Signature Scheme v2 verification.
+Android Node SHA-256 was
+`8210c4bfc257c7dd68c4233b37689632a19295f2a740622ccd61e428d5058ff3`;
+Rokid Node SHA-256 was
+`e4598e5d6726a0a38bfd5b1feef3c45bcc6ccea9ffd33cc0a0ccdf21ad093a60`.
 
 ## Android Node Machine Vision foundation — 2026-08-22
 
@@ -587,13 +685,14 @@ inspected and contained only a cleartext-denying base network policy.
 
 ### Adaptive Rokid capture and IMU gate — 2026-08-22
 
-The updated direct-sideload app selected the device's exact 1920×1080 JPEG
-output, submitted bounded captures on a 200 ms schedule, and analyzed frames
-only in memory. Deterministic JVM tests covered aspect-fit behavior, capture
-size selection, unsigned luma, dark/blur classification, exposure-change
-suppression, localized-motion sensitivity, 2/5 FPS cadence and hysteresis,
-timestamp rollback, and reset. Android unit tests, Android Lint, and debug
-assembly passed before installation.
+The 2026-08-22 direct-sideload app selected the device's exact 1920×1080 JPEG
+output, submitted bounded captures on a 200 ms motion-tier schedule, and
+analyzed frames only in memory. At that checkpoint, deterministic JVM tests covered
+aspect-fit behavior, capture-size selection, unsigned luma, dark/blur
+classification, exposure-change suppression, localized-motion sensitivity,
+2/5 FPS cadence and hysteresis, timestamp rollback, and reset. The later
+3 FPS relaxed default and its physical validation are recorded in the
+2026-08-23 section above.
 
 The first physical run exposed that scheduling the next request after capture
 completion analyzed only 12 frames in 8.779 seconds. All 12 were correctly

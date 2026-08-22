@@ -8,7 +8,7 @@
     <string name="machine_vision_backend_htp">QNN HTP initialized</string>
     <string name="machine_vision_backend_reference">CPU reference mode; %1$s</string>
     <string name="machine_vision_backend_unavailable">no verified inference backend</string>
-    <string name="machine_vision_diagnostic_passed">Synthetic Machine Vision diagnostic passed. %1$s calibrated to %2$.2f metres. This is test data, not live perception.</string>
+    <string name="machine_vision_diagnostic_passed">Synthetic Machine Vision diagnostic passed. %1$s calibrated distance: %2$.2f metres. Exact 392-pixel balanced tier selected. Stable track propagated using an orientation-only pose tick. This is deterministic test data, not live inference.</string>
     <string name="machine_vision_diagnostic_failed">Synthetic Machine Vision diagnostic failed.</string>
     <string name="capability_summary">Capabilities. Camera: %1$s. Motion: %2$s. Audio: %3$s. Haptics: %4$s. Location provider: %5$s. Validated network: %6$s.</string>
     <string name="environment_checking">Environment routing. Automatic mode. Awaiting timestamped camera evidence.</string>

@@ -7,28 +7,49 @@ readonly VOCABULARY_SHA256="2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0d
 
 usage() {
     printf '%s\n' \
-        "Usage: $0 --serial SERIAL --yoloe FILE --depth-indoor FILE --depth-outdoor FILE" \
+        "Usage: $0 --serial SERIAL --yoloe FILE --depth-indoor-392 FILE --depth-outdoor-392 FILE [OPTIONS]" \
+        "Options: --depth-indoor-336 FILE --depth-outdoor-336 FILE" \
+        "         --depth-indoor-518 FILE --depth-outdoor-518 FILE" \
+        "Legacy aliases --depth-indoor/--depth-outdoor provision the optional 518 reference slots." \
         "Privately provisions already converted, licensed QNN artifacts into a debuggable Android Node install." \
         "The script never downloads models and never copies them into this repository."
 }
 
 serial=""
 yoloe=""
-depth_indoor=""
-depth_outdoor=""
+depth_indoor_336=""
+depth_outdoor_336=""
+depth_indoor_392=""
+depth_outdoor_392=""
+depth_indoor_518=""
+depth_outdoor_518=""
 while (($#)); do
     case "$1" in
         --serial) serial="${2:-}"; shift 2 ;;
         --yoloe) yoloe="${2:-}"; shift 2 ;;
-        --depth-indoor) depth_indoor="${2:-}"; shift 2 ;;
-        --depth-outdoor) depth_outdoor="${2:-}"; shift 2 ;;
+        --depth-indoor-336) depth_indoor_336="${2:-}"; shift 2 ;;
+        --depth-outdoor-336) depth_outdoor_336="${2:-}"; shift 2 ;;
+        --depth-indoor-392) depth_indoor_392="${2:-}"; shift 2 ;;
+        --depth-outdoor-392) depth_outdoor_392="${2:-}"; shift 2 ;;
+        --depth-indoor-518|--depth-indoor) depth_indoor_518="${2:-}"; shift 2 ;;
+        --depth-outdoor-518|--depth-outdoor) depth_outdoor_518="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
-if [[ -z "$serial" || -z "$yoloe" || -z "$depth_indoor" || -z "$depth_outdoor" ]]; then
+if [[ -z "$serial" || -z "$yoloe" || -z "$depth_indoor_392" || -z "$depth_outdoor_392" ]]; then
     usage >&2
+    exit 2
+fi
+if { [[ -n "$depth_indoor_336" && -z "$depth_outdoor_336" ]] ||
+    [[ -z "$depth_indoor_336" && -n "$depth_outdoor_336" ]]; }; then
+    printf 'The optional 336 indoor/outdoor artifacts must be provisioned together.\n' >&2
+    exit 2
+fi
+if { [[ -n "$depth_indoor_518" && -z "$depth_outdoor_518" ]] ||
+    [[ -z "$depth_indoor_518" && -n "$depth_outdoor_518" ]]; }; then
+    printf 'The optional 518 indoor/outdoor artifacts must be provisioned together.\n' >&2
     exit 2
 fi
 command -v adb >/dev/null || { printf 'adb is required.\n' >&2; exit 1; }
@@ -111,8 +132,21 @@ write_sidecar() {
 
 provision "$yoloe" "libyoloe_bvi40_fp16.so" $((256 * 1024 * 1024))
 write_sidecar "libyoloe_bvi40_fp16.so.vocabulary.sha256" "$VOCABULARY_SHA256"
-provision "$depth_indoor" "libdepth_indoor_fp16.so" $((512 * 1024 * 1024))
-provision "$depth_outdoor" "libdepth_outdoor_fp16.so" $((512 * 1024 * 1024))
+provision "$depth_indoor_392" "libdepth_indoor_392_fp16.so" $((512 * 1024 * 1024))
+provision "$depth_outdoor_392" "libdepth_outdoor_392_fp16.so" $((512 * 1024 * 1024))
 
-printf 'All three private model artifacts passed byte-for-byte transfer verification.\n'
+optional_count=0
+if [[ -n "$depth_indoor_336" ]]; then
+    provision "$depth_indoor_336" "libdepth_indoor_336_fp16.so" $((512 * 1024 * 1024))
+    provision "$depth_outdoor_336" "libdepth_outdoor_336_fp16.so" $((512 * 1024 * 1024))
+    optional_count=$((optional_count + 2))
+fi
+if [[ -n "$depth_indoor_518" ]]; then
+    provision "$depth_indoor_518" "libdepth_indoor_fp16.so" $((512 * 1024 * 1024))
+    provision "$depth_outdoor_518" "libdepth_outdoor_fp16.so" $((512 * 1024 * 1024))
+    optional_count=$((optional_count + 2))
+fi
+
+printf 'All three required runtime artifacts passed byte-for-byte transfer verification.\n'
+printf '%s optional depth artifacts were also provisioned.\n' "$optional_count"
 printf 'Restart the Android Node to refresh its model readiness status.\n'

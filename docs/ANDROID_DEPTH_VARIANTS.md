@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # Android depth-resolution experiments
 
-The Android Node keeps the two 518×518 FP16 Depth Anything V2 Metric Small
-profiles as its reference artifacts. Lower resolutions are experimental until
-representative indoor/outdoor accuracy, sustained thermals, and guided
-two-distance calibration pass on the glasses camera.
+The Android Node uses the 392×392 FP16 Depth Anything V2 Metric Small profiles
+as its balanced runtime default. The 336×336 pair is the low-power/degraded
+tier. The 518×518 pair remains a reference/calibration tier and may be selected
+only by an explicit reference or calibration request, or by a sparse ambiguity
+probe. Environment selection chooses Hypersim indoor versus VKITTI outdoor
+weights; the service tier chooses resolution.
 
 ## Reproducible path
 
@@ -60,19 +62,17 @@ HVX threads. Post-first client times were:
 
 | Metric model | Input | Median | Observed range |
 | --- | ---: | ---: | ---: |
-| Hypersim indoor Small FP16 | 336×336 | 84.51 ms | 76.27–88.81 ms |
-| Hypersim indoor Small FP16 | 392×392 | 108.18 ms | 99.11–114.16 ms |
-| VKITTI outdoor Small FP16 | 336×336 | 86.19 ms | 79.49–89.03 ms |
-| VKITTI outdoor Small FP16 | 392×392 | 106.36 ms | 91.92–116.10 ms |
+| Hypersim indoor Small FP16 | 336×336 | 84.44 ms | 73.40–89.06 ms |
+| Hypersim indoor Small FP16 | 392×392 | 108.44 ms | 103.33–114.64 ms |
+| VKITTI outdoor Small FP16 | 336×336 | 87.34 ms | 81.72–89.38 ms |
+| VKITTI outdoor Small FP16 | 392×392 | 111.43 ms | 100.21–114.66 ms |
 | Hypersim indoor Small FP16 reference | 518×518 | 262.66 ms | previously measured 250.22–278.27 ms |
 | VKITTI outdoor Small FP16 reference | 518×518 | 269.76 ms | previously measured 243.52–276.51 ms |
 
-A second full run of the checked-in benchmark helper verified every
-host-to-device transfer by SHA-256 and reproduced the ordering: `84.44 ms`,
-`108.44 ms`, `87.34 ms`, and `111.43 ms` respectively. Its post-first ranges
-were `73.40–89.06 ms`, `103.33–114.64 ms`, `81.72–89.38 ms`, and
-`100.21–114.66 ms`. Both runs are short latency checks, not sustained thermal
-or energy measurements.
+These are hardened-repeat, post-first standalone `qnn-net-run` client times;
+every host-to-device transfer was verified by SHA-256. The 518 figures are
+from the prior standalone run. Full camera-to-cue pipeline latency has not
+been measured. These short runs are not sustained thermal or energy evidence.
 
 On the one-image conversion smoke test, QNN-versus-ONNX mean relative
 difference ranged from 1.44% to 3.97%, with Pearson correlation above 0.998.
@@ -81,11 +81,29 @@ the reference better than 336: Pearson `0.9501` indoor / `0.9821` outdoor at
 392, versus `0.9061` / `0.9359` at 336. This proxy cannot establish monocular
 depth accuracy.
 
-The provisional policy is therefore:
+The runtime policy is therefore:
 
-- 518 FP16 remains the accuracy reference and current Android artifact slot.
-- 392 FP16 is the balanced candidate for a representative validation suite.
-- 336 FP16 is a low-latency/degraded-mode candidate, not an accepted default.
+- 392 FP16 is the balanced runtime default and the candidate for representative
+  task-accuracy, sustained thermal, and energy validation.
+- 336 FP16 is selected for the low-power/degraded tier or when configured
+  latency budget or thermal/battery pressure excludes the balanced tier.
+- 518 FP16 is reserved for explicit reference/calibration work and sparse
+  ambiguity probes; it is not a continuous runtime fallback.
+- The router treats each measured standalone median as a necessary lower bound
+  for a configurable end-to-end latency budget. If the chosen static artifact
+  is unavailable, it fails closed instead of substituting another graph.
+
+Routing is exact: the environment classifier selects Hypersim or VKITTI, then
+the service/pressure/budget policy selects one resolution. A balanced request
+may degrade to 336 only before artifact selection. Explicit reference,
+calibration, or sparse-ambiguity work selects 518, and reference work is
+rejected under device pressure. After selection, the depth result must return
+the same profile ID and calibration must exist for that profile plus the active
+camera-intrinsics fingerprint. Availability of a different tier is not a
+fallback.
+
+No representative task-accuracy claim is made for any resolution, and the
+standalone medians must not be reported as end-to-end pipeline latency.
 
 ## Qualcomm generic relative-depth comparison
 

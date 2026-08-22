@@ -79,6 +79,18 @@ and cancellation; and reject unknown, mismatched, stale, or out-of-order
 results. Cue schedulers enforce TTL, priority, capacity, cooldown,
 supersession/cancellation, verbosity, and available modalities.
 
+The Android Machine Vision boundary uses fixed-vocabulary YOLOE-26S instance
+segmentation for class semantics and mask identity, then runs exactly one
+selected indoor/outdoor metric-depth graph: 392 balanced, 336 low-power, or
+518 for sparse reference/calibration work. Observed visual keyframes are gated
+at 3 FPS relaxed and at no more than 5 FPS for meaningful motion or uncertainty.
+High-rate pose/IMU updates can rotate existing short-lived static-world anchors;
+translation additionally requires matching explicit VIO or external-tracking
+origin evidence. Anchoring defaults off and requires explicit confirmed-static
+per-instance evidence; class or geometry alone is insufficient, and later
+dynamic/unknown evidence evicts a reused ID. Pose/IMU updates cannot create
+depth, objects, or observations of moving or newly visible scene content.
+
 Read [Architecture](docs/ARCHITECTURE.md) and [Protocol](docs/PROTOCOL.md) for
 the complete flow and source-level boundaries.
 
@@ -104,8 +116,8 @@ Bubble is a calibrated body-surface offset field with an exact default radius of
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
 | Python | 207 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
-| Android | Named Rokid Node and Android Node APKs; fixed BVI vocabulary; timestamped camera/GNSS environment fusion with accessible automatic/manual depth routing; dual metric-depth profiles, dimension calibration, model artifact verification, and semantic/depth fusion; external fixed-vocabulary YOLOE-26S plus official Hypersim/VKITTI Small graphs physically executed through QAIRT 2.48.40 QNN HTP V79 on the Poco; Android Lint, JVM tests, and APK builds | In-process QNN runtime adapter, physical phone-to-glasses transport, representative environment/model accuracy, sustained thermal profiling, and manual TalkBack/BVI acceptance |
-| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; distortion-free 1920×1080 gate; physical capture cadence near 2 FPS stable/up to 5 FPS after change; dark/blur gate; nominal 100 Hz fused head-IMU acquisition with duplicate suppression and ≤20 ms batches; explicit short microphone lease; bounded ADB-reverse gRPC development trace; no vendor SDK | Physical WebRTC path to Poco, production authenticated pairing, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, and sustained thermal validation |
+| Android | Named Rokid Node and Android Node APKs; fixed-vocabulary YOLOE instance-segmentation semantics; timestamped camera/GNSS environment fusion; exact 392 balanced, 336 low-power, and 518 sparse reference/calibration routing; profile-plus-intrinsics calibration binding; mask-fingerprint correlation; bounded temporal anchor propagation; external YOLOE-26S and Hypersim/VKITTI Small graphs physically executed standalone through QAIRT 2.48.40 QNN HTP V79 on the Poco; Android Lint, JVM tests, and APK builds | In-process QNN runtime adapter, real-model app dispatch, full-pipeline latency, representative task/metric accuracy, sustained thermal profiling, and manual TalkBack/BVI acceptance |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; distortion-free 1920×1080 gate; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; dark/blur gate; a physical run measured 4.497 analyzed FPS and 3.967 emitted FPS; nominal 100 Hz fused head-IMU acquisition with duplicate suppression and ≤20 ms batches; explicit short microphone lease; bounded ADB-reverse gRPC development trace; no vendor SDK | Physical WebRTC path to Poco, production authenticated pairing, in-app QNN end-to-end timing, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, and sustained thermal/energy validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 | Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity EditMode/PlayMode lab and authored FMOD project | Physical open-ear localization, Unity FMOD runtime listening, metric depth on Rokid, target-user validation |
@@ -375,13 +387,14 @@ creation only. Each product must remain independently operable. See
 - [Android host](docs/ANDROID_HOST.md) — host policy, build, install, and real
   transport contract.
 - [Android Machine Vision](docs/ANDROID_MACHINE_VISION.md) — fixed BVI
-  vocabulary, dual depth profiles, HTP boundary, dimension vectors, and
-  relative-to-metric calibration.
+  vocabulary and instance semantics, three depth-resolution tiers, exact
+  calibration/mask correlation, temporal anchor policy, and HTP boundary.
 - [Environment classification](docs/ENVIRONMENT_CLASSIFICATION.md) —
   segmentation-first indoor/outdoor evidence fusion, privacy-minimized GNSS,
   hysteresis, manual overrides, and timestamped depth-profile routing.
 - [Android depth-resolution experiments](docs/ANDROID_DEPTH_VARIANTS.md) —
-  reproducible 336/392 exports, physical Poco HTP timings, and adoption gates.
+  reproducible 336/392 exports, physical Poco HTP timings, exact tier routing,
+  and remaining accuracy/thermal gates.
 - [CUDA cluster](docs/CUDA_CLUSTER.md) — Python worker service, C++ primitives,
   CPU/sanitizer/CUDA-aware builds, and missing inference boundary.
 - [Latency benchmarking](docs/LATENCY_BENCHMARKING.md) — honest percentile and

@@ -15,6 +15,30 @@ enum class DepthEnvironment {
     OUTDOOR,
 }
 
+enum class DepthResolutionTier(val inputSize: Int) {
+    LOW_POWER(336),
+    BALANCED(392),
+    REFERENCE(518),
+}
+
+enum class DepthServiceTier {
+    LOW_POWER,
+    BALANCED,
+    REFERENCE,
+    CALIBRATION,
+}
+
+enum class DevicePressure {
+    NOMINAL,
+    ELEVATED,
+    CRITICAL,
+}
+
+enum class ModelArtifactRequirement {
+    REQUIRED_RUNTIME,
+    OPTIONAL,
+}
+
 enum class AcceleratorTarget {
     QNN_HTP,
     CPU_REFERENCE,
@@ -35,8 +59,11 @@ data class MachineVisionModelProfile(
     val inputHeight: Int,
     val numericProfile: QnnNumericProfile,
     val depthEnvironment: DepthEnvironment? = null,
+    val depthResolutionTier: DepthResolutionTier? = null,
+    val measuredStandaloneMedianMillis: Double? = null,
     val fixedVocabularySha256: String? = null,
     val maximumArtifactBytes: Long = 512L * 1_024L * 1_024L,
+    val artifactRequirement: ModelArtifactRequirement = ModelArtifactRequirement.REQUIRED_RUNTIME,
 ) {
     init {
         require(id.isNotBlank() && upstreamModelId.isNotBlank())
@@ -45,6 +72,17 @@ data class MachineVisionModelProfile(
         require(maximumArtifactBytes in 1L..2L * 1_024L * 1_024L * 1_024L)
         require(kind == MachineVisionModelKind.METRIC_DEPTH || depthEnvironment == null)
         require(kind != MachineVisionModelKind.METRIC_DEPTH || depthEnvironment != null)
+        require(kind == MachineVisionModelKind.METRIC_DEPTH || depthResolutionTier == null)
+        require(kind != MachineVisionModelKind.METRIC_DEPTH || depthResolutionTier != null)
+        require(kind == MachineVisionModelKind.METRIC_DEPTH || measuredStandaloneMedianMillis == null)
+        require(
+            kind != MachineVisionModelKind.METRIC_DEPTH ||
+                measuredStandaloneMedianMillis?.let { it.isFinite() && it > 0.0 } == true,
+        )
+        require(
+            depthResolutionTier == null ||
+                (inputWidth == depthResolutionTier.inputSize && inputHeight == depthResolutionTier.inputSize),
+        )
         fixedVocabularySha256?.let { require(SHA256.matches(it)) }
     }
 
@@ -69,8 +107,62 @@ object MachineVisionModelProfiles {
         maximumArtifactBytes = 256L * 1_024L * 1_024L,
     )
 
-    val depthIndoor = MachineVisionModelProfile(
-        id = "depth-anything-v2-metric-hypersim-small-qnn-htp-fp16",
+    val depthIndoorLowPower = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-hypersim-small-336-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
+        artifactFileName = "libdepth_indoor_336_fp16.so",
+        kind = MachineVisionModelKind.METRIC_DEPTH,
+        inputWidth = 336,
+        inputHeight = 336,
+        numericProfile = QnnNumericProfile.FLOAT16,
+        depthEnvironment = DepthEnvironment.INDOOR,
+        depthResolutionTier = DepthResolutionTier.LOW_POWER,
+        measuredStandaloneMedianMillis = 84.44,
+        artifactRequirement = ModelArtifactRequirement.OPTIONAL,
+    )
+
+    val depthOutdoorLowPower = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-vkitti-small-336-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small",
+        artifactFileName = "libdepth_outdoor_336_fp16.so",
+        kind = MachineVisionModelKind.METRIC_DEPTH,
+        inputWidth = 336,
+        inputHeight = 336,
+        numericProfile = QnnNumericProfile.FLOAT16,
+        depthEnvironment = DepthEnvironment.OUTDOOR,
+        depthResolutionTier = DepthResolutionTier.LOW_POWER,
+        measuredStandaloneMedianMillis = 87.34,
+        artifactRequirement = ModelArtifactRequirement.OPTIONAL,
+    )
+
+    val depthIndoorBalanced = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-hypersim-small-392-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
+        artifactFileName = "libdepth_indoor_392_fp16.so",
+        kind = MachineVisionModelKind.METRIC_DEPTH,
+        inputWidth = 392,
+        inputHeight = 392,
+        numericProfile = QnnNumericProfile.FLOAT16,
+        depthEnvironment = DepthEnvironment.INDOOR,
+        depthResolutionTier = DepthResolutionTier.BALANCED,
+        measuredStandaloneMedianMillis = 108.44,
+    )
+
+    val depthOutdoorBalanced = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-vkitti-small-392-qnn-htp-fp16",
+        upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small",
+        artifactFileName = "libdepth_outdoor_392_fp16.so",
+        kind = MachineVisionModelKind.METRIC_DEPTH,
+        inputWidth = 392,
+        inputHeight = 392,
+        numericProfile = QnnNumericProfile.FLOAT16,
+        depthEnvironment = DepthEnvironment.OUTDOOR,
+        depthResolutionTier = DepthResolutionTier.BALANCED,
+        measuredStandaloneMedianMillis = 111.43,
+    )
+
+    val depthIndoorReference = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-hypersim-small-518-qnn-htp-fp16",
         upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
         artifactFileName = "libdepth_indoor_fp16.so",
         kind = MachineVisionModelKind.METRIC_DEPTH,
@@ -78,10 +170,13 @@ object MachineVisionModelProfiles {
         inputHeight = 518,
         numericProfile = QnnNumericProfile.FLOAT16,
         depthEnvironment = DepthEnvironment.INDOOR,
+        depthResolutionTier = DepthResolutionTier.REFERENCE,
+        measuredStandaloneMedianMillis = 262.66,
+        artifactRequirement = ModelArtifactRequirement.OPTIONAL,
     )
 
-    val depthOutdoor = MachineVisionModelProfile(
-        id = "depth-anything-v2-metric-vkitti-small-qnn-htp-fp16",
+    val depthOutdoorReference = MachineVisionModelProfile(
+        id = "depth-anything-v2-metric-vkitti-small-518-qnn-htp-fp16",
         upstreamModelId = "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small",
         artifactFileName = "libdepth_outdoor_fp16.so",
         kind = MachineVisionModelKind.METRIC_DEPTH,
@@ -89,13 +184,123 @@ object MachineVisionModelProfiles {
         inputHeight = 518,
         numericProfile = QnnNumericProfile.FLOAT16,
         depthEnvironment = DepthEnvironment.OUTDOOR,
+        depthResolutionTier = DepthResolutionTier.REFERENCE,
+        measuredStandaloneMedianMillis = 269.76,
+        artifactRequirement = ModelArtifactRequirement.OPTIONAL,
     )
 
-    val requiredProfiles = listOf(yoloe26sBvi, depthIndoor, depthOutdoor)
+    // Compatibility aliases now point at the balanced runtime default.
+    val depthIndoor: MachineVisionModelProfile = depthIndoorBalanced
+    val depthOutdoor: MachineVisionModelProfile = depthOutdoorBalanced
 
-    fun depth(environment: DepthEnvironment): MachineVisionModelProfile = when (environment) {
-        DepthEnvironment.INDOOR -> depthIndoor
-        DepthEnvironment.OUTDOOR -> depthOutdoor
+    val allProfiles = listOf(
+        yoloe26sBvi,
+        depthIndoorLowPower,
+        depthOutdoorLowPower,
+        depthIndoorBalanced,
+        depthOutdoorBalanced,
+        depthIndoorReference,
+        depthOutdoorReference,
+    )
+    val requiredProfiles = allProfiles.filter {
+        it.artifactRequirement == ModelArtifactRequirement.REQUIRED_RUNTIME
+    }
+    val optionalProfiles = allProfiles.filter {
+        it.artifactRequirement == ModelArtifactRequirement.OPTIONAL
+    }
+
+    fun resolveDepth(
+        environment: DepthEnvironment,
+        resolutionTier: DepthResolutionTier,
+    ): MachineVisionModelProfile = allProfiles.single {
+        it.depthEnvironment == environment && it.depthResolutionTier == resolutionTier
+    }
+
+    fun depth(environment: DepthEnvironment): MachineVisionModelProfile =
+        resolveDepth(environment, DepthResolutionTier.BALANCED)
+}
+
+data class DepthModelRoutingRequest(
+    val environment: DepthEnvironment,
+    val serviceTier: DepthServiceTier = DepthServiceTier.BALANCED,
+    val maximumEndToEndLatencyMillis: Double,
+    val thermalPressure: DevicePressure = DevicePressure.NOMINAL,
+    val batteryPressure: DevicePressure = DevicePressure.NOMINAL,
+    val sparseAmbiguityReferenceRequested: Boolean = false,
+) {
+    init {
+        require(maximumEndToEndLatencyMillis.isFinite() && maximumEndToEndLatencyMillis > 0.0)
+    }
+}
+
+data class DepthModelRoutingDecision(
+    val profile: MachineVisionModelProfile?,
+    val resolutionTier: DepthResolutionTier,
+    val reason: String,
+) {
+    val canRun: Boolean get() = profile != null
+}
+
+/** Selects one static-shape graph and never substitutes another graph after selection. */
+object DepthModelRoutingPolicy {
+    fun select(
+        request: DepthModelRoutingRequest,
+        status: ModelBundleStatus,
+    ): DepthModelRoutingDecision = select(request, status.availableProfileIds)
+
+    fun select(
+        request: DepthModelRoutingRequest,
+        availableProfileIds: Set<String>,
+    ): DepthModelRoutingDecision {
+        val referenceRequested = request.sparseAmbiguityReferenceRequested ||
+            request.serviceTier == DepthServiceTier.REFERENCE ||
+            request.serviceTier == DepthServiceTier.CALIBRATION
+        val pressurePresent = request.thermalPressure != DevicePressure.NOMINAL ||
+            request.batteryPressure != DevicePressure.NOMINAL
+        if (referenceRequested && pressurePresent) {
+            return DepthModelRoutingDecision(
+                null,
+                DepthResolutionTier.REFERENCE,
+                "reference_disallowed_under_device_pressure",
+            )
+        }
+
+        var resolutionTier = when {
+            referenceRequested -> DepthResolutionTier.REFERENCE
+            request.serviceTier == DepthServiceTier.LOW_POWER -> DepthResolutionTier.LOW_POWER
+            pressurePresent -> DepthResolutionTier.LOW_POWER
+            else -> DepthResolutionTier.BALANCED
+        }
+        var profile = MachineVisionModelProfiles.resolveDepth(request.environment, resolutionTier)
+        if (profile.measuredStandaloneMedianMillis!! > request.maximumEndToEndLatencyMillis) {
+            if (resolutionTier != DepthResolutionTier.BALANCED) {
+                return DepthModelRoutingDecision(
+                    null,
+                    resolutionTier,
+                    "latency_budget_below_measured_standalone_median",
+                )
+            }
+            resolutionTier = DepthResolutionTier.LOW_POWER
+            profile = MachineVisionModelProfiles.resolveDepth(request.environment, resolutionTier)
+            if (profile.measuredStandaloneMedianMillis!! > request.maximumEndToEndLatencyMillis) {
+                return DepthModelRoutingDecision(
+                    null,
+                    resolutionTier,
+                    "latency_budget_below_measured_standalone_median",
+                )
+            }
+        }
+        if (profile.id !in availableProfileIds) {
+            return DepthModelRoutingDecision(null, resolutionTier, "selected_artifact_unavailable")
+        }
+        val reason = when {
+            referenceRequested -> "reference_request"
+            pressurePresent -> "device_pressure_low_power"
+            request.serviceTier == DepthServiceTier.LOW_POWER -> "low_power_service_tier"
+            resolutionTier == DepthResolutionTier.LOW_POWER -> "latency_budget_low_power"
+            else -> "balanced_runtime_default"
+        }
+        return DepthModelRoutingDecision(profile, resolutionTier, reason)
     }
 }
 
@@ -107,8 +312,17 @@ data class ModelArtifactCheck(
     val sizeBytes: Long = 0L,
 )
 
-data class ModelBundleStatus(val artifacts: List<ModelArtifactCheck>) {
-    val allRequiredAvailable: Boolean = artifacts.isNotEmpty() && artifacts.all(ModelArtifactCheck::available)
+data class ModelBundleStatus(
+    val requiredArtifacts: List<ModelArtifactCheck>,
+    val optionalArtifacts: List<ModelArtifactCheck>,
+) {
+    /** Compatibility view used by readiness UI: only runtime-required slots. */
+    val artifacts: List<ModelArtifactCheck> get() = requiredArtifacts
+    val allArtifacts: List<ModelArtifactCheck> get() = requiredArtifacts + optionalArtifacts
+    val availableProfileIds: Set<String> get() = allArtifacts.filter(ModelArtifactCheck::available)
+        .mapTo(mutableSetOf()) { it.profile.id }
+    val allRequiredAvailable: Boolean = requiredArtifacts.isNotEmpty() &&
+        requiredArtifacts.all(ModelArtifactCheck::available)
 }
 
 /**
@@ -118,7 +332,8 @@ data class ModelBundleStatus(val artifacts: List<ModelArtifactCheck>) {
  */
 class PrivateModelBundleVerifier {
     fun inspect(directory: File): ModelBundleStatus = ModelBundleStatus(
-        MachineVisionModelProfiles.requiredProfiles.map { inspect(directory, it) },
+        requiredArtifacts = MachineVisionModelProfiles.requiredProfiles.map { inspect(directory, it) },
+        optionalArtifacts = MachineVisionModelProfiles.optionalProfiles.map { inspect(directory, it) },
     )
 
     fun inspect(directory: File, profile: MachineVisionModelProfile): ModelArtifactCheck {

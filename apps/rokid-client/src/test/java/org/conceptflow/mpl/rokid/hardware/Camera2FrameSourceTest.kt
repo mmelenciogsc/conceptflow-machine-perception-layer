@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.rokid.hardware
 
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,11 +20,12 @@ class Camera2FrameSourceTest {
     fun physicalCaptureCadenceStartsRelaxedAndRaisesOnlyAfterMotionSignal() {
         val cadence = AdaptivePhysicalCaptureCadence()
 
-        assertEquals(500L, cadence.intervalMillis())
-        cadence.update(5.0)
+        assertEquals(334L, cadence.intervalMillis())
+        assertTrue(cadence.update(5.0))
         assertEquals(200L, cadence.intervalMillis())
+        assertFalse(cadence.update(5.0))
         cadence.reset()
-        assertEquals(500L, cadence.intervalMillis())
+        assertEquals(334L, cadence.intervalMillis())
     }
 
     @Test
@@ -29,18 +35,121 @@ class Camera2FrameSourceTest {
         cadence.update(9.0)
         assertEquals(200L, cadence.intervalMillis())
         cadence.update(0.5)
-        assertEquals(500L, cadence.intervalMillis())
+        assertEquals(334L, cadence.intervalMillis())
     }
 
     @Test
     fun physicalCaptureCadenceBudgetsFromRequestTimeNotProcessingCompletion() {
         val cadence = AdaptivePhysicalCaptureCadence()
-        cadence.recordCaptureRequest(1_000_000_000L)
+        cadence.recordOpportunity(1_000_000_000L)
 
-        assertEquals(300L, cadence.delayAfterCompletionMillis(1_200_000_000L))
-        assertEquals(0L, cadence.delayAfterCompletionMillis(1_600_000_000L))
+        assertEquals(134L, cadence.delayUntilNextOpportunityMillis(1_200_000_000L))
+        assertEquals(0L, cadence.delayUntilNextOpportunityMillis(1_600_000_000L))
         cadence.update(5.0)
-        assertEquals(0L, cadence.delayAfterCompletionMillis(1_250_000_000L))
+        assertEquals(0L, cadence.delayUntilNextOpportunityMillis(1_250_000_000L))
+    }
+
+    @Test
+    fun boundedPipelineCapsOutstandingRequestsWithoutAccumulatingMissedOpportunities() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 3)
+        pipeline.beginRun(1L)
+
+        val first = pipeline.tryAcquire(1L, 1_000_000_000L)
+        val second = pipeline.tryAcquire(1L, 1_200_000_000L)
+        val third = pipeline.tryAcquire(1L, 1_400_000_000L)
+        assertTrue(first != null)
+        assertTrue(second != null)
+        assertTrue(third != null)
+        assertNull(pipeline.tryAcquire(1L, 1_600_000_000L))
+
+        val capped = pipeline.snapshot()
+        assertEquals(3L, capped.requestsSubmitted)
+        assertEquals(1L, capped.opportunitiesBackpressured)
+        assertEquals(3, capped.outstandingRequests)
+        assertEquals(3, capped.maximumOutstandingRequests)
+
+        assertTrue(pipeline.recordCaptureStarted(first!!, 10_000L))
+        assertEquals(
+            first.requestedAtMonotonicTimestampNanos,
+            pipeline.associateLatestImage(1L, 10_000L).requestedAtMonotonicTimestampNanos,
+        )
+        assertTrue(pipeline.tryAcquire(1L, 1_800_000_000L) != null)
+        val resumed = pipeline.snapshot()
+        assertEquals(4L, resumed.requestsSubmitted)
+        assertEquals(1L, resumed.opportunitiesBackpressured)
+        assertEquals(3, resumed.outstandingRequests)
+    }
+
+    @Test
+    fun latestImageAssociationRetiresSupersededRequestsAndRejectsInventedLatency() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 3)
+        pipeline.beginRun(7L)
+        val first = pipeline.tryAcquire(7L, 1_000L)!!
+        val second = pipeline.tryAcquire(7L, 2_000L)!!
+        val third = pipeline.tryAcquire(7L, 3_000L)!!
+        assertTrue(pipeline.recordCaptureStarted(first, 10_000L))
+        assertTrue(pipeline.recordCaptureStarted(second, 20_000L))
+        assertTrue(pipeline.recordCaptureStarted(third, 30_000L))
+
+        val latest = pipeline.associateLatestImage(7L, 30_000L)
+
+        assertTrue(latest.exactTimestampMatch)
+        assertEquals(3_000L, latest.requestedAtMonotonicTimestampNanos)
+        assertEquals(2, latest.supersededRequestCount)
+        assertEquals(0, pipeline.snapshot().outstandingRequests)
+        assertEquals(2L, pipeline.snapshot().requestsSuperseded)
+        assertFalse(pipeline.recordCaptureFailed(first))
+
+        val unmatched = pipeline.associateLatestImage(7L, 40_000L)
+        assertFalse(unmatched.exactTimestampMatch)
+        assertNull(unmatched.requestedAtMonotonicTimestampNanos)
+        assertEquals(1L, pipeline.snapshot().imagesWithoutExactRequestMatch)
+        assertEquals(1L, pipeline.snapshot().lateCallbacks)
+    }
+
+    @Test
+    fun pipelineResetClearsBacklogAndLateCallbacksCannotAffectNewRun() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 3)
+        pipeline.beginRun(11L)
+        val oldTicket = pipeline.tryAcquire(11L, 1_000L)!!
+        assertEquals(1, pipeline.snapshot().outstandingRequests)
+
+        val terminal = pipeline.endRun(11L)!!
+        assertEquals(1L, terminal.requestsSubmitted)
+        assertEquals(0, terminal.outstandingRequests)
+        assertEquals(1, terminal.maximumOutstandingRequests)
+        pipeline.beginRun(12L)
+        val newTicket = pipeline.tryAcquire(12L, 2_000L)!!
+
+        assertTrue(newTicket.sequence > oldTicket.sequence)
+        assertFalse(pipeline.recordCaptureStarted(oldTicket, 10_000L))
+        assertFalse(pipeline.recordCaptureFailed(oldTicket))
+        val staleImage = pipeline.associateLatestImage(11L, 10_000L)
+        assertFalse(staleImage.exactTimestampMatch)
+        assertNull(staleImage.requestedAtMonotonicTimestampNanos)
+        val restarted = pipeline.snapshot()
+        assertEquals(1L, restarted.requestsSubmitted)
+        assertEquals(1, restarted.outstandingRequests)
+        assertEquals(0L, restarted.lateCallbacks)
+        assertEquals(0L, restarted.imagesWithoutExactRequestMatch)
+    }
+
+    @Test
+    fun captureFailureReleasesExactlyOneSlotWithoutBacklogReplay() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 1)
+        pipeline.beginRun(21L)
+        val failed = pipeline.tryAcquire(21L, 1_000L)!!
+        assertNull(pipeline.tryAcquire(21L, 2_000L))
+
+        assertTrue(pipeline.recordCaptureFailed(failed))
+        val replacement = pipeline.tryAcquire(21L, 3_000L)
+
+        assertTrue(replacement != null)
+        val snapshot = pipeline.snapshot()
+        assertEquals(2L, snapshot.requestsSubmitted)
+        assertEquals(1L, snapshot.opportunitiesBackpressured)
+        assertEquals(1L, snapshot.captureFailures)
+        assertEquals(1, snapshot.outstandingRequests)
     }
 
     @Test
@@ -120,6 +229,44 @@ class Camera2FrameSourceTest {
     }
 
     @Test
+    fun activeDispatchCompletesBeforeLifecycleFinishAndNoCallbackStartsAfterward() {
+        val lifecycle = CameraRunLifecycle()
+        val runId = lifecycle.begin()
+        val callbackEntered = CountDownLatch(1)
+        val releaseCallback = CountDownLatch(1)
+        val finishAttempted = CountDownLatch(1)
+        val finishResult = AtomicBoolean(false)
+        val order = Collections.synchronizedList(mutableListOf<String>())
+
+        val dispatchThread = thread(name = "camera-dispatch-test") {
+            lifecycle.runIfActive(runId) {
+                order += "callback_started"
+                callbackEntered.countDown()
+                check(releaseCallback.await(1L, TimeUnit.SECONDS))
+                order += "callback_finished"
+            }
+        }
+        assertTrue(callbackEntered.await(1L, TimeUnit.SECONDS))
+        val finishThread = thread(name = "camera-finish-test") {
+            finishAttempted.countDown()
+            finishResult.set(lifecycle.finish(runId))
+            order += "lifecycle_finished"
+        }
+        assertTrue(finishAttempted.await(1L, TimeUnit.SECONDS))
+
+        releaseCallback.countDown()
+        dispatchThread.join(1_000L)
+        finishThread.join(1_000L)
+
+        assertFalse(dispatchThread.isAlive)
+        assertFalse(finishThread.isAlive)
+        assertTrue(finishResult.get())
+        assertEquals(listOf("callback_started", "callback_finished", "lifecycle_finished"), order)
+        assertFalse(lifecycle.runIfActive(runId) { order += "post_stop_callback" })
+        assertFalse(order.contains("post_stop_callback"))
+    }
+
+    @Test
     fun lateOpenedResourceIsClosedWithoutCreatingSession() {
         val lifecycle = CameraRunLifecycle()
         val runId = lifecycle.begin()
@@ -158,6 +305,24 @@ class Camera2FrameSourceTest {
         resources.close()
 
         assertEquals(listOf("handler", "session", "device", "reader", "thread"), closed)
+    }
+
+    @Test
+    fun cameraCallbacksAreDrainedBeforeSharedProcessingStateIsReset() {
+        val order = mutableListOf<String>()
+        val resources = CameraResourceCloser(
+            listOf(
+                { order += "callbacks_cancelled" },
+                { order += "camera_thread_joined" },
+            ),
+        )
+
+        drainCameraCallbacksBeforeReset(resources) { order += "processing_state_reset" }
+
+        assertEquals(
+            listOf("callbacks_cancelled", "camera_thread_joined", "processing_state_reset"),
+            order,
+        )
     }
 
     @Test

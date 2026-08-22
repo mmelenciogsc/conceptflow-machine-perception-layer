@@ -166,7 +166,7 @@ object FrameAnalyzer {
 enum class FrameDropReason { DARK, BLURRY, CADENCE_SIMILAR }
 
 data class AdaptiveFrameConfig(
-    val relaxedFramesPerSecond: Double = 2.0,
+    val relaxedFramesPerSecond: Double = 3.0,
     val motionFramesPerSecond: Double = 5.0,
     val minimumMeanLuma: Double = 18.0,
     val maximumDarkFraction: Double = 0.92,

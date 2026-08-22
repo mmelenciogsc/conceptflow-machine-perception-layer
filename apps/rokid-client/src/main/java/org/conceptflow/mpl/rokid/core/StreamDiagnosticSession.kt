@@ -3,6 +3,8 @@ package org.conceptflow.mpl.rokid.core
 
 data class StreamDiagnosticSnapshot(
     val durationMillis: Long,
+    val cameraJpegSessionReady: Boolean,
+    val cameraJpegSessionStartupMillis: Double,
     val cameraFrames: Long,
     val cameraBytes: Long,
     val cameraFramesAnalyzed: Long,
@@ -14,6 +16,36 @@ data class StreamDiagnosticSnapshot(
     val cameraMinimumDarkFraction: Double,
     val cameraMaximumLaplacianVariance: Double,
     val cameraMaximumMotionScore: Double,
+    val cameraTimingSamples: Long,
+    val cameraTimingRetainedSamples: Int,
+    val cameraTimingRejectedEvents: Long,
+    val cameraRequestTimingSamples: Long,
+    val cameraRequestTimingRetainedSamples: Int,
+    val cameraAnalyzedActiveMillis: Double,
+    val cameraAnalyzedObservedFramesPerSecond: Double,
+    val cameraEmittedTimingSamples: Long,
+    val cameraEmittedActiveMillis: Double,
+    val cameraEmittedObservedFramesPerSecond: Double,
+    val cameraRequestToImageP50Millis: Double,
+    val cameraRequestToImageP95Millis: Double,
+    val cameraRequestToImageMaximumMillis: Double,
+    val cameraImageAcquisitionP50Millis: Double,
+    val cameraImageAcquisitionP95Millis: Double,
+    val cameraImageAcquisitionMaximumMillis: Double,
+    val cameraProcessorP50Millis: Double,
+    val cameraProcessorP95Millis: Double,
+    val cameraProcessorMaximumMillis: Double,
+    val cameraListenerPathP50Millis: Double,
+    val cameraListenerPathP95Millis: Double,
+    val cameraListenerPathMaximumMillis: Double,
+    val cameraRequestsSubmitted: Long,
+    val cameraOpportunitiesBackpressured: Long,
+    val cameraRequestsSuperseded: Long,
+    val cameraImagesWithoutExactRequestMatch: Long,
+    val cameraCaptureFailures: Long,
+    val cameraLateCallbacks: Long,
+    val cameraOutstandingRequests: Int,
+    val cameraMaximumOutstandingRequests: Int,
     val imuSamples: Long,
     val imuSignalSamples: Long,
     val imuObservedSamplesPerSecond: Double,
@@ -29,6 +61,7 @@ data class StreamDiagnosticSnapshot(
 
 class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private var accepting = true
+    private var cameraJpegSessionReadyTimestampNanos: Long? = null
     private var cameraFrames = 0L
     private var cameraBytes = 0L
     private var cameraFramesAnalyzed = 0L
@@ -40,6 +73,14 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private var cameraMinimumDarkFraction = 1.0
     private var cameraMaximumLaplacianVariance = 0.0
     private var cameraMaximumMotionScore = 0.0
+    private var cameraTimingRejectedEvents = 0L
+    private val analyzedTimeline = MonotonicRateTracker()
+    private val emittedTimeline = MonotonicRateTracker()
+    private val requestToImageTimings = BoundedTimingWindow()
+    private val imageAcquisitionTimings = BoundedTimingWindow()
+    private val processorTimings = BoundedTimingWindow()
+    private val listenerPathTimings = BoundedTimingWindow()
+    private var capturePipelineSnapshot = EMPTY_CAPTURE_PIPELINE_SNAPSHOT
     private var imuSamples = 0L
     private var imuSignalSamples = 0L
     private var firstImuTimestampNanos = 0L
@@ -83,6 +124,58 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     }
 
     @Synchronized
+    fun recordCameraJpegSessionReady(readyMonotonicTimestampNanos: Long): Boolean {
+        if (!accepting) return false
+        if (readyMonotonicTimestampNanos < startedMonotonicNs ||
+            cameraJpegSessionReadyTimestampNanos != null
+        ) {
+            cameraTimingRejectedEvents += 1L
+            return false
+        }
+        cameraJpegSessionReadyTimestampNanos = readyMonotonicTimestampNanos
+        return true
+    }
+
+    @Synchronized
+    fun recordCaptureTiming(event: CaptureTimingEvent): Boolean {
+        if (!accepting) return false
+        val emittedTimestamp = event.emittedMonotonicTimestampNanos
+        if (event.analyzedMonotonicTimestampNanos < startedMonotonicNs ||
+            !analyzedTimeline.accepts(event.analyzedMonotonicTimestampNanos) ||
+            emittedTimestamp != null && !emittedTimeline.accepts(emittedTimestamp)
+        ) {
+            cameraTimingRejectedEvents += 1L
+            return false
+        }
+        check(analyzedTimeline.record(event.analyzedMonotonicTimestampNanos))
+        if (emittedTimestamp != null) check(emittedTimeline.record(emittedTimestamp))
+        event.requestToImageLatencyNanos?.let { check(requestToImageTimings.record(it)) }
+        check(imageAcquisitionTimings.record(event.imageAcquisitionDurationNanos))
+        check(processorTimings.record(event.processorDurationNanos))
+        check(listenerPathTimings.record(event.listenerPathDurationNanos))
+        return true
+    }
+
+    @Synchronized
+    fun recordCapturePipelineSnapshot(snapshot: CapturePipelineSnapshot): Boolean {
+        if (!accepting) return false
+        val previous = capturePipelineSnapshot
+        if (snapshot.requestsSubmitted < previous.requestsSubmitted ||
+            snapshot.opportunitiesBackpressured < previous.opportunitiesBackpressured ||
+            snapshot.requestsSuperseded < previous.requestsSuperseded ||
+            snapshot.imagesWithoutExactRequestMatch < previous.imagesWithoutExactRequestMatch ||
+            snapshot.captureFailures < previous.captureFailures ||
+            snapshot.lateCallbacks < previous.lateCallbacks ||
+            snapshot.maximumOutstandingRequests < previous.maximumOutstandingRequests
+        ) {
+            cameraTimingRejectedEvents += 1L
+            return false
+        }
+        capturePipelineSnapshot = snapshot
+        return true
+    }
+
+    @Synchronized
     fun recordImuSample(hasNonZeroSignal: Boolean, timestampNanos: Long = 0L): Boolean {
         require(timestampNanos >= 0L)
         if (!accepting) return false
@@ -122,8 +215,19 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     fun finish(finishedMonotonicNs: Long): StreamDiagnosticSnapshot {
         finalSnapshot?.let { return it }
         accepting = false
+        val analyzedRate = analyzedTimeline.snapshot()
+        val emittedRate = emittedTimeline.snapshot()
+        val requestToImage = requestToImageTimings.snapshot()
+        val imageAcquisition = imageAcquisitionTimings.snapshot()
+        val processor = processorTimings.snapshot()
+        val listenerPath = listenerPathTimings.snapshot()
+        val jpegSessionReadyTimestamp = cameraJpegSessionReadyTimestampNanos
         return StreamDiagnosticSnapshot(
             durationMillis = ((finishedMonotonicNs - startedMonotonicNs).coerceAtLeast(0L)) / 1_000_000L,
+            cameraJpegSessionReady = jpegSessionReadyTimestamp != null,
+            cameraJpegSessionStartupMillis = jpegSessionReadyTimestamp
+                ?.let { (it - startedMonotonicNs).coerceAtLeast(0L).toMilliseconds() }
+                ?: 0.0,
             cameraFrames = cameraFrames,
             cameraBytes = cameraBytes,
             cameraFramesAnalyzed = cameraFramesAnalyzed,
@@ -135,6 +239,36 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
             cameraMinimumDarkFraction = if (cameraFramesAnalyzed == 0L) 0.0 else cameraMinimumDarkFraction,
             cameraMaximumLaplacianVariance = cameraMaximumLaplacianVariance,
             cameraMaximumMotionScore = cameraMaximumMotionScore,
+            cameraTimingSamples = analyzedRate.sampleCount,
+            cameraTimingRetainedSamples = processor.retainedSampleCount,
+            cameraTimingRejectedEvents = cameraTimingRejectedEvents,
+            cameraRequestTimingSamples = requestToImage.totalSampleCount,
+            cameraRequestTimingRetainedSamples = requestToImage.retainedSampleCount,
+            cameraAnalyzedActiveMillis = analyzedRate.activeDurationNanos.toMilliseconds(),
+            cameraAnalyzedObservedFramesPerSecond = analyzedRate.observedSamplesPerSecond,
+            cameraEmittedTimingSamples = emittedRate.sampleCount,
+            cameraEmittedActiveMillis = emittedRate.activeDurationNanos.toMilliseconds(),
+            cameraEmittedObservedFramesPerSecond = emittedRate.observedSamplesPerSecond,
+            cameraRequestToImageP50Millis = requestToImage.p50Nanos.toMilliseconds(),
+            cameraRequestToImageP95Millis = requestToImage.p95Nanos.toMilliseconds(),
+            cameraRequestToImageMaximumMillis = requestToImage.maximumNanos.toMilliseconds(),
+            cameraImageAcquisitionP50Millis = imageAcquisition.p50Nanos.toMilliseconds(),
+            cameraImageAcquisitionP95Millis = imageAcquisition.p95Nanos.toMilliseconds(),
+            cameraImageAcquisitionMaximumMillis = imageAcquisition.maximumNanos.toMilliseconds(),
+            cameraProcessorP50Millis = processor.p50Nanos.toMilliseconds(),
+            cameraProcessorP95Millis = processor.p95Nanos.toMilliseconds(),
+            cameraProcessorMaximumMillis = processor.maximumNanos.toMilliseconds(),
+            cameraListenerPathP50Millis = listenerPath.p50Nanos.toMilliseconds(),
+            cameraListenerPathP95Millis = listenerPath.p95Nanos.toMilliseconds(),
+            cameraListenerPathMaximumMillis = listenerPath.maximumNanos.toMilliseconds(),
+            cameraRequestsSubmitted = capturePipelineSnapshot.requestsSubmitted,
+            cameraOpportunitiesBackpressured = capturePipelineSnapshot.opportunitiesBackpressured,
+            cameraRequestsSuperseded = capturePipelineSnapshot.requestsSuperseded,
+            cameraImagesWithoutExactRequestMatch = capturePipelineSnapshot.imagesWithoutExactRequestMatch,
+            cameraCaptureFailures = capturePipelineSnapshot.captureFailures,
+            cameraLateCallbacks = capturePipelineSnapshot.lateCallbacks,
+            cameraOutstandingRequests = capturePipelineSnapshot.outstandingRequests,
+            cameraMaximumOutstandingRequests = capturePipelineSnapshot.maximumOutstandingRequests,
             imuSamples = imuSamples,
             imuSignalSamples = imuSignalSamples,
             imuObservedSamplesPerSecond = observedImuSamplesPerSecond(),
@@ -151,3 +285,116 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
         return (timedImuSamples - 1L) * 1_000_000_000.0 / (lastImuTimestampNanos - firstImuTimestampNanos)
     }
 }
+
+internal data class MonotonicRateSnapshot(
+    val sampleCount: Long,
+    val activeDurationNanos: Long,
+    val observedSamplesPerSecond: Double,
+)
+
+internal class MonotonicRateTracker {
+    private var sampleCount = 0L
+    private var firstTimestampNanos = 0L
+    private var lastTimestampNanos = 0L
+
+    fun accepts(timestampNanos: Long): Boolean =
+        timestampNanos > 0L && (sampleCount == 0L || timestampNanos > lastTimestampNanos)
+
+    fun record(timestampNanos: Long): Boolean {
+        if (!accepts(timestampNanos)) return false
+        if (sampleCount == 0L) firstTimestampNanos = timestampNanos
+        lastTimestampNanos = timestampNanos
+        sampleCount += 1L
+        return true
+    }
+
+    fun snapshot(): MonotonicRateSnapshot {
+        val duration = if (sampleCount < 2L) 0L else lastTimestampNanos - firstTimestampNanos
+        val rate = if (duration <= 0L) {
+            0.0
+        } else {
+            (sampleCount - 1L) * NANOS_PER_SECOND.toDouble() / duration
+        }
+        return MonotonicRateSnapshot(sampleCount, duration, rate)
+    }
+
+    fun reset() {
+        sampleCount = 0L
+        firstTimestampNanos = 0L
+        lastTimestampNanos = 0L
+    }
+}
+
+internal data class BoundedTimingSnapshot(
+    val totalSampleCount: Long,
+    val retainedSampleCount: Int,
+    val p50Nanos: Long,
+    val p95Nanos: Long,
+    val maximumNanos: Long,
+)
+
+internal class BoundedTimingWindow(private val capacity: Int = CAPTURE_TIMING_WINDOW_CAPACITY) {
+    private val samples = LongArray(capacity)
+    private var retainedSampleCount = 0
+    private var nextIndex = 0
+    private var totalSampleCount = 0L
+    private var maximumNanos = 0L
+
+    init {
+        require(capacity in 1..MAX_CAPTURE_TIMING_WINDOW_CAPACITY)
+    }
+
+    fun record(durationNanos: Long): Boolean {
+        if (durationNanos < 0L) return false
+        samples[nextIndex] = durationNanos
+        nextIndex = (nextIndex + 1) % capacity
+        retainedSampleCount = minOf(capacity, retainedSampleCount + 1)
+        totalSampleCount += 1L
+        maximumNanos = maxOf(maximumNanos, durationNanos)
+        return true
+    }
+
+    fun snapshot(): BoundedTimingSnapshot {
+        if (retainedSampleCount == 0) return BoundedTimingSnapshot(0L, 0, 0L, 0L, 0L)
+        val sorted = samples.copyOf(retainedSampleCount).sortedArray()
+        return BoundedTimingSnapshot(
+            totalSampleCount = totalSampleCount,
+            retainedSampleCount = retainedSampleCount,
+            p50Nanos = sorted.nearestRank(0.50),
+            p95Nanos = sorted.nearestRank(0.95),
+            maximumNanos = maximumNanos,
+        )
+    }
+
+    fun reset() {
+        samples.fill(0L)
+        retainedSampleCount = 0
+        nextIndex = 0
+        totalSampleCount = 0L
+        maximumNanos = 0L
+    }
+}
+
+private fun LongArray.nearestRank(percentile: Double): Long {
+    require(isNotEmpty())
+    require(percentile > 0.0 && percentile <= 1.0)
+    val rank = kotlin.math.ceil(percentile * size).toInt().coerceIn(1, size)
+    return this[rank - 1]
+}
+
+private fun Long.toMilliseconds(): Double = this / NANOS_PER_MILLISECOND.toDouble()
+
+private const val NANOS_PER_MILLISECOND = 1_000_000L
+private const val NANOS_PER_SECOND = 1_000_000_000L
+private const val CAPTURE_TIMING_WINDOW_CAPACITY = 64
+private const val MAX_CAPTURE_TIMING_WINDOW_CAPACITY = 1_024
+private val EMPTY_CAPTURE_PIPELINE_SNAPSHOT = CapturePipelineSnapshot(
+    requestsSubmitted = 0L,
+    opportunitiesBackpressured = 0L,
+    requestsSuperseded = 0L,
+    imagesWithoutExactRequestMatch = 0L,
+    captureFailures = 0L,
+    lateCallbacks = 0L,
+    outstandingRequests = 0,
+    maximumOutstandingRequests = 0,
+)
