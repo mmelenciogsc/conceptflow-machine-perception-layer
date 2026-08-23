@@ -14,9 +14,11 @@ import org.conceptflow.mpl.rokid.core.AudioInputSource
 import org.conceptflow.mpl.rokid.core.ActiveStreamLease
 import org.conceptflow.mpl.rokid.core.AuthenticatedStreamPeer
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
+import org.conceptflow.mpl.rokid.core.CameraCalibrationCapabilityState
 import org.conceptflow.mpl.rokid.core.CapturePipelineSnapshot
 import org.conceptflow.mpl.rokid.core.CaptureTimingEvent
 import org.conceptflow.mpl.rokid.core.CueEnvelope
+import org.conceptflow.mpl.rokid.core.DefaultRokidLiveTransport
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.FrameSource
 import org.conceptflow.mpl.rokid.core.FrameSourceStateController
@@ -25,6 +27,9 @@ import org.conceptflow.mpl.rokid.core.InProcessCueTransport
 import org.conceptflow.mpl.rokid.core.InspectableCueRenderer
 import org.conceptflow.mpl.rokid.core.ImuTransmissionBatch
 import org.conceptflow.mpl.rokid.core.ImuTransmissionGate
+import org.conceptflow.mpl.rokid.core.LiveLinkCaptureController
+import org.conceptflow.mpl.rokid.core.LiveLinkCaptureSnapshot
+import org.conceptflow.mpl.rokid.core.LiveLinkCaptureStopReason
 import org.conceptflow.mpl.rokid.core.PcmAudioChunk
 import org.conceptflow.mpl.rokid.core.PhysicalTraceInputGate
 import org.conceptflow.mpl.rokid.core.RemoteCall
@@ -43,6 +48,10 @@ import org.conceptflow.mpl.rokid.hardware.Camera2FrameSource
 import org.conceptflow.mpl.rokid.hardware.PlatformHapticOutput
 import org.conceptflow.mpl.rokid.hardware.PlatformStereoAudioOutput
 import org.conceptflow.mpl.rokid.hardware.SensorManagerPoseSource
+import org.conceptflow.mpl.transport.LiveLinkEndpointRole
+import org.conceptflow.mpl.transport.LIVE_LINK_DIAGNOSTIC_SCHEMA_VERSION
+import org.conceptflow.mpl.transport.LiveLinkProvisioningStore
+import org.conceptflow.mpl.transport.RokidLiveLinkClient
 import org.conceptflow.mpl.v1.Direction
 import org.conceptflow.mpl.v1.Earcon
 import org.conceptflow.mpl.v1.Haptic
@@ -63,6 +72,7 @@ class RokidRuntimeService : Service() {
     @Volatile private var diagnosticSession: StreamDiagnosticSession? = null
     private val physicalTraceLock = Any()
     private var physicalTrace: PhysicalTraceRun? = null
+    private var liveLinkRun: LiveLinkServiceRun? = null
     private val cueIds = AtomicLong(0L)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val binder = RuntimeBinder()
@@ -81,6 +91,7 @@ class RokidRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        stopLiveLink(LiveLinkCaptureStopReason.SERVICE_DESTROYED)
         abandonPhysicalTrace()
         stopSensorInputs()
         if (::transport.isInitialized) transport.close()
@@ -117,6 +128,10 @@ class RokidRuntimeService : Service() {
             return
         }
         source.start(object : FrameSource.Listener {
+            override fun onCameraCalibrationCapability(state: CameraCalibrationCapabilityState) {
+                Log.i(TAG, "state=capturing camera_intrinsics=${state.diagnosticLabel}")
+            }
+
             override fun onFrame(frame: org.conceptflow.mpl.v1.FramePayload) {
                 if (frameSources.isCurrent(source)) {
                     Log.i(
@@ -239,6 +254,10 @@ class RokidRuntimeService : Service() {
         val camera = Camera2FrameSource(this)
         if (frameSources.attach(camera)) {
             camera.start(object : FrameSource.Listener {
+                override fun onCameraCalibrationCapability(state: CameraCalibrationCapabilityState) {
+                    Log.i(TAG, "stream=camera intrinsics=${state.diagnosticLabel}")
+                }
+
                 override fun onCaptureSessionReady(readyMonotonicTimestampNanos: Long) {
                     diagnostic.recordCameraJpegSessionReady(readyMonotonicTimestampNanos)
                 }
@@ -319,6 +338,122 @@ class RokidRuntimeService : Service() {
             STREAM_TEST_DURATION_MS,
         )
     }
+
+    private fun startLiveLinkTest(onTerminal: () -> Unit) {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "state=live_link_rejected reason=camera_permission_denied")
+            mainHandler.post(onTerminal)
+            return
+        }
+        if (hasActiveInputs()) {
+            Log.w(TAG, "state=live_link_rejected reason=input_busy")
+            mainHandler.post(onTerminal)
+            return
+        }
+
+        val liveTransport = try {
+            val configuration = LiveLinkProvisioningStore(this).loadConfig(LiveLinkEndpointRole.ROKID_CLIENT)
+            require(configuration.identityAlias == LIVE_LINK_IDENTITY_ALIAS)
+            DefaultRokidLiveTransport(RokidLiveLinkClient.fromConfig(configuration))
+        } catch (_: Throwable) {
+            Log.w(TAG, "state=live_link_rejected reason=configuration_unavailable")
+            mainHandler.post(onTerminal)
+            return
+        }
+
+        lateinit var run: LiveLinkServiceRun
+        val controller = LiveLinkCaptureController(
+            clock = ElapsedRealtimeClock,
+            frameSources = frameSources,
+            transport = liveTransport,
+            frameSourceFactory = { lease ->
+                Camera2FrameSource(
+                    context = this,
+                    relaxedFramesPerSecond = lease.cameraRelaxedFps.toDouble(),
+                    motionFramesPerSecond = lease.cameraMotionFps.toDouble(),
+                )
+            },
+            poseSourceFactory = { SensorManagerPoseSource(this) },
+            dispatch = { operation -> mainHandler.post(operation) },
+            onStatus = ::logLiveLinkStatus,
+            onTerminal = { snapshot -> finishLiveLink(run, snapshot) },
+        )
+        run = LiveLinkServiceRun(controller, onTerminal)
+        run.poll = object : Runnable {
+            override fun run() {
+                if (liveLinkRun !== run) return
+                controller.poll()
+                if (liveLinkRun === run) mainHandler.postDelayed(this, IMU_GATE_POLL_MILLIS)
+            }
+        }
+        liveLinkRun = run
+        if (controller.start() && liveLinkRun === run) {
+            mainHandler.postDelayed(run.poll, IMU_GATE_POLL_MILLIS)
+            Log.i(
+            TAG,
+            "state=live_link_started diagnostic_schema=$LIVE_LINK_DIAGNOSTIC_SCHEMA_VERSION " +
+                "duration_ms=${LiveLinkCaptureController.DEFAULT_RUN_DURATION_MILLIS} " +
+                    "streams=camera_imu microphone=false",
+            )
+        }
+    }
+
+    private fun initializeLiveIdentity(onTerminal: () -> Unit) {
+        val result = runCatching {
+            val store = LiveLinkProvisioningStore(this)
+            val identity = store.ensureIdentity(LIVE_LINK_IDENTITY_ALIAS)
+            val exportedBytes = store.publicCertificateFile().length()
+            require(exportedBytes == identity.publicCertificateDer.size.toLong() && exportedBytes > 0L)
+            exportedBytes
+        }
+        if (result.isSuccess) {
+            Log.i(TAG, "state=live_identity_ready certificate_bytes=${result.getOrThrow()}")
+        } else {
+            Log.w(TAG, "state=live_identity_failed")
+        }
+        mainHandler.post(onTerminal)
+    }
+
+    private fun stopLiveLink(reason: LiveLinkCaptureStopReason): Boolean {
+        val run = liveLinkRun ?: return false
+        run.controller.stop(reason)
+        return true
+    }
+
+    private fun finishLiveLink(run: LiveLinkServiceRun, snapshot: LiveLinkCaptureSnapshot) {
+        if (liveLinkRun !== run) return
+        liveLinkRun = null
+        mainHandler.removeCallbacks(run.poll)
+        Log.i(
+            TAG,
+            "state=live_link_complete result=${snapshot.stopReason?.name?.lowercase() ?: "unknown"} " +
+                liveLinkAggregate(snapshot),
+        )
+        mainHandler.post(run.onTerminal)
+    }
+
+    private fun logLiveLinkStatus(snapshot: LiveLinkCaptureSnapshot) {
+        Log.i(
+            TAG,
+            "state=live_link status=${snapshot.state.name.lowercase()} " +
+                "last_disconnect=${snapshot.lastDisconnectReason?.name?.lowercase() ?: "none"} " +
+                "last_link_diagnostic=${snapshot.lastDiagnosticCode?.name?.lowercase() ?: "none"} " +
+                liveLinkAggregate(snapshot),
+        )
+    }
+
+    private fun liveLinkAggregate(snapshot: LiveLinkCaptureSnapshot): String =
+        "sessions=${snapshot.sessionsReady} disconnects=${snapshot.disconnects} " +
+            "producer_starts=${snapshot.producerStarts} camera_observed=${snapshot.cameraFramesObserved} " +
+            "camera_queued=${snapshot.cameraFramesQueued} camera_dropped=${snapshot.cameraFramesDropped} " +
+            "camera_chunks=${snapshot.cameraChunksQueued} imu_observed=${snapshot.imuSamplesObserved} " +
+            "imu_batches=${snapshot.imuBatchesQueued} imu_queued=${snapshot.imuSamplesQueued} " +
+            "imu_dropped=${snapshot.imuBatchesDropped} " +
+            "close_attempted=${snapshot.closeEvidence.clientCloseAttempted} " +
+            "close_request_written=${snapshot.closeEvidence.clientCloseRequestWritten} " +
+            "close_writers_drained=${snapshot.closeEvidence.clientWritersDrained} " +
+            "close_ack_received=${snapshot.closeEvidence.clientAcknowledgementReceived} " +
+            "close_request_failure=${snapshot.closeEvidence.clientRequestFailure.name.lowercase()}"
 
     private fun finishStreamTest(
         diagnostic: StreamDiagnosticSession,
@@ -497,6 +632,10 @@ class RokidRuntimeService : Service() {
             return
         }
         camera.start(object : FrameSource.Listener {
+            override fun onCameraCalibrationCapability(state: CameraCalibrationCapabilityState) {
+                Log.i(TAG, "state=physical_trace stream=camera intrinsics=${state.diagnosticLabel}")
+            }
+
             override fun onCaptureGate(event: CaptureGateEvent) {
                 run.diagnostic.recordCaptureGate(event)
             }
@@ -644,7 +783,7 @@ class RokidRuntimeService : Service() {
 
     private fun hasActiveInputs(): Boolean =
         frameSources.hasActiveSource || poseSource?.isRunning == true || microphoneSource?.isRunning == true ||
-            diagnosticSession != null || hasActivePhysicalTrace()
+            diagnosticSession != null || hasActivePhysicalTrace() || liveLinkRun != null
 
     private fun abandonPhysicalTrace() {
         val run = synchronized(physicalTraceLock) {
@@ -699,15 +838,21 @@ class RokidRuntimeService : Service() {
             when (command) {
                 RuntimeCommand.START_CAPTURE -> startCapture(onTerminal)
                 RuntimeCommand.START_STREAM_TEST -> startStreamTest(onTerminal)
+                RuntimeCommand.INITIALIZE_LIVE_IDENTITY -> initializeLiveIdentity(onTerminal)
+                RuntimeCommand.START_LIVE_LINK_TEST -> startLiveLinkTest(onTerminal)
+                RuntimeCommand.STOP_LIVE_LINK_TEST -> {
+                    if (!stopLiveLink(LiveLinkCaptureStopReason.USER_REQUESTED)) mainHandler.post(onTerminal)
+                }
                 RuntimeCommand.START_PHYSICAL_TRACE -> startPhysicalTrace(onTerminal)
                 RuntimeCommand.PLAY_LEFT_CUE -> playCue(Direction.DIRECTION_LEFT, onTerminal)
                 RuntimeCommand.PLAY_RIGHT_CUE -> playCue(Direction.DIRECTION_RIGHT, onTerminal)
                 RuntimeCommand.STOP -> {
+                    val stoppedLiveLink = stopLiveLink(LiveLinkCaptureStopReason.USER_REQUESTED)
                     abandonPhysicalTrace()
                     stopSensorInputs()
                     diagnosticSession = null
                     Log.i(TAG, "state=stop_requested")
-                    mainHandler.post(onTerminal)
+                    if (!stoppedLiveLink) mainHandler.post(onTerminal)
                 }
             }
         }
@@ -742,6 +887,7 @@ class RokidRuntimeService : Service() {
         private const val PHYSICAL_TRACE_TIMEOUT_MS = 8_000L
         private const val PHYSICAL_TRACE_RPC_DEADLINE_MS = 2_000L
         private const val PHYSICAL_TRACE_PORT = 50_051
+        private const val LIVE_LINK_IDENTITY_ALIAS = "org.conceptflow.mpl.rokid.live-link.v1"
         private const val MAX_REASON_LENGTH = 80
     }
 }
@@ -766,4 +912,11 @@ private class PhysicalTraceRun(
     @Volatile var poseAttached = false
     @Volatile var uplinkStartedMonotonicNs = 0L
     lateinit var timeout: Runnable
+}
+
+private class LiveLinkServiceRun(
+    val controller: LiveLinkCaptureController,
+    val onTerminal: () -> Unit,
+) {
+    lateinit var poll: Runnable
 }

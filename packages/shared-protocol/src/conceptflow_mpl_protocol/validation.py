@@ -44,6 +44,18 @@ REQUIRED_STREAM_ENVELOPE_PAYLOADS = (
     "lease_grant",
     "error",
 )
+REQUIRED_LIVE_CONTROL_PAYLOADS = (
+    "hello",
+    "lane_open_request",
+    "lane_open_response",
+    "clock_sync_request",
+    "clock_sync_response",
+    "keepalive",
+    "lease_request",
+    "lease_grant",
+    "error",
+    "lane_ticket_grant",
+)
 
 
 def validate_descriptor() -> None:
@@ -67,6 +79,27 @@ def validate_descriptor() -> None:
     payload = stream_envelope.oneofs_by_name.get("payload")
     if payload is None or tuple(field.name for field in payload.fields) != REQUIRED_STREAM_ENVELOPE_PAYLOADS:
         raise AssertionError("SensorStreamEnvelope payload contract differs")
+    live_control = descriptor.message_types_by_name["LiveLinkControl"]
+    control_payload = live_control.oneofs_by_name.get("payload")
+    if (
+        control_payload is None
+        or tuple(field.name for field in control_payload.fields) != REQUIRED_LIVE_CONTROL_PAYLOADS
+    ):
+        raise AssertionError("LiveLinkControl payload contract differs")
+    live_envelope = descriptor.message_types_by_name["LiveLinkEnvelope"]
+    if tuple(field.name for field in live_envelope.fields) != (
+        "session_id",
+        "lease_id",
+        "lane",
+        "lane_sequence_id",
+        "sent_monotonic_timestamp_ns",
+        "control",
+        "sensor",
+    ):
+        raise AssertionError("LiveLinkEnvelope fields differ")
+    intrinsics = descriptor.message_types_by_name["CameraIntrinsics"]
+    if "provenance" not in intrinsics.fields_by_name or "uncertainty" not in intrinsics.fields_by_name:
+        raise AssertionError("CameraIntrinsics provenance contract is missing")
 
 
 def validate_generated() -> None:

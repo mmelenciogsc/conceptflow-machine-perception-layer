@@ -44,7 +44,12 @@ class SensorStreamPacketizer(
             return emptyList()
         }
         val chunkCount = (payload.size() + limits.cameraChunkBytes - 1) / limits.cameraChunkBytes
-        val metadata = frame.toBuilder().clearFrameData().build()
+        // The Camera2 source has a local capture session. The authenticated live-link session is
+        // authoritative on the wire, including the metadata repeated in the first chunk.
+        val metadata = frame.toBuilder()
+            .setSessionId(lease.sessionId)
+            .clearFrameData()
+            .build()
         return List(chunkCount) { chunkIndex ->
             val start = chunkIndex * limits.cameraChunkBytes
             val end = minOf(payload.size(), start + limits.cameraChunkBytes)

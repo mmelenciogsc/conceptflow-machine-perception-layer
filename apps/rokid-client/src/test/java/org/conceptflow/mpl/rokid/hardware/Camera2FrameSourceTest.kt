@@ -108,6 +108,117 @@ class Camera2FrameSourceTest {
     }
 
     @Test
+    fun captureResultCropIsForwardedOnlyForTheExactlyCorrelatedImage() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 2)
+        pipeline.beginRun(8L)
+        val ticket = pipeline.tryAcquire(8L, 1_000L)!!
+        val metadata = CaptureResultCalibrationMetadata(
+            cropRegion = CameraCalibrationCrop(336.0, 500.0, 3_360.0, 1_890.0),
+            focalLengthMillimeters = 1.9,
+        )
+        assertTrue(pipeline.recordCaptureStarted(ticket, 20_000L))
+        assertTrue(pipeline.recordCaptureCompleted(ticket, 20_000L, metadata))
+
+        val association = pipeline.associateLatestImage(8L, 20_000L)
+
+        assertTrue(association.exactTimestampMatch)
+        assertEquals(metadata, association.calibrationMetadata)
+    }
+
+    @Test
+    fun mismatchedCaptureResultTimestampCannotInfluenceImageCalibration() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 2)
+        pipeline.beginRun(9L)
+        val ticket = pipeline.tryAcquire(9L, 1_000L)!!
+        assertTrue(pipeline.recordCaptureStarted(ticket, 20_000L))
+        assertFalse(
+            pipeline.recordCaptureCompleted(
+                ticket,
+                20_001L,
+                CaptureResultCalibrationMetadata(
+                    cropRegion = CameraCalibrationCrop(0.0, 0.0, 4_032.0, 3_024.0),
+                    focalLengthMillimeters = 1.9,
+                ),
+            ),
+        )
+
+        val association = pipeline.associateLatestImage(9L, 20_000L)
+
+        assertTrue(association.exactTimestampMatch)
+        assertNull(association.calibrationMetadata)
+        assertEquals(1L, pipeline.snapshot().lateCallbacks)
+    }
+
+    @Test
+    fun verifiedCamera2ResultSatisfiesEveryRequestedCalibrationGate() {
+        val metadata = gatedRokidMetadata()
+        val intrinsics = resolveCameraIntrinsicsForCapture(
+            metadata,
+            CaptureResultCalibrationMetadata(
+                cropRegion = metadata.captureContract!!.cropRegion,
+                focalLengthMillimeters = 1.9,
+                unitZoom = true,
+                rotateAndCropNone = true,
+                distortionCorrectionOff = true,
+                videoStabilizationOff = true,
+                opticalStabilizationOff = true,
+            ),
+            PixelDimensions(1_920, 1_080),
+        )!!
+
+        assertEquals(904.7619047619, intrinsics.focalXPixels, 1e-9)
+        assertEquals(960.0, intrinsics.principalXPixels, 1e-9)
+        assertFalse(intrinsics.hasUncertainty())
+    }
+
+    @Test
+    fun contradictoryCorrelatedCamera2ResultRejectsFrameIntrinsics() {
+        val metadata = gatedRokidMetadata()
+
+        val stabilizationContradiction = resolveCameraIntrinsicsForCapture(
+            metadata,
+            CaptureResultCalibrationMetadata(
+                cropRegion = metadata.captureContract!!.cropRegion,
+                focalLengthMillimeters = 1.9,
+                unitZoom = true,
+                rotateAndCropNone = true,
+                distortionCorrectionOff = true,
+                videoStabilizationOff = false,
+                opticalStabilizationOff = true,
+            ),
+            PixelDimensions(1_920, 1_080),
+        )
+        val cropContradiction = resolveCameraIntrinsicsForCapture(
+            metadata,
+            CaptureResultCalibrationMetadata(
+                cropRegion = CameraCalibrationCrop(0.0, 0.0, 4_000.0, 3_000.0),
+                focalLengthMillimeters = 1.9,
+                unitZoom = true,
+                rotateAndCropNone = true,
+                distortionCorrectionOff = true,
+                videoStabilizationOff = true,
+                opticalStabilizationOff = true,
+            ),
+            PixelDimensions(1_920, 1_080),
+        )
+
+        assertNull(stabilizationContradiction)
+        assertNull(cropContradiction)
+    }
+
+    @Test
+    fun absentCaptureResultUsesDocumentedStaticDerivedFallback() {
+        val intrinsics = resolveCameraIntrinsicsForCapture(
+            gatedRokidMetadata(),
+            captureResult = null,
+            output = PixelDimensions(1_920, 1_080),
+        )!!
+
+        assertEquals(540.0, intrinsics.principalYPixels, 1e-9)
+        assertFalse(intrinsics.hasUncertainty())
+    }
+
+    @Test
     fun pipelineResetClearsBacklogAndLateCallbacksCannotAffectNewRun() {
         val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 3)
         pipeline.beginRun(11L)
@@ -378,5 +489,40 @@ class Camera2FrameSourceTest {
         fun createSession() {
             sessionCalls += 1
         }
+    }
+
+    private fun gatedRokidMetadata(): Camera2CalibrationMetadata {
+        val fullArray = CameraCalibrationCrop(0.0, 0.0, 4_032.0, 3_024.0)
+        return Camera2CalibrationMetadata(
+            intrinsicCalibration = listOf(1_900.0, 1_900.0, 0.0, 0.0, 0.0),
+            distortionCoefficients = List(5) { 0.0 },
+            coordinateSpace = CameraCalibrationCoordinateSpace(4_032.0, 3_024.0),
+            physicalFallback = CameraPhysicalIntrinsicsMetadata(
+                focalLengthMillimeters = 1.9,
+                sensorPhysicalWidthMillimeters = 4.032,
+                sensorPhysicalHeightMillimeters = 3.024,
+                pixelArrayWidth = 4_032.0,
+                pixelArrayHeight = 3_024.0,
+                evidence = CameraPhysicalIntrinsicsEvidence.ROKID_CAMERA2_METADATA_FINGERPRINT,
+            ),
+            captureContract = CameraCalibrationCaptureContract(
+                cropRegion = fullArray,
+                focalLengthMillimeters = 1.9,
+                requestCropRegion = true,
+                verifyCropRegion = true,
+                requestFocalLength = true,
+                verifyFocalLength = true,
+                requestUnitZoom = true,
+                verifyUnitZoom = true,
+                requestRotateAndCropNone = true,
+                verifyRotateAndCropNone = true,
+                requestDistortionCorrectionOff = true,
+                verifyDistortionCorrectionOff = true,
+                requestVideoStabilizationOff = true,
+                verifyVideoStabilizationOff = true,
+                requestOpticalStabilizationOff = true,
+                verifyOpticalStabilizationOff = true,
+            ),
+        )
     }
 }

@@ -36,6 +36,13 @@ class CoordinateFrame(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     COORDINATE_FRAME_BODY: _ClassVar[CoordinateFrame]
     COORDINATE_FRAME_LOCAL_WORLD: _ClassVar[CoordinateFrame]
 
+class CameraIntrinsicsProvenance(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    CAMERA_INTRINSICS_PROVENANCE_UNSPECIFIED: _ClassVar[CameraIntrinsicsProvenance]
+    CAMERA_INTRINSICS_PROVENANCE_UNKNOWN: _ClassVar[CameraIntrinsicsProvenance]
+    CAMERA_INTRINSICS_PROVENANCE_CALIBRATED: _ClassVar[CameraIntrinsicsProvenance]
+    CAMERA_INTRINSICS_PROVENANCE_DERIVED: _ClassVar[CameraIntrinsicsProvenance]
+
 class SensorStreamKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     SENSOR_STREAM_KIND_UNSPECIFIED: _ClassVar[SensorStreamKind]
@@ -54,6 +61,18 @@ class AudioSampleEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     AUDIO_SAMPLE_ENCODING_UNSPECIFIED: _ClassVar[AudioSampleEncoding]
     AUDIO_SAMPLE_ENCODING_PCM_S16LE: _ClassVar[AudioSampleEncoding]
+
+class LiveTransportLane(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    LIVE_TRANSPORT_LANE_UNSPECIFIED: _ClassVar[LiveTransportLane]
+    LIVE_TRANSPORT_LANE_REALTIME_CONTROL: _ClassVar[LiveTransportLane]
+    LIVE_TRANSPORT_LANE_CAMERA: _ClassVar[LiveTransportLane]
+
+class LiveTransportPeerRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: _ClassVar[LiveTransportPeerRole]
+    LIVE_TRANSPORT_PEER_ROLE_GLASSES: _ClassVar[LiveTransportPeerRole]
+    LIVE_TRANSPORT_PEER_ROLE_HOST: _ClassVar[LiveTransportPeerRole]
 
 class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -125,6 +144,10 @@ COORDINATE_FRAME_CAMERA_OPTICAL: CoordinateFrame
 COORDINATE_FRAME_HEAD: CoordinateFrame
 COORDINATE_FRAME_BODY: CoordinateFrame
 COORDINATE_FRAME_LOCAL_WORLD: CoordinateFrame
+CAMERA_INTRINSICS_PROVENANCE_UNSPECIFIED: CameraIntrinsicsProvenance
+CAMERA_INTRINSICS_PROVENANCE_UNKNOWN: CameraIntrinsicsProvenance
+CAMERA_INTRINSICS_PROVENANCE_CALIBRATED: CameraIntrinsicsProvenance
+CAMERA_INTRINSICS_PROVENANCE_DERIVED: CameraIntrinsicsProvenance
 SENSOR_STREAM_KIND_UNSPECIFIED: SensorStreamKind
 SENSOR_STREAM_KIND_CAMERA: SensorStreamKind
 SENSOR_STREAM_KIND_IMU: SensorStreamKind
@@ -135,6 +158,12 @@ STREAM_LEASE_OPERATION_RENEW: StreamLeaseOperation
 STREAM_LEASE_OPERATION_CLOSE: StreamLeaseOperation
 AUDIO_SAMPLE_ENCODING_UNSPECIFIED: AudioSampleEncoding
 AUDIO_SAMPLE_ENCODING_PCM_S16LE: AudioSampleEncoding
+LIVE_TRANSPORT_LANE_UNSPECIFIED: LiveTransportLane
+LIVE_TRANSPORT_LANE_REALTIME_CONTROL: LiveTransportLane
+LIVE_TRANSPORT_LANE_CAMERA: LiveTransportLane
+LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: LiveTransportPeerRole
+LIVE_TRANSPORT_PEER_ROLE_GLASSES: LiveTransportPeerRole
+LIVE_TRANSPORT_PEER_ROLE_HOST: LiveTransportPeerRole
 ERROR_CODE_UNSPECIFIED: ErrorCode
 ERROR_CODE_INVALID_ARGUMENT: ErrorCode
 ERROR_CODE_UNSUPPORTED_VERSION: ErrorCode
@@ -277,7 +306,7 @@ class ImageDescriptor(_message.Message):
     def __init__(self, width: _Optional[int] = ..., height: _Optional[int] = ..., row_stride_bytes: _Optional[int] = ..., encoding: _Optional[_Union[ImageEncoding, str]] = ..., media_type: _Optional[str] = ..., payload_bytes: _Optional[int] = ..., sha256: _Optional[bytes] = ...) -> None: ...
 
 class CameraIntrinsics(_message.Message):
-    __slots__ = ("focal_x_pixels", "focal_y_pixels", "principal_x_pixels", "principal_y_pixels", "distortion_coefficients", "calibrated_width", "calibrated_height")
+    __slots__ = ("focal_x_pixels", "focal_y_pixels", "principal_x_pixels", "principal_y_pixels", "distortion_coefficients", "calibrated_width", "calibrated_height", "provenance", "uncertainty")
     FOCAL_X_PIXELS_FIELD_NUMBER: _ClassVar[int]
     FOCAL_Y_PIXELS_FIELD_NUMBER: _ClassVar[int]
     PRINCIPAL_X_PIXELS_FIELD_NUMBER: _ClassVar[int]
@@ -285,6 +314,8 @@ class CameraIntrinsics(_message.Message):
     DISTORTION_COEFFICIENTS_FIELD_NUMBER: _ClassVar[int]
     CALIBRATED_WIDTH_FIELD_NUMBER: _ClassVar[int]
     CALIBRATED_HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    PROVENANCE_FIELD_NUMBER: _ClassVar[int]
+    UNCERTAINTY_FIELD_NUMBER: _ClassVar[int]
     focal_x_pixels: float
     focal_y_pixels: float
     principal_x_pixels: float
@@ -292,7 +323,21 @@ class CameraIntrinsics(_message.Message):
     distortion_coefficients: _containers.RepeatedScalarFieldContainer[float]
     calibrated_width: int
     calibrated_height: int
-    def __init__(self, focal_x_pixels: _Optional[float] = ..., focal_y_pixels: _Optional[float] = ..., principal_x_pixels: _Optional[float] = ..., principal_y_pixels: _Optional[float] = ..., distortion_coefficients: _Optional[_Iterable[float]] = ..., calibrated_width: _Optional[int] = ..., calibrated_height: _Optional[int] = ...) -> None: ...
+    provenance: CameraIntrinsicsProvenance
+    uncertainty: CameraIntrinsicsUncertainty
+    def __init__(self, focal_x_pixels: _Optional[float] = ..., focal_y_pixels: _Optional[float] = ..., principal_x_pixels: _Optional[float] = ..., principal_y_pixels: _Optional[float] = ..., distortion_coefficients: _Optional[_Iterable[float]] = ..., calibrated_width: _Optional[int] = ..., calibrated_height: _Optional[int] = ..., provenance: _Optional[_Union[CameraIntrinsicsProvenance, str]] = ..., uncertainty: _Optional[_Union[CameraIntrinsicsUncertainty, _Mapping]] = ...) -> None: ...
+
+class CameraIntrinsicsUncertainty(_message.Message):
+    __slots__ = ("focal_x_stddev_pixels", "focal_y_stddev_pixels", "principal_x_stddev_pixels", "principal_y_stddev_pixels")
+    FOCAL_X_STDDEV_PIXELS_FIELD_NUMBER: _ClassVar[int]
+    FOCAL_Y_STDDEV_PIXELS_FIELD_NUMBER: _ClassVar[int]
+    PRINCIPAL_X_STDDEV_PIXELS_FIELD_NUMBER: _ClassVar[int]
+    PRINCIPAL_Y_STDDEV_PIXELS_FIELD_NUMBER: _ClassVar[int]
+    focal_x_stddev_pixels: float
+    focal_y_stddev_pixels: float
+    principal_x_stddev_pixels: float
+    principal_y_stddev_pixels: float
+    def __init__(self, focal_x_stddev_pixels: _Optional[float] = ..., focal_y_stddev_pixels: _Optional[float] = ..., principal_x_stddev_pixels: _Optional[float] = ..., principal_y_stddev_pixels: _Optional[float] = ...) -> None: ...
 
 class Vector3(_message.Message):
     __slots__ = ("x", "y", "z")
@@ -469,6 +514,122 @@ class MicrophoneChunk(_message.Message):
     encoding: AudioSampleEncoding
     audio_data: bytes
     def __init__(self, lease_id: _Optional[str] = ..., chunk_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., sample_rate_hz: _Optional[int] = ..., channel_count: _Optional[int] = ..., encoding: _Optional[_Union[AudioSampleEncoding, str]] = ..., audio_data: _Optional[bytes] = ...) -> None: ...
+
+class LiveLinkHello(_message.Message):
+    __slots__ = ("protocol_version", "peer_role", "connection_nonce")
+    PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
+    PEER_ROLE_FIELD_NUMBER: _ClassVar[int]
+    CONNECTION_NONCE_FIELD_NUMBER: _ClassVar[int]
+    protocol_version: ProtocolVersion
+    peer_role: LiveTransportPeerRole
+    connection_nonce: bytes
+    def __init__(self, protocol_version: _Optional[_Union[ProtocolVersion, _Mapping]] = ..., peer_role: _Optional[_Union[LiveTransportPeerRole, str]] = ..., connection_nonce: _Optional[bytes] = ...) -> None: ...
+
+class LiveLaneOpenRequest(_message.Message):
+    __slots__ = ("lane", "session_id", "lease_id", "connection_nonce", "lane_ticket")
+    LANE_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    CONNECTION_NONCE_FIELD_NUMBER: _ClassVar[int]
+    LANE_TICKET_FIELD_NUMBER: _ClassVar[int]
+    lane: LiveTransportLane
+    session_id: str
+    lease_id: str
+    connection_nonce: bytes
+    lane_ticket: bytes
+    def __init__(self, lane: _Optional[_Union[LiveTransportLane, str]] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., connection_nonce: _Optional[bytes] = ..., lane_ticket: _Optional[bytes] = ...) -> None: ...
+
+class LiveLaneOpenResponse(_message.Message):
+    __slots__ = ("lane", "accepted", "error")
+    LANE_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    lane: LiveTransportLane
+    accepted: bool
+    error: ErrorStatus
+    def __init__(self, lane: _Optional[_Union[LiveTransportLane, str]] = ..., accepted: bool = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+
+class LiveLaneTicketGrant(_message.Message):
+    __slots__ = ("lane", "lane_ticket", "valid_for_ms")
+    LANE_FIELD_NUMBER: _ClassVar[int]
+    LANE_TICKET_FIELD_NUMBER: _ClassVar[int]
+    VALID_FOR_MS_FIELD_NUMBER: _ClassVar[int]
+    lane: LiveTransportLane
+    lane_ticket: bytes
+    valid_for_ms: int
+    def __init__(self, lane: _Optional[_Union[LiveTransportLane, str]] = ..., lane_ticket: _Optional[bytes] = ..., valid_for_ms: _Optional[int] = ...) -> None: ...
+
+class ClockSyncRequest(_message.Message):
+    __slots__ = ("probe_id", "initiator_send_monotonic_ns")
+    PROBE_ID_FIELD_NUMBER: _ClassVar[int]
+    INITIATOR_SEND_MONOTONIC_NS_FIELD_NUMBER: _ClassVar[int]
+    probe_id: int
+    initiator_send_monotonic_ns: int
+    def __init__(self, probe_id: _Optional[int] = ..., initiator_send_monotonic_ns: _Optional[int] = ...) -> None: ...
+
+class ClockSyncResponse(_message.Message):
+    __slots__ = ("probe_id", "initiator_send_monotonic_ns", "responder_receive_monotonic_ns", "responder_send_monotonic_ns")
+    PROBE_ID_FIELD_NUMBER: _ClassVar[int]
+    INITIATOR_SEND_MONOTONIC_NS_FIELD_NUMBER: _ClassVar[int]
+    RESPONDER_RECEIVE_MONOTONIC_NS_FIELD_NUMBER: _ClassVar[int]
+    RESPONDER_SEND_MONOTONIC_NS_FIELD_NUMBER: _ClassVar[int]
+    probe_id: int
+    initiator_send_monotonic_ns: int
+    responder_receive_monotonic_ns: int
+    responder_send_monotonic_ns: int
+    def __init__(self, probe_id: _Optional[int] = ..., initiator_send_monotonic_ns: _Optional[int] = ..., responder_receive_monotonic_ns: _Optional[int] = ..., responder_send_monotonic_ns: _Optional[int] = ...) -> None: ...
+
+class LiveLinkKeepalive(_message.Message):
+    __slots__ = ("nonce", "sent_monotonic_ns", "response")
+    NONCE_FIELD_NUMBER: _ClassVar[int]
+    SENT_MONOTONIC_NS_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    nonce: int
+    sent_monotonic_ns: int
+    response: bool
+    def __init__(self, nonce: _Optional[int] = ..., sent_monotonic_ns: _Optional[int] = ..., response: bool = ...) -> None: ...
+
+class LiveLinkControl(_message.Message):
+    __slots__ = ("hello", "lane_open_request", "lane_open_response", "clock_sync_request", "clock_sync_response", "keepalive", "lease_request", "lease_grant", "error", "lane_ticket_grant")
+    HELLO_FIELD_NUMBER: _ClassVar[int]
+    LANE_OPEN_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    LANE_OPEN_RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_SYNC_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_SYNC_RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    KEEPALIVE_FIELD_NUMBER: _ClassVar[int]
+    LEASE_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    LEASE_GRANT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    LANE_TICKET_GRANT_FIELD_NUMBER: _ClassVar[int]
+    hello: LiveLinkHello
+    lane_open_request: LiveLaneOpenRequest
+    lane_open_response: LiveLaneOpenResponse
+    clock_sync_request: ClockSyncRequest
+    clock_sync_response: ClockSyncResponse
+    keepalive: LiveLinkKeepalive
+    lease_request: StreamLeaseRequest
+    lease_grant: StreamLeaseGrant
+    error: ErrorStatus
+    lane_ticket_grant: LiveLaneTicketGrant
+    def __init__(self, hello: _Optional[_Union[LiveLinkHello, _Mapping]] = ..., lane_open_request: _Optional[_Union[LiveLaneOpenRequest, _Mapping]] = ..., lane_open_response: _Optional[_Union[LiveLaneOpenResponse, _Mapping]] = ..., clock_sync_request: _Optional[_Union[ClockSyncRequest, _Mapping]] = ..., clock_sync_response: _Optional[_Union[ClockSyncResponse, _Mapping]] = ..., keepalive: _Optional[_Union[LiveLinkKeepalive, _Mapping]] = ..., lease_request: _Optional[_Union[StreamLeaseRequest, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., lane_ticket_grant: _Optional[_Union[LiveLaneTicketGrant, _Mapping]] = ...) -> None: ...
+
+class LiveLinkEnvelope(_message.Message):
+    __slots__ = ("session_id", "lease_id", "lane", "lane_sequence_id", "sent_monotonic_timestamp_ns", "control", "sensor")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    LANE_FIELD_NUMBER: _ClassVar[int]
+    LANE_SEQUENCE_ID_FIELD_NUMBER: _ClassVar[int]
+    SENT_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    CONTROL_FIELD_NUMBER: _ClassVar[int]
+    SENSOR_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    lane: LiveTransportLane
+    lane_sequence_id: int
+    sent_monotonic_timestamp_ns: int
+    control: LiveLinkControl
+    sensor: SensorStreamEnvelope
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., lane: _Optional[_Union[LiveTransportLane, str]] = ..., lane_sequence_id: _Optional[int] = ..., sent_monotonic_timestamp_ns: _Optional[int] = ..., control: _Optional[_Union[LiveLinkControl, _Mapping]] = ..., sensor: _Optional[_Union[SensorStreamEnvelope, _Mapping]] = ...) -> None: ...
 
 class SensorStreamEnvelope(_message.Message):
     __slots__ = ("session_id", "lease_id", "sequence_id", "sent_monotonic_timestamp_ns", "camera_chunk", "imu_batch", "microphone_chunk", "lease_grant", "error")

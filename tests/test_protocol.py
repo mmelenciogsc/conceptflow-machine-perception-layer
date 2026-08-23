@@ -105,6 +105,50 @@ def test_sensor_stream_envelope_round_trip_preserves_lease_and_absolute_imu() ->
     assert decoded.imu_batch.samples[0].pose.rotation.w == 1.0
 
 
+def test_live_link_wrapper_preserves_independent_lane_sequence_and_control() -> None:
+    legacy_sensor = pb.SensorStreamEnvelope(
+        session_id="ephemeral-session",
+        lease_id="lease-1",
+        sequence_id=99,
+        imu_batch=pb.ImuBatch(lease_id="lease-1", batch_id=3),
+    )
+    envelope = pb.LiveLinkEnvelope(
+        session_id="ephemeral-session",
+        lease_id="lease-1",
+        lane=pb.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+        lane_sequence_id=1,
+        sensor=legacy_sensor,
+    )
+
+    decoded = pb.LiveLinkEnvelope.FromString(envelope.SerializeToString(deterministic=True))
+
+    assert decoded.lane_sequence_id == 1
+    assert decoded.sensor.sequence_id == 99
+    assert decoded.sensor.WhichOneof("payload") == "imu_batch"
+
+
+def test_camera_intrinsics_do_not_imply_calibration_or_uncertainty_by_default() -> None:
+    unknown = pb.CameraIntrinsics(focal_x_pixels=900.0, focal_y_pixels=900.0)
+    calibrated = pb.CameraIntrinsics(
+        focal_x_pixels=900.0,
+        focal_y_pixels=901.0,
+        principal_x_pixels=960.0,
+        principal_y_pixels=540.0,
+        provenance=pb.CAMERA_INTRINSICS_PROVENANCE_CALIBRATED,
+        uncertainty=pb.CameraIntrinsicsUncertainty(
+            focal_x_stddev_pixels=0.5,
+            focal_y_stddev_pixels=0.5,
+            principal_x_stddev_pixels=1.0,
+            principal_y_stddev_pixels=1.0,
+        ),
+    )
+
+    assert unknown.provenance == pb.CAMERA_INTRINSICS_PROVENANCE_UNSPECIFIED
+    assert not unknown.HasField("uncertainty")
+    assert calibrated.provenance == pb.CAMERA_INTRINSICS_PROVENANCE_CALIBRATED
+    assert calibrated.uncertainty.principal_x_stddev_pixels == 1.0
+
+
 def test_microphone_request_is_explicit_and_camera_chunks_are_bounded() -> None:
     request = pb.StreamLeaseRequest(
         request_id="request-1",

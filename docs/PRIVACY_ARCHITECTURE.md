@@ -11,13 +11,13 @@ privacy failures.
 
 | Data | Current use | Default persistence |
 | --- | --- | --- |
-| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture and one-shot development transport from the glasses app | None implemented |
-| Pose and intrinsics | Optional frame context in the protocol; Android pose sampling | None implemented |
+| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture; one-shot development transport; bounded direct mutual-TLS Rokid-to-Poco transfer and transient QNN input | None implemented |
+| Pose and intrinsics | Optional frame context; Android pose sampling; bounded live IMU batches and optional validated Camera2 calibration metadata | None implemented |
 | Environment evidence | Ephemeral semantic probabilities and optional aggregate GNSS reception quality | In-memory only; selected manual mode only is persisted |
-| Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status | In-memory session state only |
+| Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status; ephemeral live session, lease, nonce, lane-ticket, and sequence state | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
 | Observations and cues | Assistive scheduling and rendering | In-memory queues; inspectable status history may display cue text |
-| Timing samples | Local latency summaries | Process memory or explicitly redirected command output |
+| Timing samples | Local latency summaries; live clock-offset/uncertainty evidence and aggregate p50/p95/p99 stage timing | Process memory or explicitly redirected command output |
 
 There is no repository implementation for a frame database, capture archive,
 analytics uploader, background telemetry service, model-training ingestion, or
@@ -34,22 +34,34 @@ nonvisual runtime stopped. On a controlled development unit, the direct-sideload
 helper can grant only the declared camera and microphone permissions after
 explicit `--grant-camera` and `--grant-microphone` operator actions.
 `rokid-control capture-start`, the bounded eight-second `stream-test`, and the
-one-shot `physical-trace` are separate authorized-ADB commands.
+one-shot `physical-trace` are separate authorized-ADB commands. The debug-only
+direct live test is another explicit action: it runs for at most 30 seconds,
+negotiates camera and IMU only, and can be stopped from either device. It never
+opens the microphone source. Pairing, Poco listener startup, and Rokid client
+startup are separate steps; pairing alone cannot begin capture.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
 byte limit, and adaptive physical requests near 3 FPS relaxed/up to 5 FPS after
-material change. Stopping the nonvisual
-activity unbinds the service and closes camera, IMU, and microphone resources.
+material change. Stopping the nonvisual activity unbinds the service and closes
+camera, IMU, and microphone resources.
 `stream-test` uses a local eight-second stream lease, separately limits the
 explicit microphone request to two seconds, computes only aggregate PCM
 activity evidence, and never writes or logs captured samples. Lease renewal
-cannot silently extend microphone consent. `physical-trace` sends one bounded JPEG and matched
-HEAD pose; microphone samples never enter its wire message and only nonzero
-local signal gates dispatch. This development control is not the intended
-product consent interface.
+cannot silently extend microphone consent. `physical-trace` sends one bounded
+JPEG and matched HEAD pose; microphone samples never enter its wire message and
+only nonzero local signal gates dispatch. This development control is not the
+intended product consent interface.
 
-The current Android host demo generates a synthetic frame after the user
-connects and presses Process. Its activity does not receive real glasses frames
-because inter-device transport is not implemented.
+The Android host retains a synthetic diagnostic, and it now also implements a
+debug-only direct live listener. Authenticated camera chunks are reassembled
+latest-first and passed transiently to the bounded QNN executor; authenticated
+IMU batches contribute aggregate counts. The direct mutual-TLS transport
+completed two bounded physical Rokid-to-Poco runs on 2026-08-23 with camera and
+IMU enabled and microphone excluded. Those runs exercised app-process QNN HTP
+inference and carried target-fingerprint `DERIVED` camera intrinsics through to
+aggregate host status. They establish bounded integration behavior, not
+representative metric-depth accuracy, empirical camera calibration,
+adverse-network recovery, or sustained thermal behavior; the exact aggregate
+evidence is retained in `VALIDATION.md`.
 
 Automatic depth-profile routing treats camera semantics as primary evidence.
 The Android host requests precise location only after the user explicitly
@@ -86,9 +98,10 @@ mean covert capture.
 - Identifiers are purpose-limited. Python negotiation and
   `EphemeralIdentityFactory` generate per-session values; they are not stable
   account or device identifiers.
-- The public test/demo inputs are synthetic. No camera captures, datasets,
-  private brand media, proprietary model weights, or vendor SDK binaries are
-  included.
+- Repository fixtures are synthetic. Hardware diagnostics and the direct live
+  path can process explicitly initiated real camera/IMU input, but no capture,
+  dataset, private media, proprietary model weight, or vendor SDK binary is
+  included in the repository.
 
 ## Transport
 
@@ -101,10 +114,20 @@ authorized ADB reverse tunnel. The .NET endpoint policy requires HTTPS except
 when a visible development setting explicitly allows loopback HTTP; it does not
 bypass certificate validation.
 
-TLS is necessary but not sufficient. A deployment must provision and rotate
-certificates outside the repository, authenticate authorized clients and
-workers, restrict network reachability, and decide whether mutual TLS or an
-equivalent identity layer is required.
+The direct Android transport separately requires TLS 1.3 mutual authentication
+on both its realtime/control and camera sockets. Each app keeps its private key
+non-exportable in Android Keystore. The debug-only pairing helper exchanges only
+public certificates, pins the exact peer public key, and writes bounded
+role-specific configuration to private no-backup storage without printing it.
+The second lane must present a short-lived, single-use ticket issued over the
+authenticated first lane. Only private or link-local address literals are
+accepted.
+
+TLS is necessary but not sufficient. A production deployment must add an
+approved enrollment, certificate rotation/revocation, recovery, and device
+decommissioning lifecycle; restrict network reachability; and independently
+verify consent and endpoint integrity. The current pairing workflow is a
+development procedure, not that lifecycle.
 
 ## Safe logging
 
@@ -119,6 +142,12 @@ sanitize correlation IDs, and reduce endpoints to a redacted origin. WPF status
 history is bounded to a short text window. Operators must apply the same policy
 to reverse proxies, mobile logs, crash reporting, GPU profilers, and future
 device transports.
+
+The direct Rokid live log contains categorical state and aggregate counts only.
+The Poco live status contains bounded counts, p50/p95/p99 latency aggregates,
+and p95 clock uncertainty. Neither includes frames, labels, raw IMU samples,
+addresses, certificates, or endpoint/session/lease/frame identifiers. This is
+local in-memory/UI/log status; no telemetry uploader is implemented.
 
 ## Deployment requirements
 

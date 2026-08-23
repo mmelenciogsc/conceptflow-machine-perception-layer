@@ -33,6 +33,8 @@ class SensorStreamPacketizerTest {
         val reparsed = packets.map { SensorStreamEnvelope.parseFrom(it.toByteArray()) }
         assertEquals(listOf(0L, 0L, 0L), reparsed.map { it.sequenceId })
         assertTrue(reparsed.all { it.leaseId == "lease" })
+        assertTrue(reparsed.all { it.sessionId == "session" })
+        assertEquals("session", reparsed.first().cameraChunk.frameMetadata.sessionId)
     }
 
     @Test

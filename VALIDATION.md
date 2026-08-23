@@ -6,6 +6,131 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Direct Rokid-to-Poco live-link and QNN boundary — 2026-08-23
+
+The current source implements a debug-only direct private-WLAN transport from
+the Rokid client to the Poco host. Independent realtime/control and camera TCP
+sockets require TLS 1.3 mutual authentication against exact public-key pins.
+The first lane negotiates a bounded camera+IMU lease, performs monotonic clock
+synchronization and keepalive, and issues the second lane a short-lived,
+single-use ticket bound to the fresh connection nonce, session, and lease.
+Per-lane sequencing, bounded protobuf framing, camera chunk reassembly/digest,
+latest-only host admission, lease expiry, cancellation, liveness, and reconnect
+limits fail closed. The live lease structurally excludes microphone.
+
+The source-side camera gate requests approximately 3 FPS while relaxed and no
+more than 5 FPS after meaningful image change. The source samples fused head
+orientation at a nominal 100 Hz; the transmission gate suppresses near
+duplicates, batches for at most 20 ms, and emits an absolute refresh at least
+once per second. Earlier local-only diagnostics characterized the source rates;
+the final private-WLAN runs below additionally record end-to-end pose delivery.
+
+The host's bounded live executor decodes each latest admitted JPEG, executes
+fixed-vocabulary YOLOE first, and invokes exactly one automatically or manually
+selected 392 indoor/outdoor depth graph through the opt-in QNN HTP adapter. It
+has no CPU, 336, 518, or opposite-environment fallback. The JNI boundary is FP32
+NHWC at Kotlin/native entry and exit, validates the graph's FP16 schema, and
+performs bounded FP32-to-FP16 and FP16-to-FP32 conversion around execution.
+
+Target inspection established equal 4032×3024 pixel, active, and pre-correction
+arrays; 4.032×3.024 mm physical size; one 1.9 mm focal length; a 270-degree
+sensor orientation; CENTER_ONLY cropping; NONE-only rotate-and-crop; OFF-only
+OIS; approximately `[1900, 1900, 0, 0, 0]` intrinsics; and zero distortion
+coefficients. Android does not define a zero principal point as an unknown
+sentinel. The client therefore accepts a centered metadata derivation only for
+that complete metadata fingerprint, labels it `DERIVED`, and leaves numeric
+intrinsics uncertainty absent rather than inventing a standard deviation.
+
+For each capture, the client requests the full crop, sole focal length, unit
+zoom, rotate-and-crop NONE, distortion correction OFF, video stabilization OFF,
+and OIS OFF wherever the advertised request keys support them. Available result
+fields are timestamp-correlated to the image and must agree; a contradictory
+correlated result suppresses that frame's intrinsics. An absent result retains
+only the documented, unquantified static `DERIVED` fallback. These branches are
+deterministically tested. The aggregate physical-run status shows that the
+derived path reached the host, but it does not make the provisional matrix an
+empirically validated calibration or prove every capture-result field.
+
+The Depth Anything V2 Metric graph can still produce native scalar
+camera-frame metric depth without intrinsics, with model error unquantified on
+this target. Exact pixel-to-ray/3D vector projection requires intrinsics;
+calibrated spatial/angular accuracy requires empirical calibration of the
+actual 1920×1080 capture path. The official Rokid product/SDK material and
+Android Camera2 semantics reviewed on 2026-08-23 publish no Style factory
+matrix, distortion residual, or `HEAD <- CAMERA` extrinsic. Checkerboard or
+ChArUco calibration and a separate mounting/extrinsic measurement remain
+required for `CALIBRATED` spatial/angular claims; source links and access dates
+are retained in `docs/RESEARCH_EVIDENCE.md`.
+
+### Final consecutive physical runs — 2026-08-23
+
+Two consecutive, bounded Rokid-to-Poco runs completed without reinstalling
+either app between runs. Both used the private-WLAN mutual-TLS path and executed
+the app-process QNN adapter on HTP. Both Android processes remained alive, no
+crash was observed, and both runs reported zero interruptions.
+
+| Selected 392 profile | Frames received | Inference succeeded/attempted | Positive depth outputs | Poses accepted/received | p95 end-to-end | p95 capture-to-receive | p95 segmentation | p95 depth | p95 executor | p95 clock uncertainty | Authenticated close / failure lane |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Indoor Hypersim | 80 | 61/61 | 9,373,504 | 1,400/1,400 | 941.7 ms | 586.1 ms | 84.1 ms | 70.2 ms | 287.5 ms | 5.3 ms | true / none |
+| Outdoor VKITTI | 81 | 61/62 | 9,373,504 | 1,438/1,438 | 1,183.5 ms | 591.0 ms | 107.8 ms | 74.4 ms | 373.2 ms | 5.8 ms | true / none |
+
+Both runs reported metric status
+`profile_bound_native_metric_derived_intrinsics_present` and reason
+`CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED`. The native
+metric scalar values came from the pinned metric heads and do not depend on
+camera intrinsics. The target-fingerprint derivation supplied the provisional
+1920×1080 matrix `[fx, fy, cx, cy, s] ≈ [904.7619, 904.7619, 960, 540, 0]`
+with `DERIVED` provenance and no quantified parameter uncertainty. Its presence
+therefore enabled current-frame camera-ray/vector geometry but did not convert
+the run into empirical camera calibration or quantified spatial/angular
+validation.
+
+The first physical attempt exposed a transport-framing defect: a length-prefixed
+record could be read only partially before the 200 ms socket timeout, while the
+old stateless retry discarded the consumed bytes and interpreted the remaining
+payload as a new prefix. The reader now preserves its prefix/payload offset and
+resumes the same record after a timeout. Authenticated close also runs as a
+bounded operation on a dedicated worker instead of blocking the Android main
+thread. The two final runs verified the resulting happy-path framing and
+authenticated shutdown; their zero-interruption traces do not exercise forced
+reconnect or adverse-network recovery.
+
+The latest local Android validation passed 85 live-transport JVM tests, 150
+Android-host JVM tests, 131 Rokid-client JVM tests, and one shared-protocol JVM
+test with zero failures, errors, or skips. Android Lint passed for all three
+modules, both debug APKs assembled, and the preceding forced validation also
+assembled both minified release APKs. Focused regressions cover
+late connection-attempt resource ownership, lease-expiry precedence over
+cross-lane I/O fallout, non-debug live-command denial, and sanitized host
+failure-code retention. Protocol descriptor validation and nine focused Python
+protocol tests also passed.
+
+The forced Android validation command was:
+
+```bash
+./gradlew --no-daemon --rerun-tasks \
+  :apps:android-host:testDebugUnitTest \
+  :apps:rokid-client:testDebugUnitTest \
+  :packages:android-live-transport:testDebugUnitTest \
+  :apps:android-host:lintDebug \
+  :apps:rokid-client:lintDebug \
+  :packages:android-live-transport:lintDebug \
+  :apps:android-host:assembleRelease \
+  :apps:rokid-client:assembleRelease
+```
+
+The source/build/unit evidence above complements the two bounded physical runs.
+Those runs validate public-certificate pairing, two-lane wireless transfer,
+Android app-process QNN linker/SELinux/DSP-skel execution, HTP dispatch, bounded
+latency reporting, and authenticated happy-path shutdown for the exercised
+configuration. Forced reconnect/cancellation and adverse-network recovery,
+live automatic/manual transition behavior, representative target-camera
+metric-depth accuracy, empirical camera calibration, calibrated spatial/angular
+output, long-duration throughput, energy, thermals, and BVI usability remain
+physically unvalidated.
+No private key, runtime/model binary, captured payload, private address, or
+device identifier was added to the repository or this evidence.
+
 ## Android environment classification and depth routing — 2026-08-22
 
 At this validation checkpoint, the Android Node enforced fixed-vocabulary
@@ -131,10 +256,11 @@ confidence/uncertainty bounds, explicit occlusion, and bounded capacity remove
 tracks. Pose/IMU ticks cannot create depth or new objects and cannot observe
 moving or newly visible objects.
 
-This is an implemented and deterministic source boundary, not new physical
-model evidence. The public APK still has no in-process QNN adapter. Real-model
-app dispatch, full camera-to-cue latency, representative metric/task accuracy,
-sustained thermals/energy, and BVI usability remain unvalidated.
+This is an implemented and deterministic source boundary. The later opt-in
+in-process QNN adapter and debug-only live test were physically exercised in
+the two final runs recorded in the current checkpoint above. Representative
+metric/task accuracy, sustained thermals/energy, and BVI usability remain
+unvalidated.
 
 The 2026-08-23 Android Node debug APK was installed on the attached Poco and
 its keyboard-accessible `V` diagnostic was exercised. UI Automator exposed the
@@ -198,8 +324,8 @@ Rokid Node SHA-256 was
 The Android and Rokid APK labels were changed to **Machine Perception Layer,
 Android Node** and **Machine Perception Layer, Rokid Node**. `aapt2 dump
 badging` confirmed both packaged labels. Both APKs were installed through
-serial-qualified ADB on Poco `793a73a1` and Rokid `2001092545610702`; the
-Rokid install remained inert after installation.
+serial-qualified ADB on the selected Poco and Rokid targets; their identifiers
+are intentionally omitted. The Rokid install remained inert after installation.
 
 The Android Node gained a closed 40-class BVI vocabulary; 80 immutable
 dimension-vector records at exact 0.6096 m and 2.4384 m anchors; indoor/outdoor
@@ -245,13 +371,12 @@ QNN sources/libraries, and Qualcomm runtime all remained outside Git.
 
 The official Depth Anything V2 source was pinned to
 `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf`. The official Small checkpoints
-were pinned and checksum-verified as follows:
+were pinned and checksum-verified without publishing the private artifact
+digests:
 
 - Hypersim indoor revision `3bc65d4e14a6786a61acec16453c50e12bf5f338`,
-  SHA-256 `b782898d8a3e8be1f639de33837ed85e9b4b73e40f8f5e5cd99067588d722545`,
   20 m metric head; and
 - VKITTI outdoor revision `c725b8589bdf6ab04072cab74c0467830db80d6d`,
-  SHA-256 `9203e538d35255c90dda4b7fedb47ff33fe725497bcca3b1e53b3a65ee63f0cb`,
   80 m metric head.
 
 Static `1×3×518×518` ONNX exports passed ONNX validation and CPU execution.
@@ -287,11 +412,11 @@ baseline. During this short sequence, battery temperature remained 36.5 °C and
 reported NSP zones rose from approximately 39.9–40.7 °C to 42.6–43.0 °C; this
 is not a thermal-soak result.
 
-The public source now provides deterministic external export/calibration and
-QNN build helpers, and the app-side verifier requires an ELF64 little-endian
-AArch64 library plus matching SHA-256 sidecars. The Android APK still does not
-package Qualcomm binaries or initialize QNN in-process. Standalone model
-execution is validated; app integration, representative BVI accuracy,
+At that checkpoint, the public source provided deterministic external
+export/calibration and QNN build helpers, and the app-side verifier required an
+ELF64 little-endian AArch64 library plus matching SHA-256 sidecars. The Android
+APK did not package Qualcomm binaries or initialize QNN in-process. Standalone
+model execution is validated; app integration, representative BVI accuracy,
 sustained thermals, energy consumption, and end-to-end Rokid-to-cue behavior
 remain open gates.
 
@@ -345,12 +470,13 @@ inspectable render commands. It excludes capture, depth inference, networking,
 FMOD output buffering, Android vibration actuation, and human perception.
 
 The FMOD project and generated procedural inputs were physically authored and
-built, but the proprietary FMOD Unity runtime package is not redistributed.
-Unity-to-FMOD playback, listening-based localization, open-ear perceptual
-quality, JAWS/NVDA, metric depth on Rokid, real YOLOE/Depth Anything inference,
-and sustained thermal behavior were not validated. The bounded physical trace
-and Poco dispatch evidence added below are hardware execution checks, not BVI
-human-factors acceptance or production-model validation.
+built, but the proprietary FMOD Unity runtime package is not redistributed. At
+that checkpoint, Unity-to-FMOD playback, listening-based localization,
+open-ear perceptual quality, JAWS/NVDA, metric depth on Rokid, real
+YOLOE/Depth Anything inference, and sustained thermal behavior were not
+validated. The final direct runs at the top of this ledger supersede the
+metric-depth/model-execution limitation only; they are hardware execution
+checks, not BVI human-factors acceptance or production-model validation.
 
 During the post-reboot physical-trace pass, FMOD Studio validation and Desktop/
 Mobile bank builds passed again. A fresh Unity headless run could not start
@@ -377,10 +503,9 @@ round trips, host-side ordered reassembly and SHA-256 verification, partial
 frame replacement/expiry, latest-unread camera behavior, IMU batch ordering,
 and microphone authorization. Android Lint and both debug APK builds passed.
 
-The exact final debug APK was directly installed on Rokid serial
-`2001092545610702`
-and the explicit eight-second stream diagnostic ran to completion. The final
-run reported:
+The exact final debug APK was directly installed on the selected Rokid target,
+whose identifier is intentionally omitted, and the explicit eight-second
+stream diagnostic ran to completion. The final run reported:
 
 - 12 source-gate emissions at exactly 1920×1080 / 12,932,054 transient JPEG
   bytes; 13 analyzed frames, no dark or blur rejection, one cadence rejection,
@@ -411,10 +536,11 @@ wheel/source builds plus isolated imports and the synthetic demo, repository
 format and policy checks, Ruff, MyPy, configuration validation, dependency
 verification, license guards, and secret scanning.
 
-No physical WebRTC link was claimed: the current milestone validates
-source-side leases/gates/packetization and Poco-side bounded ingestion, not
-wireless signaling, pairing, encryption, throughput, energy use, or thermal
-behavior. During the required local DEBUGGER pass, llama.cpp encountered a
+No physical WebRTC link was claimed: that checkpoint validated source-side
+leases/gates/packetization and Poco-side bounded ingestion, not wireless
+signaling, pairing, encryption, throughput, energy use, or thermal behavior.
+The later direct mutual-TLS implementation is recorded at the top of this
+ledger. During the required local DEBUGGER pass, llama.cpp encountered a
 CUDA synchronization failure and the RTX 4060 Ti subsequently disappeared
 from `nvidia-smi`; only the RTX 2080 Ti remained visible. No CUDA result after
 that failure is counted as validation.
@@ -441,7 +567,7 @@ physical trace's deterministic worker did not execute a CUDA kernel or model.
 | Repository | format, policy, secret, config-example, shell, Ruff, and MyPy gates passed | `actionlint` was unavailable; workflows received parser and repository-policy checks |
 | Python | 145 tests passed; protocol generation valid; all three source/wheel packages built and isolated-imported | no production worker or non-loopback deployment |
 | Synthetic slice | real loopback gRPC demo passed reconnect, cancellation, timeout, stale rejection, worker error, overload, recovery, and cue rendering | deterministic CPU mock and synthetic frames only |
-| Android | 73 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed | no instrumentation or phone-to-glasses transport |
+| Android | Initial baseline: 73 JVM tests, Android Lint, strict dependency verification, and both debug APK assemblies passed; the current live-link totals are recorded above | no instrumentation or physical Rokid-to-Poco transport at this checkpoint |
 | .NET | locked restore, formatter, warning-free Release build including WPF cross-target, 156 tests, and consent-gated demo passed | WPF was not executed on Windows |
 | Native | strict Release build, 15-case test executable, JSON-lines demo, ASan/UBSan build/tests, and CUDA-aware build/tests passed | no CUDA kernel or model inference exists |
 | Dependencies | Python and .NET vulnerability queries found no known vulnerability in resolved third-party packages | local editable Python distributions were correctly excluded from the index audit |
@@ -476,9 +602,10 @@ Android baseline:
   lintDebug testDebugUnitTest assembleDebug
 ```
 
-The build used JDK 17 and the installed Android SDK. Current test totals are 31
-for `android-host`, 41 for `rokid-client`, and one cross-language protocol-vector
-test in `android-protocol`.
+The build used JDK 17 and the installed Android SDK. Those initial totals were
+31 tests for `android-host`, 41 for `rokid-client`, and one cross-language
+protocol-vector test in `android-protocol`; the current live-link totals are
+recorded at the top of this ledger.
 
 .NET baseline:
 
@@ -563,9 +690,11 @@ image fixtures also pass the real Python gRPC decoding boundary. Unknown fields
 retain the behavior of the respective Protobuf runtimes.
 
 The implemented gRPC service is `Negotiate`, `ProcessFrame`, and `Health`.
-Transport-neutral data-channel envelopes plus a sender packetizer and host
-ingress are implemented; WebRTC signaling, authentication, and a physical
-data-channel adapter are not, so no WebRTC transmission is claimed.
+Transport-neutral sensor messages, `LiveLinkEnvelope`, and the direct Android
+two-lane TLS 1.3 mutual-TLS transport are implemented and locally tested.
+WebRTC signaling and a WebRTC data-channel adapter are not implemented, and no
+physical WebRTC transmission is claimed. The separate direct TLS transport was
+physically exercised in the two final runs recorded above.
 
 ## Rokid and Poco evidence
 
@@ -826,9 +955,10 @@ actually execute.
 
 ## Unvalidated release gates
 
-- real phone-to-glasses or WebRTC transport;
-- project-owned authenticated Rokid-to-Poco transport and its physical-device
-  reconnect, cancellation, stale-result, and latency behavior;
+- long-duration and adverse-network execution of the authenticated
+  Rokid-to-Poco transport, including forced reconnect, cancellation, roaming,
+  and failure recovery;
+- WebRTC signaling or a WebRTC data-channel adapter;
 - a registered production worker, model weights, real CUDA kernel/inference,
   and multi-GPU correctness, failover, load, thermal, and performance tests;
 - production-model glass-to-cue latency distributions and long-duration

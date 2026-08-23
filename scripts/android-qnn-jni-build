@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+usage() {
+    printf '%s\n' "Usage: $0 --qnn-sdk DIR [--android-sdk DIR]"
+}
+
+qnn_sdk=""
+android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+while (($#)); do
+    case "$1" in
+        --qnn-sdk) qnn_sdk="${2:-}"; shift 2 ;;
+        --android-sdk) android_sdk="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+[[ -n "$qnn_sdk" && -n "$android_sdk" ]] || { usage >&2; exit 2; }
+qnn_sdk="$(realpath -e -- "$qnn_sdk")"
+android_sdk="$(realpath -e -- "$android_sdk")"
+[[ -f "$qnn_sdk/include/QNN/QnnInterface.h" ]] || { printf 'Invalid QNN SDK root.\n' >&2; exit 1; }
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$repo_root"
+QNN_SDK_ROOT="$qnn_sdk" ANDROID_HOME="$android_sdk" ANDROID_SDK_ROOT="$android_sdk" \
+    ./gradlew :apps:android-host:assembleDebug
+printf 'Built opt-in arm64 JNI adapter against external QAIRT headers. Vendor runtime remains external.\n'

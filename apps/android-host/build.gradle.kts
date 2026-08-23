@@ -4,6 +4,10 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+val qnnSdkRoot = providers.gradleProperty("qnnSdkRoot")
+    .orElse(providers.environmentVariable("QNN_SDK_ROOT"))
+    .orNull
+
 android {
     namespace = "org.conceptflow.mpl.host"
     compileSdk = 36
@@ -15,6 +19,14 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        if (qnnSdkRoot != null) {
+            ndk { abiFilters += "arm64-v8a" }
+            externalNativeBuild {
+                cmake {
+                    arguments += "-DQNN_SDK_ROOT=$qnnSdkRoot"
+                }
+            }
+        }
     }
 
     buildTypes {
@@ -34,10 +46,19 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    if (qnnSdkRoot != null) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
+    }
 }
 
 dependencies {
     implementation(project(":packages:android-protocol"))
+    implementation(project(":packages:android-live-transport"))
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)

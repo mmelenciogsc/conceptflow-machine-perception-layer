@@ -23,25 +23,32 @@ cues. It does not define autonomous control or safety decisions.
 `Health` is this protocol’s typed health method; it is not a claim that the
 standard `grpc.health.v1` service is registered.
 
-The schema now includes transport-neutral lease and sensor-stream envelopes for
-the glasses-to-host boundary. A bounded sender packetizer and Android host
-receiver are implemented and tested, but WebRTC signaling, peer
-authentication, session establishment, and a physical data channel are not.
-The current backend baseline still places image bytes directly in unary
-`ProcessFrame` messages for deterministic integration and testing. A future
-WebRTC adapter should feed bounded `SensorStreamEnvelope` messages into the
-same host validation boundary and retain gRPC for typed backend negotiation,
-request/result metadata, control, and health.
+The schema includes transport-neutral lease and sensor-stream messages plus an
+implemented direct Android live-link envelope. The Rokid and Poco endpoints use
+two private-WLAN TLS 1.3 mutual-TLS sockets: one realtime/control lane and one
+camera lane. This transport, its pairing/configuration boundary, and its state
+machines are locally tested. Two bounded physical Rokid-to-Poco runs completed
+on 2026-08-23 over the private-WLAN path with camera and IMU enabled,
+microphone excluded, and authenticated close. Their measured stage latency is
+recorded in `VALIDATION.md`; forced reconnect, adverse-network throughput,
+energy, and sustained thermal behavior remain pending. WebRTC signaling and a
+WebRTC data-channel adapter are not implemented.
 
-## Glasses stream lease and media envelope
+The backend baseline separately places image bytes directly in unary
+`ProcessFrame` messages for deterministic integration and testing. A future
+WebRTC adapter may carry the same bounded sensor messages, but it is not the
+current direct Android transport.
+
+## Glasses stream lease and live wire envelopes
 
 `StreamLeaseRequest` expresses open, renew, or close intent and the requested
 camera, IMU, and microphone streams. A microphone request is separately
 explicit. `StreamLeaseGrant` returns bounded parameters; duration is expressed
 as a relative interval so a receiver never compares unrelated device monotonic
-clock epochs. Transport authentication is external to protobuf, and the Rokid
-controller binds the active lease to the authenticated peer supplied by that
-boundary.
+clock epochs. The general schema can represent microphone data, but the current
+direct Rokid-to-Poco lease accepts exactly camera and IMU, sets
+`user_requested_microphone=false`, and rejects microphone payloads on both
+send and receive.
 
 `SensorStreamEnvelope` carries exactly one of:
 
@@ -49,15 +56,33 @@ boundary.
   metadata-only `FramePayload` on chunk zero;
 - an `ImuBatch` of absolute pose, angular velocity, and linear acceleration
   readings rather than loss-sensitive deltas;
-- a bounded PCM `MicrophoneChunk` for explicitly authorized short intervals;
+- a bounded PCM `MicrophoneChunk` for other explicitly authorized transport
+  profiles; the direct Android live link never admits one;
 - a lease grant or a typed error.
 
-The data-channel contract is reliable and ordered. The host enforces envelope,
-frame, batch, and sample order; bounds allocation before assembly; verifies the
-completed camera payload SHA-256; drops an incomplete older frame when a newer
-frame begins; and retains only the latest unread complete frame. Sender
-monotonic timestamps are preserved for correlation but are not directly
-compared with receiver monotonic time without an explicit clock-offset model.
+On the implemented direct link, lease requests, grants, and typed control
+errors use `LiveLinkControl`; the corresponding `SensorStreamEnvelope`
+alternatives remain transport-neutral schema options and are not its wire
+control path.
+
+`LiveLinkEnvelope` is the canonical record on the implemented TLS framing
+layer. It wraps either `LiveLinkControl` or `SensorStreamEnvelope` and binds the
+record to the active session, lease, lane, strictly increasing per-lane
+sequence, and sender monotonic timestamp. The realtime/control lane performs
+hello, lease negotiation, clock probes, periodic clock resynchronization,
+keepalive, and IMU delivery. It issues a short-lived, single-use camera-lane
+ticket bound to the fresh 32-byte connection nonce, session, and lease. The
+camera lane must redeem that ticket before carrying camera chunks.
+
+Both lanes are reliable and ordered TCP/TLS streams. The host enforces lane,
+envelope, frame, batch, and sample order; bounds allocation before assembly;
+verifies the completed camera payload SHA-256; drops an incomplete older frame
+when a newer frame begins; and retains only the latest unread complete frame.
+An NTP-style monotonic clock estimate normalizes glasses capture timestamps
+into the host clock domain and carries uncertainty evidence; raw monotonic
+values from different devices are never compared directly. Lease deadlines,
+liveness timeouts, disconnect classification, and bounded reconnect policy
+remain independent of the payload schema.
 
 ## Version negotiation
 
@@ -162,6 +187,16 @@ paths; development/test plaintext is restricted to loopback. The Android
 `EndpointPolicy` accepts HTTPS by default and permits HTTP only for explicit
 loopback development.
 
+For the direct Android link, each device creates a non-exportable identity in
+Android Keystore. The debug-only pairing helper exchanges public certificates,
+installs role-specific configuration in each app's private no-backup directory,
+and pins the exact peer public key. Both sockets require TLS 1.3 and mutual
+authentication. Private or link-local address validation, distinct ports,
+bounded framing, one active connection attempt, a single-use camera ticket,
+and fail-closed session/lease/lane checks narrow the test boundary. The pairing
+helper does not start capture or either endpoint. Certificate rotation and a
+production enrollment/revocation lifecycle are not implemented.
+
 TLS protects the channel but does not establish user consent, authorize a
 model, validate cue meaning, or prevent a compromised endpoint from producing
 bad results. Those controls remain separate.
@@ -184,6 +219,20 @@ parsed and byte-exactly reserialized by Python, Java-lite, and C# tests; the
 Python gRPC boundary also accepts the exact PNG/JPEG fixtures shipped by the
 desktop and Android clients. Review schema and all generated diffs together.
 
+Focused Android live-link validation is available through:
+
+```bash
+./gradlew --no-daemon --rerun-tasks \
+  :packages:android-live-transport:testDebugUnitTest \
+  :apps:android-host:testDebugUnitTest \
+  :apps:rokid-client:testDebugUnitTest
+```
+
+These JVM tests validate framing, mutual-TLS pinning, tickets, sequences,
+leases, liveness, clock normalization, bounded queues, reassembly, capture
+gates, QNN routing contracts, and debug command authorization. They do not
+constitute a physical wireless or app-process QNN test.
+
 ## Wire-level integration checklist
 
 Before connecting a new producer or consumer:
@@ -197,6 +246,9 @@ Before connecting a new producer or consumer:
 6. Drop expired, duplicate, superseded, and disallowed cues locally.
 7. Keep frame data out of logs, traces, crash reports, and status UI.
 8. Test overload and reconnection with synthetic content before hardware data.
+9. For the direct Android link, pair public certificates before starting the
+   Poco listener, start the listener before the Rokid client, and never add a
+   microphone stream to the granted live lease.
 
 Related documents: [ARCHITECTURE.md](ARCHITECTURE.md),
 [PRIVACY_ARCHITECTURE.md](PRIVACY_ARCHITECTURE.md), and

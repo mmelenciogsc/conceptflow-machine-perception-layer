@@ -101,6 +101,24 @@ message CameraIntrinsics {
   repeated double distortion_coefficients = 5;
   uint32 calibrated_width = 6;
   uint32 calibrated_height = 7;
+  CameraIntrinsicsProvenance provenance = 8;
+  CameraIntrinsicsUncertainty uncertainty = 9;
+}
+
+enum CameraIntrinsicsProvenance {
+  CAMERA_INTRINSICS_PROVENANCE_UNSPECIFIED = 0;
+  CAMERA_INTRINSICS_PROVENANCE_UNKNOWN = 1;
+  CAMERA_INTRINSICS_PROVENANCE_CALIBRATED = 2;
+  CAMERA_INTRINSICS_PROVENANCE_DERIVED = 3;
+}
+
+// Standard-deviation estimates are optional. Absence means the producer does
+// not have defensible uncertainty values and must not imply exact calibration.
+message CameraIntrinsicsUncertainty {
+  double focal_x_stddev_pixels = 1;
+  double focal_y_stddev_pixels = 2;
+  double principal_x_stddev_pixels = 3;
+  double principal_y_stddev_pixels = 4;
 }
 
 message Vector3 {
@@ -223,6 +241,102 @@ message MicrophoneChunk {
   uint32 channel_count = 5;
   AudioSampleEncoding encoding = 6;
   bytes audio_data = 7;
+}
+
+// A live glasses link uses two separately authenticated, ordered TLS lanes.
+// Sequence numbers are scoped to a lane and start at one for every new
+// connection/session binding. The legacy SensorStreamEnvelope.sequence_id is
+// retained for backwards compatibility and is not used to order across lanes.
+enum LiveTransportLane {
+  LIVE_TRANSPORT_LANE_UNSPECIFIED = 0;
+  LIVE_TRANSPORT_LANE_REALTIME_CONTROL = 1;
+  LIVE_TRANSPORT_LANE_CAMERA = 2;
+}
+
+enum LiveTransportPeerRole {
+  LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED = 0;
+  LIVE_TRANSPORT_PEER_ROLE_GLASSES = 1;
+  LIVE_TRANSPORT_PEER_ROLE_HOST = 2;
+}
+
+message LiveLinkHello {
+  ProtocolVersion protocol_version = 1;
+  LiveTransportPeerRole peer_role = 2;
+  // A fresh 32-byte value for every connection. It is not a credential.
+  bytes connection_nonce = 3;
+}
+
+message LiveLaneOpenRequest {
+  LiveTransportLane lane = 1;
+  string session_id = 2;
+  string lease_id = 3;
+  bytes connection_nonce = 4;
+  // Opaque, single-use, short-lived authentication issued over the already
+  // authenticated realtime/control lane. Only the camera lane uses a ticket.
+  bytes lane_ticket = 5;
+}
+
+message LiveLaneOpenResponse {
+  LiveTransportLane lane = 1;
+  bool accepted = 2;
+  ErrorStatus error = 3;
+}
+
+message LiveLaneTicketGrant {
+  LiveTransportLane lane = 1;
+  bytes lane_ticket = 2;
+  uint32 valid_for_ms = 3;
+}
+
+// The initiator records t0 before sending this request.
+message ClockSyncRequest {
+  uint64 probe_id = 1;
+  uint64 initiator_send_monotonic_ns = 2;
+}
+
+// The responder records t1 on receipt and t2 immediately before sending. The
+// initiator records t3 on receipt and computes the NTP-style offset/RTT.
+message ClockSyncResponse {
+  uint64 probe_id = 1;
+  uint64 initiator_send_monotonic_ns = 2;
+  uint64 responder_receive_monotonic_ns = 3;
+  uint64 responder_send_monotonic_ns = 4;
+}
+
+message LiveLinkKeepalive {
+  uint64 nonce = 1;
+  uint64 sent_monotonic_ns = 2;
+  bool response = 3;
+}
+
+message LiveLinkControl {
+  oneof payload {
+    LiveLinkHello hello = 1;
+    LiveLaneOpenRequest lane_open_request = 2;
+    LiveLaneOpenResponse lane_open_response = 3;
+    ClockSyncRequest clock_sync_request = 4;
+    ClockSyncResponse clock_sync_response = 5;
+    LiveLinkKeepalive keepalive = 6;
+    StreamLeaseRequest lease_request = 7;
+    StreamLeaseGrant lease_grant = 8;
+    ErrorStatus error = 9;
+    LiveLaneTicketGrant lane_ticket_grant = 10;
+  }
+}
+
+// Canonical record carried by the bounded TLS framing layer. session_id,
+// lease_id, lane, and lane_sequence_id are authenticated by TLS plus the
+// camera-lane ticket and must be checked before delivering the nested payload.
+message LiveLinkEnvelope {
+  string session_id = 1;
+  string lease_id = 2;
+  LiveTransportLane lane = 3;
+  uint64 lane_sequence_id = 4;
+  uint64 sent_monotonic_timestamp_ns = 5;
+  oneof payload {
+    LiveLinkControl control = 6;
+    SensorStreamEnvelope sensor = 7;
+  }
 }
 
 // This envelope can be carried by a reliable ordered WebRTC data channel or

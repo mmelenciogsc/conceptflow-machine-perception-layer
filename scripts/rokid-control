@@ -20,10 +20,15 @@ usage() {
 Usage: ./scripts/rokid-control [--serial SERIAL] COMMAND
 
 Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
+The live-link identity/start/stop commands require a debuggable APK. Run
+android-live-link-pair first, then start the Poco listener before live-link-start.
 
 Commands:
   capture-start  Explicitly start camera capture (CAMERA must already be granted).
   stream-test    Run an eight-second leased gate test; microphone stops after two seconds.
+  live-link-init Create/reuse only the Rokid live identity and public-certificate export.
+  live-link-start Run a bounded 30-second authenticated camera+IMU live-link test.
+  live-link-stop Stop only the active live-link test and its sensor producers.
   physical-trace Capture once and use the ADB-reverse loopback gRPC development path.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
@@ -47,7 +52,7 @@ while (($# > 0)); do
             usage
             exit 0
             ;;
-        capture-start|stream-test|physical-trace|cue-left|cue-right|stop|status)
+        capture-start|stream-test|live-link-init|live-link-start|live-link-stop|physical-trace|cue-left|cue-right|stop|status)
             [[ -z "$command_name" ]] || fail "only one command may be supplied"
             command_name="$1"
             shift
@@ -73,6 +78,21 @@ case "$command_name" in
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.START_STREAM_TEST"
         printf 'Requested bounded leased stream test; microphone stops after two seconds.\n'
+        ;;
+    live-link-init)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.INITIALIZE_LIVE_IDENTITY"
+        printf 'Requested app-private live-link identity initialization and public-certificate export.\n'
+        ;;
+    live-link-start)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.START_LIVE_LINK_TEST"
+        printf 'Requested bounded authenticated camera+IMU live-link test; microphone remains disabled.\n'
+        ;;
+    live-link-stop)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.STOP_LIVE_LINK_TEST"
+        printf 'Requested live-link test stop.\n'
         ;;
     physical-trace)
         require_command ss "iproute2 is required to verify the loopback backend"

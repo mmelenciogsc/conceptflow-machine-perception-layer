@@ -19,9 +19,10 @@ semantic/depth fusion path:
    Small Hypersim (indoor) and VKITTI (outdoor) artifacts. The 336 low-power
    and legacy-named 518 reference pairs are optional slots.
 3. `PrivateModelBundleVerifier` reports required and optional slots separately,
-   requires a checksum for every present model, and requires the exact baked
-   vocabulary fingerprint for segmentation. Nothing is downloaded implicitly
-   or packaged in the APK.
+   requires a checksum for every present model, checks production artifacts
+   against code-pinned trusted digests, and requires the exact baked vocabulary
+   fingerprint for segmentation. Nothing is downloaded implicitly or packaged
+   in the APK.
 4. `EnvironmentAwareMachineVisionPipeline` runs fixed-vocabulary segmentation
    before depth, fuses timestamped visual and optional privacy-minimized GNSS
    quality evidence, and invokes only the exactly selected environment/tier
@@ -79,7 +80,9 @@ validated baseline is FP16: plain W8A8 damaged both mixed YOLO output semantics
 and metric depth, while real-image-calibrated W8A16 did not materially improve
 YOLO latency and remains experimental pending a representative BVI accuracy
 suite. The local QAIRT/QNN installation is development tooling and is not
-copied into this public repository.
+copied into this public repository. An opt-in JNI implementation now exists;
+see [Android private QNN runtime adapter](ANDROID_QNN_PRIVATE_RUNTIME.md) for its
+external build, private provisioning, tensor contracts, and validation limits.
 
 ## Depth profiles and calibration
 
@@ -101,16 +104,49 @@ that standalone median fits. Reference, calibration, and sparse ambiguity
 requests select 518×518. Once a profile is selected, an unavailable artifact
 fails closed rather than falling back to a different weight or resolution.
 The routing budget uses measured standalone HTP client time only as a lower
-bound: full camera-to-cue latency is unmeasured.
+bound. The final bounded direct runs below add full-path latency observations,
+but not a representative workload or sustained-performance distribution.
 
 The selected profile is carried unchanged into depth inference. The returned
-profile ID must match it exactly, the routing environment must match the
-environment classifier, and calibration must resolve for that exact profile
-and the current camera-intrinsics fingerprint. Missing intrinsics, calibration,
-or the selected artifact causes a fail-closed result; another installed tier is
-not silently substituted. A track without correlated depth samples produces no
-metric track. For masks with geometry, the depth-stage mask fingerprint must
-match the instance-segmentation fingerprint for the same track and image.
+profile ID must match it exactly and the routing environment must match the
+environment classifier. The pinned official Hypersim and VKITTI metric heads
+return metres directly: upstream applies a sigmoid and multiplies by `20 m`
+indoors or `80 m` outdoors. The host therefore uses a profile-bound identity
+semantics descriptor for these exact official model revisions. This is not a
+glasses-camera calibration and it assigns no unmeasured accuracy or per-sample
+error bound. Non-finite, non-positive, or above-contract values fail closed.
+The current host ray projector is explicitly pinhole-only: live protocol
+intrinsics must carry exactly five finite zero Brown-Conrady coefficients.
+Missing, malformed, or nonzero distortion is rejected rather than silently
+ignored; a bounded inverse-distortion implementation would be required before
+admitting nonzero coefficients.
+Missing metric semantics or the selected artifact produces no metric track;
+another installed tier is not silently substituted. Missing intrinsics still
+allows scalar metric depth, but prevents ray projection and a camera vector. A
+track without correlated depth samples produces no metric track. For masks with
+geometry, the depth-stage mask fingerprint must match the instance-segmentation
+fingerprint for the same track and image.
+
+That fail-closed rule governs metric semantic tracks from
+`EnvironmentAwareMachineVisionPipeline`. The bounded direct-live
+`QnnLiveFrameExecutor` executes and validates YOLOE and the selected 392 depth
+tensor when intrinsics are missing and reports
+`UNCALIBRATED_INTRINSICS_MISSING`. The downstream live fusion may still emit a
+scalar native-metric estimate with explicit pinned provenance and unquantified
+model error. Accepted intrinsics add a camera-frame ray and vector while
+retaining `CALIBRATED` versus `DERIVED` provenance. Provenance and any actually
+reported parameter standard deviations participate in the calibration
+fingerprint; an absent protobuf uncertainty message remains unreported rather
+than becoming zero uncertainty. A separately verified HEAD←CAMERA orientation
+extrinsic and a capture-correlated pose are required only for head/world temporal propagation;
+their absence is exposed as an aggregate status reason without discarding the
+current scalar or camera-frame metric track.
+
+Derived intrinsics with no reported parameter uncertainty can still support a
+current-frame camera vector, but they cannot seed head/world temporal anchors.
+The fusion result reports
+`CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED` until measured
+intrinsics or derived intrinsics with reported uncertainty are supplied.
 
 See [Indoor/outdoor classification and depth routing](ENVIRONMENT_CLASSIFICATION.md)
 for the exact stages, thresholds, uncertainty behavior, clock boundary, and
@@ -128,6 +164,17 @@ an agreeing prior cannot reduce calibrated-depth uncertainty. Neither source is
 promoted to sensor-grade truth. Extrapolated estimates receive an uncertainty
 penalty.
 
+Native-metric estimates carry pinned model provenance and an explicit
+`UNQUANTIFIED_MODEL_ERROR` state. They may be emitted for the current frame but
+cannot become temporal anchors while uncertainty is unquantified. A separately
+validated guided calibration can replace the identity semantics only when it
+matches both the exact depth profile and camera-intrinsics fingerprint.
+Consequently a guided binding made with a measured matrix cannot silently match
+the same numeric matrix when it arrives with derived provenance.
+Known-dimension priors are fused only when the primary calibration has
+quantified uncertainty, so a class-size prior cannot manufacture confidence for
+an otherwise unvalidated monocular estimate.
+
 ## Observed keyframes and pose propagation
 
 The temporal layer does not synthesize visual observations. A first observed
@@ -135,7 +182,10 @@ frame may seed anchors; later observed frames are admitted at the relaxed 3 FPS
 cadence or at the bounded 5 FPS cadence when meaningful motion or uncertainty
 crosses the configured threshold. Non-monotonic frames are rejected. This
 host-side observed-keyframe policy is distinct from the glasses Camera2 source
-cadence, even though both currently use the same 3/5 FPS ceilings.
+cadence, even though both currently use the same 3/5 FPS ceilings. The
+direct-live executor does not add `VisualKeyframeGate`; its input cadence is the
+glasses-side gate, and host backpressure retains only the latest complete frame
+awaiting inference.
 
 High-rate pose updates may rotate only existing anchors that came from a
 successful visual keyframe and explicit static-world eligibility. A class label
@@ -157,6 +207,66 @@ The physically tested 336/392 variants, tier policy, and reproducible
 standalone HTP benchmark are documented in
 [Android depth-resolution experiments](ANDROID_DEPTH_VARIANTS.md).
 
+## Direct live QNN test boundary
+
+The Android Node has a debuggable-build-only listener for the direct
+Rokid-to-Poco path. It receives camera and IMU over independent private-WLAN TLS
+1.3 mutual-TLS lanes. Pairing exchanges only public certificates; private keys
+remain non-exportable in Android Keystore. The negotiated live lease accepts
+camera and IMU only, so microphone data cannot enter this path.
+
+The default run stops after 30 seconds or 150 received frames. Camera input is
+gated on the glasses at 3 FPS relaxed and up to 5 FPS after meaningful change;
+nominal 100 Hz IMU input is deduplicated into bounded batches with at most 20 ms
+batch delay and an absolute refresh at least once per second. The Poco keeps at
+most the latest frame awaiting inference.
+
+For each admitted frame, `QnnLiveFrameExecutor` performs bounded JPEG decode and
+preprocessing, executes fixed-vocabulary YOLOE first, and then executes exactly
+one indoor or outdoor balanced 392 graph selected by automatic camera/GNSS
+evidence or an explicit manual override. It has no CPU, 336, 518, or alternate
+environment fallback. Missing private artifacts, QNN initialization failure,
+invalid shapes, non-finite values, and execution errors return sanitized typed
+failure codes.
+
+Live status is aggregate-only: received/replaced frame counts, IMU batch/sample
+counts, inference counts, categorical profile/calibration state, p50/p95/p99
+latency aggregates, and p95 clock uncertainty. It excludes image bytes,
+detections, labels, raw IMU, addresses, certificates, and
+endpoint/session/lease/frame identifiers.
+
+The transport and QNN boundary are implemented and covered by local JVM, lint,
+and build validation. On 2026-08-23 it also completed two consecutive physical
+runs without an app reinstall. Both used QNN HTP, left both app processes alive,
+recorded no crash or interruption, and completed authenticated close with no
+failure lane. Indoor Hypersim 392 received 80 frames, succeeded on 61/61 inference
+attempts, emitted 9,373,504 positive depth outputs, accepted 1,400/1,400 poses,
+and measured p95 latencies of 941.7 ms end-to-end, 586.1 ms
+capture-to-receive, 84.1 ms segmentation, 70.2 ms depth, and 287.5 ms executor,
+with 5.3 ms p95 clock uncertainty. Outdoor VKITTI 392 received 81 frames,
+succeeded on 61/62 inference attempts, emitted 9,373,504 positive depth outputs,
+accepted 1,438/1,438 poses, and measured corresponding p95 values of 1,183.5,
+591.0, 107.8, 74.4, 373.2, and 5.8 ms.
+
+Both runs reported
+`profile_bound_native_metric_derived_intrinsics_present` with reason
+`CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED`. The target's
+narrow fingerprint supplied
+`[fx, fy, cx, cy, s] ≈ [904.7619, 904.7619, 960, 540, 0]` at 1920×1080 with
+`DERIVED` provenance and unquantified parameter uncertainty. Native scalar
+metric output does not consume this matrix and remains available if intrinsics
+are absent; the matrix adds pixel-to-ray/current camera-vector geometry. It is
+not verified factory calibration. Representative metric-depth accuracy,
+empirical camera calibration, calibrated spatial/angular accuracy,
+long-duration thermal/energy behavior, forced reconnect, and BVI usability
+remain physically unvalidated.
+
+The first physical attempt exposed partial-record handling: a 200 ms socket
+timeout could occur after consuming only part of a length-prefixed record, and
+the prior retry lost that offset. The stateful reader now resumes the same
+prefix/payload across timeouts. Authenticated close is bounded on a dedicated
+worker so the Android main thread does not wait for network shutdown.
+
 ## Local synthetic diagnostic
 
 Build and install the APK, then activate **Run synthetic Machine Vision
@@ -167,12 +277,14 @@ deterministic test data. Its synthetic door is explicitly marked
 accessible result explicitly says it is not live perception.
 
 QAIRT 2.48.40 physically loaded and executed the generated FP16 model libraries
-through QNN HTP V79 on the attached Poco F7 Ultra. That proves standalone graph
-compatibility and device execution. A one-image numerical smoke test was also
-performed against ONNX Runtime; it is not task accuracy, calibration,
-end-to-end latency, sustained-thermal, or BVI-usability validation. The public
-Android APK still contains no proprietary QNN runtime and does not yet dispatch
-these models from its process.
+through QNN HTP V79 on the attached Poco F7 Ultra. The earlier standalone trace
+proved graph compatibility and device execution; the final direct runs above
+add app-process linker/SELinux/DSP-skel and live-dispatch evidence. A one-image
+numerical smoke test was also performed against ONNX Runtime; none of these is
+representative task accuracy, empirical camera calibration, sustained-thermal,
+or BVI-usability validation. The public Android APK still contains no
+proprietary QNN runtime; the exercised runtime and models were privately
+provisioned into the debuggable app boundary.
 
 The external preparation path is explicit and refuses to write generated
 artifacts under the repository root. Run it from a separately governed Python
@@ -180,22 +292,24 @@ environment containing CPU PyTorch 2.8.0, torchvision 0.23.0, Ultralytics
 8.4.90, ONNX 1.18, ONNX Runtime 1.22.1, onnxslim, and the dependencies required
 by the pinned Depth Anything source. These optional AGPL/toolchain dependencies
 are intentionally absent from the permissive repository lock file.
+In the examples below, the `*_DIR` variables must resolve to separately
+governed locations outside this repository.
 
 ```bash
 ./scripts/android-model-prepare export \
-  --yoloe-checkpoint /private/models/yoloe-26s-seg.pt \
-  --depth-source /private/src/Depth-Anything-V2 \
-  --depth-indoor-checkpoint /private/models/depth_anything_v2_metric_hypersim_vits.pth \
-  --depth-outdoor-checkpoint /private/models/depth_anything_v2_metric_vkitti_vits.pth \
-  --output-dir /private/build/mpl-onnx \
+  --yoloe-checkpoint "$MODEL_DIR/yoloe-26s-seg.pt" \
+  --depth-source "$DEPTH_SOURCE_DIR" \
+  --depth-indoor-checkpoint "$MODEL_DIR/depth-indoor.pth" \
+  --depth-outdoor-checkpoint "$MODEL_DIR/depth-outdoor.pth" \
+  --output-dir "$BUILD_DIR/mpl-onnx" \
   --acknowledge-ultralytics-terms
 
 ./scripts/android-qnn-build \
-  --qnn-sdk /private/qairt \
-  --ndk /private/android-ndk \
-  --onnx-dir /private/build/mpl-onnx \
-  --calibration-dir /private/build/calibration-real \
-  --output-dir /private/build/mpl-qnn \
+  --qnn-sdk "$QNN_SDK_DIR" \
+  --ndk "$ANDROID_NDK_DIR" \
+  --onnx-dir "$BUILD_DIR/mpl-onnx" \
+  --calibration-dir "$CALIBRATION_DIR" \
+  --output-dir "$BUILD_DIR/mpl-qnn" \
   --precision fp16 \
   --acknowledge-ultralytics-terms
 ```
@@ -205,13 +319,13 @@ installation can be provisioned without putting weights in Git:
 
 ```bash
 ./scripts/android-model-install --serial "$POCO_SERIAL" \
-  --yoloe /private/path/libyoloe_bvi40_fp16.so \
-  --depth-indoor-392 /private/path/libdepth_indoor_392_fp16.so \
-  --depth-outdoor-392 /private/path/libdepth_outdoor_392_fp16.so \
-  --depth-indoor-336 /private/path/libdepth_indoor_336_fp16.so \
-  --depth-outdoor-336 /private/path/libdepth_outdoor_336_fp16.so \
-  --depth-indoor-518 /private/path/libdepth_indoor_fp16.so \
-  --depth-outdoor-518 /private/path/libdepth_outdoor_fp16.so
+  --yoloe "$QNN_MODEL_DIR/libyoloe_bvi40_fp16.so" \
+  --depth-indoor-392 "$QNN_MODEL_DIR/libdepth_indoor_392_fp16.so" \
+  --depth-outdoor-392 "$QNN_MODEL_DIR/libdepth_outdoor_392_fp16.so" \
+  --depth-indoor-336 "$QNN_MODEL_DIR/libdepth_indoor_336_fp16.so" \
+  --depth-outdoor-336 "$QNN_MODEL_DIR/libdepth_outdoor_336_fp16.so" \
+  --depth-indoor-518 "$QNN_MODEL_DIR/libdepth_indoor_fp16.so" \
+  --depth-outdoor-518 "$QNN_MODEL_DIR/libdepth_outdoor_fp16.so"
 ```
 
 The helper rejects anything that is not an ELF64 little-endian AArch64 shared

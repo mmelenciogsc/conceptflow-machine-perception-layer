@@ -38,6 +38,7 @@ android {
 
 dependencies {
     implementation(project(":packages:android-protocol"))
+    implementation(project(":packages:android-live-transport"))
     implementation(libs.grpc.okhttp)
     testImplementation(libs.junit)
 }

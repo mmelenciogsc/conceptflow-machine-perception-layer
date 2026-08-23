@@ -4,12 +4,16 @@ set -euo pipefail
 
 readonly PACKAGE="org.conceptflow.mpl.androidhost"
 readonly VOCABULARY_SHA256="2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
+readonly YOLOE_SHA256="960f857f26798622021e92ee4a8deb73c6e8bcae3a9455de3e71e623c88682c2"
+readonly DEPTH_INDOOR_392_SHA256="e79b4c0e3b38b815be47287b232137b4217097a7553da90869dfd482cd2a449d"
+readonly DEPTH_OUTDOOR_392_SHA256="f77804ac22fd6f7586e640b231df9e2e759e7325308f2430fae6f67be0be60c4"
 
 usage() {
     printf '%s\n' \
         "Usage: $0 --serial SERIAL --yoloe FILE --depth-indoor-392 FILE --depth-outdoor-392 FILE [OPTIONS]" \
         "Options: --depth-indoor-336 FILE --depth-outdoor-336 FILE" \
         "         --depth-indoor-518 FILE --depth-outdoor-518 FILE" \
+        "         --allow-untrusted-development" \
         "Legacy aliases --depth-indoor/--depth-outdoor provision the optional 518 reference slots." \
         "Privately provisions already converted, licensed QNN artifacts into a debuggable Android Node install." \
         "The script never downloads models and never copies them into this repository."
@@ -23,6 +27,7 @@ depth_indoor_392=""
 depth_outdoor_392=""
 depth_indoor_518=""
 depth_outdoor_518=""
+allow_untrusted_development=false
 while (($#)); do
     case "$1" in
         --serial) serial="${2:-}"; shift 2 ;;
@@ -33,6 +38,7 @@ while (($#)); do
         --depth-outdoor-392) depth_outdoor_392="${2:-}"; shift 2 ;;
         --depth-indoor-518|--depth-indoor) depth_indoor_518="${2:-}"; shift 2 ;;
         --depth-outdoor-518|--depth-outdoor) depth_outdoor_518="${2:-}"; shift 2 ;;
+        --allow-untrusted-development) allow_untrusted_development=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
@@ -72,6 +78,7 @@ provision() {
     local source_path="$1"
     local target_name="$2"
     local maximum_bytes="$3"
+    local trusted_checksum="${4:-}"
     [[ -f "$source_path" ]] || { printf 'Missing artifact: %s\n' "$source_path" >&2; exit 1; }
     local elf_header
     elf_header="$(readelf -h -- "$source_path" 2>/dev/null || true)"
@@ -90,6 +97,10 @@ provision() {
     local checksum
     checksum="$(sha256sum -- "$source_path")"
     checksum="${checksum%% *}"
+    if [[ "$allow_untrusted_development" != true && "$checksum" != "$trusted_checksum" ]]; then
+        printf 'Artifact digest is not a trusted production pin for %s: %s\n' "$target_name" "$checksum" >&2
+        exit 1
+    fi
     printf 'Provisioning %s (%s bytes).\n' "$target_name" "$size_bytes"
     adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/models/$target_name.tmp"
     if ! adb -s "$serial" exec-in run-as "$PACKAGE" sh -c \
@@ -130,10 +141,10 @@ write_sidecar() {
     adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/models/$target_name"
 }
 
-provision "$yoloe" "libyoloe_bvi40_fp16.so" $((256 * 1024 * 1024))
+provision "$yoloe" "libyoloe_bvi40_fp16.so" $((256 * 1024 * 1024)) "$YOLOE_SHA256"
 write_sidecar "libyoloe_bvi40_fp16.so.vocabulary.sha256" "$VOCABULARY_SHA256"
-provision "$depth_indoor_392" "libdepth_indoor_392_fp16.so" $((512 * 1024 * 1024))
-provision "$depth_outdoor_392" "libdepth_outdoor_392_fp16.so" $((512 * 1024 * 1024))
+provision "$depth_indoor_392" "libdepth_indoor_392_fp16.so" $((512 * 1024 * 1024)) "$DEPTH_INDOOR_392_SHA256"
+provision "$depth_outdoor_392" "libdepth_outdoor_392_fp16.so" $((512 * 1024 * 1024)) "$DEPTH_OUTDOOR_392_SHA256"
 
 optional_count=0
 if [[ -n "$depth_indoor_336" ]]; then

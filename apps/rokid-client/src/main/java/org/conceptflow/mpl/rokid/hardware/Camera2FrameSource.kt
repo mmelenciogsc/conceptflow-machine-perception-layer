@@ -12,15 +12,18 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
+import org.conceptflow.mpl.rokid.core.CameraCalibrationCapabilityState
 import org.conceptflow.mpl.rokid.core.CapturePipelineSnapshot
 import org.conceptflow.mpl.rokid.core.CaptureTimingEvent
 import org.conceptflow.mpl.rokid.core.FrameLimits
@@ -30,12 +33,15 @@ import org.conceptflow.mpl.rokid.core.PixelDimensions
 import org.conceptflow.mpl.rokid.core.SystemWallClock
 import org.conceptflow.mpl.rokid.core.buildJpegFrame
 import org.conceptflow.mpl.rokid.core.selectClosestCaptureSize
+import org.conceptflow.mpl.v1.CameraIntrinsics
 import java.util.UUID
 import java.util.concurrent.Executor
 
 class Camera2FrameSource(
     context: Context,
     private val limits: FrameLimits = FrameLimits(),
+    relaxedFramesPerSecond: Double = 3.0,
+    motionFramesPerSecond: Double = 5.0,
 ) : FrameSource {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
@@ -43,7 +49,10 @@ class Camera2FrameSource(
     private val lifecycle = CameraRunLifecycle()
     private val sequence = MonotonicFrameSequence()
     private val processor = AdaptiveJpegProcessor(limits)
-    private val captureCadence = AdaptivePhysicalCaptureCadence()
+    private val captureCadence = AdaptivePhysicalCaptureCadence(
+        relaxedFramesPerSecond = relaxedFramesPerSecond,
+        motionFramesPerSecond = motionFramesPerSecond,
+    )
     private val capturePipeline = BoundedCaptureRequestPipeline()
     private val sessionId = "camera-${UUID.randomUUID()}"
     private var listener: FrameSource.Listener? = null
@@ -112,10 +121,16 @@ class Camera2FrameSource(
     private fun openCamera(runId: Long, handler: Handler) {
         if (!lifecycle.isActive(runId)) return
         val cameraId = selectCameraId()
-        val size = selectJpegSize(cameraId)
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val size = selectJpegSize(characteristics)
+        val calibration = prepareCameraCalibration(
+            characteristics,
+            PixelDimensions(size.width, size.height),
+        )
+        if (!dispatchToListener(runId) { it.onCameraCalibrationCapability(calibration.capability) }) return
+        if (!lifecycle.isActive(runId)) return
         val previewSize = selectHeadlessPreviewSize(
-            cameraManager.getCameraCharacteristics(cameraId)
-                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(ImageFormat.YUV_420_888)
                 ?.map { PixelDimensions(it.width, it.height) }
                 .orEmpty(),
@@ -140,6 +155,7 @@ class Camera2FrameSource(
                         runId,
                         handler,
                         imageAvailableMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos(),
+                        calibrationMetadata = calibration.metadata,
                     )
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
@@ -166,7 +182,13 @@ class Camera2FrameSource(
                 }
                 cameraManager.openCamera(
                     cameraId,
-                    cameraStateCallback(runId, reader, preview, handler),
+                    cameraStateCallback(
+                        runId,
+                        reader,
+                        preview,
+                        handler,
+                        calibration.captureContract,
+                    ),
                     handler,
                 )
             }
@@ -178,6 +200,7 @@ class Camera2FrameSource(
         reader: ImageReader,
         preview: ImageReader,
         handler: Handler,
+        captureContract: CameraCalibrationCaptureContract?,
     ): CameraDevice.StateCallback = object : CameraDevice.StateCallback() {
         private val callbackCameraCloser = CallbackResourceCloser<CameraDevice> { it.close() }
 
@@ -189,7 +212,14 @@ class Camera2FrameSource(
             try {
                 synchronized(stateLock) {
                     lifecycle.runIfActive(runId) {
-                        createWarmupSession(runId, camera, reader, preview, handler)
+                        createWarmupSession(
+                            runId,
+                            camera,
+                            reader,
+                            preview,
+                            handler,
+                            captureContract,
+                        )
                     }
                 }
             } catch (_: CameraAccessException) {
@@ -227,9 +257,8 @@ class Camera2FrameSource(
     }
 
     @Throws(CameraAccessException::class)
-    private fun selectJpegSize(cameraId: String): Size {
-        val map = cameraManager.getCameraCharacteristics(cameraId)
-            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+    private fun selectJpegSize(characteristics: CameraCharacteristics): Size {
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: error("Camera has no stream configuration map")
         val candidates = map.getOutputSizes(ImageFormat.JPEG).map { PixelDimensions(it.width, it.height) }
         val selected = selectClosestCaptureSize(candidates, PixelDimensions(limits.maxWidth, limits.maxHeight))
@@ -244,6 +273,7 @@ class Camera2FrameSource(
         reader: ImageReader,
         preview: ImageReader,
         handler: Handler,
+        captureContract: CameraCalibrationCaptureContract?,
     ) {
         val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(preview.surface)
@@ -255,7 +285,16 @@ class Camera2FrameSource(
                 try {
                     session.setRepeatingRequest(previewRequest, null, handler)
                     if (!handler.postDelayed(
-                            { finishWarmupAndCreateJpegSession(runId, camera, reader, session, handler) },
+                            {
+                                finishWarmupAndCreateJpegSession(
+                                    runId,
+                                    camera,
+                                    reader,
+                                    session,
+                                    handler,
+                                    captureContract,
+                                )
+                            },
                             THREE_A_WARMUP_MILLIS,
                         )
                     ) {
@@ -289,6 +328,7 @@ class Camera2FrameSource(
         reader: ImageReader,
         warmupSession: CameraCaptureSession,
         handler: Handler,
+        captureContract: CameraCalibrationCaptureContract?,
     ) {
         if (!detachCaptureSession(runId, warmupSession)) return
         try {
@@ -305,7 +345,7 @@ class Camera2FrameSource(
         closeSafely { warmupSession.close() }
         try {
             if (lifecycle.isActive(runId)) {
-                createJpegCaptureSession(runId, camera, reader, handler)
+                createJpegCaptureSession(runId, camera, reader, handler, captureContract)
             }
         } catch (_: CameraAccessException) {
             failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
@@ -320,10 +360,50 @@ class Camera2FrameSource(
         camera: CameraDevice,
         reader: ImageReader,
         handler: Handler,
+        captureContract: CameraCalibrationCaptureContract?,
     ) {
         val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(reader.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            if (captureContract?.requestDistortionCorrectionOff == true) {
+                set(
+                    CaptureRequest.DISTORTION_CORRECTION_MODE,
+                    CaptureRequest.DISTORTION_CORRECTION_MODE_OFF,
+                )
+            }
+            if (captureContract?.requestCropRegion == true) {
+                val crop = captureContract.cropRegion
+                set(
+                    CaptureRequest.SCALER_CROP_REGION,
+                    android.graphics.Rect(
+                        crop.left.toInt(),
+                        crop.top.toInt(),
+                        (crop.left + crop.width).toInt(),
+                        (crop.top + crop.height).toInt(),
+                    ),
+                )
+            }
+            if (captureContract?.requestFocalLength == true) {
+                set(CaptureRequest.LENS_FOCAL_LENGTH, captureContract.focalLengthMillimeters!!.toFloat())
+            }
+            if (Build.VERSION.SDK_INT >= 30 && captureContract?.requestUnitZoom == true) {
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f)
+            }
+            if (Build.VERSION.SDK_INT >= 31 && captureContract?.requestRotateAndCropNone == true) {
+                set(CaptureRequest.SCALER_ROTATE_AND_CROP, CaptureRequest.SCALER_ROTATE_AND_CROP_NONE)
+            }
+            if (captureContract?.requestVideoStabilizationOff == true) {
+                set(
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
+                )
+            }
+            if (captureContract?.requestOpticalStabilizationOff == true) {
+                set(
+                    CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                    CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+                )
+            }
         }
         if (!attachCaptureRequestBuilder(runId, requestBuilder)) return
         val callback = object : CameraCaptureSession.StateCallback() {
@@ -398,7 +478,56 @@ class Camera2FrameSource(
                 session: CameraCaptureSession,
                 request: CaptureRequest,
                 result: TotalCaptureResult,
-            ) = Unit
+            ) {
+                val ticket = request.tag as? CaptureRequestTicket ?: return
+                val crop = result.get(CaptureResult.SCALER_CROP_REGION)?.let {
+                    CameraCalibrationCrop(
+                        left = it.left.toDouble(),
+                        top = it.top.toDouble(),
+                        width = it.width().toDouble(),
+                        height = it.height().toDouble(),
+                    )
+                }
+                val focalLength = result.get(CaptureResult.LENS_FOCAL_LENGTH)?.toDouble()
+                val unitZoom = if (Build.VERSION.SDK_INT >= 30) {
+                    result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { it == 1.0f }
+                } else {
+                    null
+                }
+                val rotateAndCropNone = if (Build.VERSION.SDK_INT >= 31) {
+                    result.get(CaptureResult.SCALER_ROTATE_AND_CROP)?.let {
+                        it == CaptureResult.SCALER_ROTATE_AND_CROP_NONE
+                    }
+                } else {
+                    null
+                }
+                val distortionCorrectionOff = result
+                    .get(CaptureResult.DISTORTION_CORRECTION_MODE)
+                    ?.let { it == CaptureResult.DISTORTION_CORRECTION_MODE_OFF }
+                val videoStabilizationOff = result
+                    .get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
+                    ?.let { it == CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE_OFF }
+                val opticalStabilizationOff = result
+                    .get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
+                    ?.let { it == CaptureResult.LENS_OPTICAL_STABILIZATION_MODE_OFF }
+                val sensorTimestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                synchronized(stateLock) {
+                    if (!lifecycle.isActive(runId)) return
+                    capturePipeline.recordCaptureCompleted(
+                        ticket,
+                        sensorTimestamp,
+                        CaptureResultCalibrationMetadata(
+                            crop,
+                            focalLength,
+                            unitZoom,
+                            rotateAndCropNone,
+                            distortionCorrectionOff,
+                            videoStabilizationOff,
+                            opticalStabilizationOff,
+                        ),
+                    )
+                }
+            }
 
             override fun onCaptureFailed(
                 session: CameraCaptureSession,
@@ -471,6 +600,7 @@ class Camera2FrameSource(
         runId: Long,
         handler: Handler,
         imageAvailableMonotonicTimestampNanos: Long,
+        calibrationMetadata: Camera2CalibrationMetadata?,
     ) {
         val image = reader.acquireLatestImage() ?: return
         image.use {
@@ -533,6 +663,13 @@ class Camera2FrameSource(
                     height = processed.dimensions.height,
                     bytes = output,
                     synthetic = false,
+                    intrinsics = calibrationMetadata?.let {
+                        resolveCameraIntrinsicsForCapture(
+                            it,
+                            association.calibrationMetadata,
+                            processed.dimensions,
+                        )
+                    },
                 )
                 if (!dispatchToListener(runId) { it.onFrame(frame) }) return
                 ElapsedRealtimeClock.nowNanos()
@@ -696,6 +833,166 @@ class Camera2FrameSource(
     private fun closeResources(resources: CameraResourceCloser) = resources.close()
 }
 
+private data class PreparedCameraCalibration(
+    val metadata: Camera2CalibrationMetadata?,
+    val capability: CameraCalibrationCapabilityState,
+    val captureContract: CameraCalibrationCaptureContract?,
+)
+
+private fun prepareCameraCalibration(
+    characteristics: CameraCharacteristics,
+    output: PixelDimensions,
+): PreparedCameraCalibration {
+    val intrinsicCalibration = characteristics
+        .get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+        ?.map(Float::toDouble)
+        .orEmpty()
+    val preCorrectionActiveArray = characteristics
+        .get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)
+        ?: return PreparedCameraCalibration(
+            null,
+            CameraCalibrationCapabilityState.UNAVAILABLE,
+            captureContract = null,
+        )
+    val activeArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        ?: return PreparedCameraCalibration(
+            null,
+            CameraCalibrationCapabilityState.UNAVAILABLE,
+            captureContract = null,
+        )
+    val requestKeys = characteristics.availableCaptureRequestKeys.orEmpty()
+    val resultKeys = characteristics.availableCaptureResultKeys.orEmpty()
+    val distortionCorrectionOffSupported = characteristics
+        .get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)
+        ?.contains(CameraCharacteristics.DISTORTION_CORRECTION_MODE_OFF) == true
+    val requestDistortionCorrectionOff = distortionCorrectionOffSupported &&
+        requestKeys.contains(CaptureRequest.DISTORTION_CORRECTION_MODE)
+    if (!requestDistortionCorrectionOff &&
+        activeArray != preCorrectionActiveArray
+    ) {
+        return PreparedCameraCalibration(
+            null,
+            CameraCalibrationCapabilityState.REJECTED,
+            captureContract = null,
+        )
+    }
+    val pixelArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+    val physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+    val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+        ?.map(Float::toDouble)
+        ?.distinct()
+        .orEmpty()
+    val distortionCoefficients = characteristics
+        .get(CameraCharacteristics.LENS_DISTORTION)
+        ?.map(Float::toDouble)
+    val physicalCandidate = if (pixelArray != null && physicalSize != null && focalLengths.size == 1) {
+        CameraPhysicalIntrinsicsMetadata(
+            focalLengthMillimeters = focalLengths.single(),
+            sensorPhysicalWidthMillimeters = physicalSize.width.toDouble(),
+            sensorPhysicalHeightMillimeters = physicalSize.height.toDouble(),
+            pixelArrayWidth = pixelArray.width.toDouble(),
+            pixelArrayHeight = pixelArray.height.toDouble(),
+            evidence = CameraPhysicalIntrinsicsEvidence.ROKID_CAMERA2_METADATA_FINGERPRINT,
+        )
+    } else {
+        null
+    }
+    val coordinates = CameraCalibrationCoordinateSpace(
+        width = preCorrectionActiveArray.width().toDouble(),
+        height = preCorrectionActiveArray.height().toDouble(),
+    )
+    val physicalFallback = physicalCandidate?.takeIf {
+        characteristics.physicalCameraIds.isEmpty() && activeArray == preCorrectionActiveArray &&
+            matchesRokidCamera2PhysicalDerivationFingerprint(
+                intrinsicCalibration,
+                distortionCoefficients,
+                coordinates,
+                preCorrectionActiveArray.left.toDouble(),
+                preCorrectionActiveArray.top.toDouble(),
+                it,
+                characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION),
+                characteristics.get(CameraCharacteristics.SCALER_CROPPING_TYPE) ==
+                    CameraCharacteristics.SCALER_CROPPING_TYPE_CENTER_ONLY,
+            )
+    }
+    val expectedCrop = CameraCalibrationCrop(
+        preCorrectionActiveArray.left.toDouble(),
+        preCorrectionActiveArray.top.toDouble(),
+        preCorrectionActiveArray.width().toDouble(),
+        preCorrectionActiveArray.height().toDouble(),
+    )
+    val requestCrop = requestKeys.contains(CaptureRequest.SCALER_CROP_REGION)
+    val requestFocalLength = focalLengths.size == 1 && requestKeys.contains(CaptureRequest.LENS_FOCAL_LENGTH)
+    val requestUnitZoom = Build.VERSION.SDK_INT >= 30 &&
+        characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.contains(1.0f) == true &&
+        requestKeys.contains(CaptureRequest.CONTROL_ZOOM_RATIO)
+    val requestRotateAndCropNone = Build.VERSION.SDK_INT >= 31 &&
+        characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES)
+            ?.contains(CameraCharacteristics.SCALER_ROTATE_AND_CROP_NONE) == true &&
+        requestKeys.contains(CaptureRequest.SCALER_ROTATE_AND_CROP)
+    val requestVideoStabilizationOff = characteristics
+        .get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+        ?.contains(CameraCharacteristics.CONTROL_VIDEO_STABILIZATION_MODE_OFF) == true &&
+        requestKeys.contains(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE)
+    val requestOpticalStabilizationOff = characteristics
+        .get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+        ?.contains(CameraCharacteristics.LENS_OPTICAL_STABILIZATION_MODE_OFF) == true &&
+        requestKeys.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE)
+    val captureContract = CameraCalibrationCaptureContract(
+        cropRegion = expectedCrop,
+        focalLengthMillimeters = focalLengths.singleOrNull(),
+        requestCropRegion = requestCrop,
+        verifyCropRegion = resultKeys.contains(CaptureResult.SCALER_CROP_REGION),
+        requestFocalLength = requestFocalLength,
+        verifyFocalLength = focalLengths.size == 1 && resultKeys.contains(CaptureResult.LENS_FOCAL_LENGTH),
+        requestUnitZoom = requestUnitZoom,
+        verifyUnitZoom = Build.VERSION.SDK_INT >= 30 &&
+            resultKeys.contains(CaptureResult.CONTROL_ZOOM_RATIO),
+        requestRotateAndCropNone = requestRotateAndCropNone,
+        verifyRotateAndCropNone = Build.VERSION.SDK_INT >= 31 &&
+            resultKeys.contains(CaptureResult.SCALER_ROTATE_AND_CROP),
+        requestDistortionCorrectionOff = requestDistortionCorrectionOff,
+        verifyDistortionCorrectionOff = resultKeys.contains(CaptureResult.DISTORTION_CORRECTION_MODE),
+        requestVideoStabilizationOff = requestVideoStabilizationOff,
+        verifyVideoStabilizationOff = resultKeys.contains(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE),
+        requestOpticalStabilizationOff = requestOpticalStabilizationOff,
+        verifyOpticalStabilizationOff = resultKeys.contains(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE),
+    )
+    val metadata = Camera2CalibrationMetadata(
+        intrinsicCalibration = intrinsicCalibration,
+        distortionCoefficients = distortionCoefficients,
+        coordinateSpace = coordinates,
+        coordinateSpaceLeftInPixelArray = preCorrectionActiveArray.left.toDouble(),
+        coordinateSpaceTopInPixelArray = preCorrectionActiveArray.top.toDouble(),
+        physicalFallback = physicalFallback,
+        captureContract = captureContract,
+    )
+    return when (val scaled = scaleCameraCalibration(metadata, output)) {
+        is CameraCalibrationScaleResult.Accepted -> {
+            val sanitized = metadata.copy(
+                distortionCoefficients = scaled.calibration.distortionCoefficients,
+            )
+            val capability = if (
+                scaled.calibration.provenance ==
+                org.conceptflow.mpl.v1.CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED
+            ) {
+                CameraCalibrationCapabilityState.DERIVED_UNQUANTIFIED
+            } else if (scaled.calibration.distortionCoefficients.isEmpty()) {
+                CameraCalibrationCapabilityState.VERIFIED_WITHOUT_DISTORTION
+            } else {
+                CameraCalibrationCapabilityState.VERIFIED_WITH_DISTORTION
+            }
+            PreparedCameraCalibration(sanitized, capability, captureContract)
+        }
+        is CameraCalibrationScaleResult.Rejected ->
+            PreparedCameraCalibration(
+                null,
+                CameraCalibrationCapabilityState.REJECTED,
+                captureContract = null,
+            )
+    }
+}
+
 internal class AdaptivePhysicalCaptureCadence(
     private val relaxedFramesPerSecond: Double = 3.0,
     private val motionFramesPerSecond: Double = 5.0,
@@ -749,7 +1046,55 @@ internal data class CaptureImageAssociation(
     val requestedAtMonotonicTimestampNanos: Long?,
     val exactTimestampMatch: Boolean,
     val supersededRequestCount: Int,
+    val calibrationMetadata: CaptureResultCalibrationMetadata? = null,
 )
+
+internal data class CaptureResultCalibrationMetadata(
+    val cropRegion: CameraCalibrationCrop?,
+    val focalLengthMillimeters: Double?,
+    val unitZoom: Boolean? = null,
+    val rotateAndCropNone: Boolean? = null,
+    val distortionCorrectionOff: Boolean? = null,
+    val videoStabilizationOff: Boolean? = null,
+    val opticalStabilizationOff: Boolean? = null,
+)
+
+internal fun resolveCameraIntrinsicsForCapture(
+    metadata: Camera2CalibrationMetadata,
+    captureResult: CaptureResultCalibrationMetadata?,
+    output: PixelDimensions,
+): CameraIntrinsics? {
+    if (captureResult == null) {
+        // Preserve availability when callbacks are reordered: this is the
+        // documented, unquantified static centered-crop derivation.
+        return metadata.toProtocolCameraIntrinsics(output)
+    }
+    val contract = metadata.captureContract ?: return metadata.toProtocolCameraIntrinsics(output)
+    if (!captureResult.satisfies(contract)) return null
+    return metadata.toProtocolCameraIntrinsics(
+        output,
+        captureResult.cropRegion.takeIf { contract.verifyCropRegion },
+        captureResult.focalLengthMillimeters.takeIf { contract.verifyFocalLength },
+    )
+}
+
+private fun CaptureResultCalibrationMetadata.satisfies(
+    contract: CameraCalibrationCaptureContract,
+): Boolean {
+    if (contract.verifyCropRegion && cropRegion != contract.cropRegion) return false
+    if (contract.verifyFocalLength && (
+            focalLengthMillimeters == null || contract.focalLengthMillimeters == null ||
+                kotlin.math.abs(focalLengthMillimeters - contract.focalLengthMillimeters) >
+                RESULT_FOCAL_LENGTH_TOLERANCE_MM
+            )
+    ) return false
+    if (contract.verifyUnitZoom && unitZoom != true) return false
+    if (contract.verifyRotateAndCropNone && rotateAndCropNone != true) return false
+    if (contract.verifyDistortionCorrectionOff && distortionCorrectionOff != true) return false
+    if (contract.verifyVideoStabilizationOff && videoStabilizationOff != true) return false
+    if (contract.verifyOpticalStabilizationOff && opticalStabilizationOff != true) return false
+    return true
+}
 
 /**
  * Caps Camera2/HAL work without retaining missed opportunities. Three slots
@@ -759,6 +1104,7 @@ internal class BoundedCaptureRequestPipeline(private val maximumOutstandingReque
     private data class PendingRequest(
         val ticket: CaptureRequestTicket,
         var sensorTimestampNanos: Long? = null,
+        var calibrationMetadata: CaptureResultCalibrationMetadata? = null,
     )
 
     private var activeRunId = 0L
@@ -828,6 +1174,23 @@ internal class BoundedCaptureRequestPipeline(private val maximumOutstandingReque
         return true
     }
 
+    /** Stores result metadata only when Camera2's result timestamp identifies this exact request. */
+    @Synchronized
+    fun recordCaptureCompleted(
+        ticket: CaptureRequestTicket,
+        sensorTimestampNanos: Long,
+        calibrationMetadata: CaptureResultCalibrationMetadata,
+    ): Boolean {
+        if (ticket.runId != activeRunId) return false
+        val request = pending[ticket.sequence]
+        if (request?.ticket != ticket || request.sensorTimestampNanos != sensorTimestampNanos) {
+            lateCallbacks += 1L
+            return false
+        }
+        request.calibrationMetadata = calibrationMetadata
+        return true
+    }
+
     @Synchronized
     fun associateLatestImage(runId: Long, sensorTimestampNanos: Long): CaptureImageAssociation {
         require(sensorTimestampNanos > 0L)
@@ -855,6 +1218,7 @@ internal class BoundedCaptureRequestPipeline(private val maximumOutstandingReque
                 .takeIf { exact != null },
             exactTimestampMatch = exact != null,
             supersededRequestCount = superseded,
+            calibrationMetadata = exact?.calibrationMetadata,
         )
     }
 
@@ -1004,6 +1368,7 @@ private const val MAX_SOURCE_JPEG_BYTES = 20 * 1_024 * 1_024
 private const val THREE_A_WARMUP_MILLIS = 1_000L
 private const val MAX_PREVIEW_PIXELS = 1_280L * 720L
 private const val MAX_CAPTURE_PIPELINE_DEPTH = 8
+private const val RESULT_FOCAL_LENGTH_TOLERANCE_MM = 0.001
 
 internal fun selectHeadlessPreviewSize(
     candidates: Collection<PixelDimensions>,

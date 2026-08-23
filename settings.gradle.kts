@@ -18,5 +18,6 @@ dependencyResolutionManagement {
 rootProject.name = "conceptflow-machine-perception-layer"
 
 include(":packages:android-protocol")
+include(":packages:android-live-transport")
 include(":apps:rokid-client")
 include(":apps:android-host")

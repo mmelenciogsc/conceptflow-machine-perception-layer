@@ -333,8 +333,9 @@ class EnvironmentAwareMachineVisionPipeline(
             tracks = rawPerception.tracks.map { track ->
                 track.copy(
                     representativeDistance = track.representativeDistance.copy(
-                        uncertaintyMeters = track.representativeDistance.uncertaintyMeters *
+                        uncertaintyMeters = track.representativeDistance.uncertaintyMeters?.times(
                             routedProfileDecision.uncertaintyMultiplier,
+                        ),
                     ),
                 )
             },

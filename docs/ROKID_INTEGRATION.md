@@ -9,10 +9,10 @@ The installed application label is **Machine Perception Layer, Rokid Node**.
 CONCEPTFlow installs this standalone Android APK directly on the glasses through
 the magnetic 5-pin data cable and authorized ADB. The runtime does not use Hi
 Rokid, CXR-L, CXR-S, Glasses SDK/Phone SDK, client secrets, or a phone-mediated
-installer. The Poco application is a separate CONCEPTFlow host. The implemented
-development data path connects the glasses directly to an Ubuntu loopback
-service through authorized ADB reverse; the future glasses/phone link remains a
-project-owned authenticated transport.
+installer. The Poco application is a separate CONCEPTFlow host. The repository
+contains both the physically exercised Ubuntu-loopback ADB-reverse path and a
+bounded direct private-WLAN mutual-TLS camera+IMU path physically exercised
+with the Poco in two consecutive no-reinstall runs on 2026-08-23.
 
 ## Evidence and confidence
 
@@ -100,12 +100,20 @@ part of the product. The activity keeps that logical surface awake while
 capture runs because Android 12 otherwise classifies the non-display process as
 background and CameraService rejects access.
 
+Live-link identity initialization, start, and explicit live-link stop are also
+runtime-gated by the app's debuggable flag. A release build rejects those
+commands before binding the private service. This is defense in depth beyond
+the exported activity's `DUMP` permission; it is not a product consent surface.
+
 The implemented hardware boundaries are:
 
 - `Camera2FrameSource`: bounded latest-only JPEG capture and monotonic frame IDs;
 - `SensorManagerPoseSource`: unbatched nominal 100 Hz game-rotation snapshots,
   each carrying the latest three-axis gyroscope and gravity-compensated linear
   acceleration values plus their source timestamps and sensor accuracy;
+- `LiveLinkCaptureController`: a bounded authenticated camera+IMU session that
+  starts producers only after the negotiated session/lease is ready, tears them
+  down before reconnect, and never opens a microphone source;
 - `AudioRecordInputSource`: bounded 16-kHz mono PCM input with monotonic chunk
   IDs and no persistence;
 - `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
@@ -158,9 +166,11 @@ The current gRPC request advertises the 1920×1080, 2 MiB, 5 FPS maximum. It
 still carries one timestamp-matched HEAD pose per emitted image. Independently,
 the stream packetizer can select meaningful samples from nominal 100 Hz IMU
 input, bound a batch to 20 ms, and send an absolute refresh at least once per
-second. The matching Poco ingress validates those typed batches. A physical
-glasses-to-Poco WebRTC adapter and Unity/FMOD listener interpolation are not yet
-implemented, so this is not a claim of live wireless spatial-audio tracking.
+second. The matching Poco ingress validates those typed batches. The direct
+private-WLAN mutual-TLS transport and end-to-end pose delivery were physically
+exercised in the two bounded runs recorded below. Unity/FMOD listener
+interpolation remains unvalidated, so this is not a claim of live wireless
+spatial-audio tracking.
 
 There is no screen, launcher, or wearer-facing visual state. The right arm does
 have a capacitive touch surface; it reports firmware-recognized key events, not
@@ -311,6 +321,127 @@ adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
   -a org.conceptflow.mpl.rokid.action.START_CAPTURE
 ```
 
+The authenticated private-WLAN path is an explicit, debug-only bounded test.
+Both debuggable apps must be installed, the Rokid camera permission must be
+granted, and the private model/runtime prerequisites described in
+[Android private QNN runtime](ANDROID_QNN_PRIVATE_RUNTIME.md) must be provisioned
+on the Poco. `rokid-control live-link-init` creates or reuses only the Rokid
+identity and public-certificate export; it does not pair both apps or start
+capture.
+
+The Android Keystore EC identity authorizes both `SHA-256` and `NONE` digest
+modes. Android Conscrypt uses `NONEwithECDSA` for the already-hashed TLS 1.3
+CertificateVerify transcript on the tested API range; this is still ECDSA over
+the TLS-defined SHA-256 digest and does not export the private key. Identity
+initialization detects an older app-owned alias that lacks either required
+authorization and replaces that alias. Replacement changes its public
+certificate and therefore invalidates the opposite node's exact pin. After an
+upgrade from the earlier key specification, rerun the pairing helper so both
+current public certificates are exported and installed together:
+
+```bash
+./scripts/android-live-link-pair \
+  --rokid-serial "$ROKID_SERIAL" \
+  --poco-serial "$POCO_SERIAL" \
+  --poco-address "$POCO_PRIVATE_IP"
+```
+
+The helper transfers only public certificates, verifies each private config
+byte for byte, and never exports a private key. Its values and certificate
+contents are not printed. It does not start either endpoint.
+
+Start the Poco listener before the Rokid client:
+
+```bash
+adb -s "$POCO_SERIAL" shell am start --user 0 -W \
+  -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity \
+  -a org.conceptflow.mpl.host.action.START_LIVE_TEST \
+  --es environment automatic --ei duration_seconds 30 --ei maximum_frames 150
+./scripts/rokid-control --serial "$ROKID_SERIAL" live-link-start
+```
+
+For an early stop, stop the producer and then the listener:
+
+```bash
+./scripts/rokid-control --serial "$ROKID_SERIAL" live-link-stop
+adb -s "$POCO_SERIAL" shell am start --user 0 -W \
+  -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity \
+  -a org.conceptflow.mpl.host.action.STOP_LIVE_TEST
+```
+
+The start command runs for at most 30 seconds, requests only camera and IMU,
+uses the negotiated 3 FPS relaxed/5 FPS motion cadence and negotiated bounded
+IMU batch-delay/silence values, and terminates on the sixth disconnect (at most
+five reconnections). Logcat output for this direct-live test contains only
+aggregate counts and categorical status; it does not emit endpoint, session,
+lease, certificate, frame, or IMU values. The transport uses independent TLS
+1.3 mutual-TLS realtime/control and camera sockets. The second socket is
+admitted with a short-lived, single-use ticket issued over the first.
+
+### Final direct-path evidence — 2026-08-23
+
+Without reinstalling either app between them, two consecutive physical runs
+completed through the private-WLAN transport and app-process QNN HTP path. Both
+processes remained alive, no crash was observed, and each run recorded zero
+interruptions plus an authenticated close with no failure lane.
+
+| Selected 392 profile | Frames received | Inference succeeded/attempted | Positive depth outputs | Poses accepted/received | p95 end-to-end | p95 capture-to-receive | p95 segmentation | p95 depth | p95 executor | p95 clock uncertainty |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Indoor Hypersim | 80 | 61/61 | 9,373,504 | 1,400/1,400 | 941.7 ms | 586.1 ms | 84.1 ms | 70.2 ms | 287.5 ms | 5.3 ms |
+| Outdoor VKITTI | 81 | 61/62 | 9,373,504 | 1,438/1,438 | 1,183.5 ms | 591.0 ms | 107.8 ms | 74.4 ms | 373.2 ms | 5.8 ms |
+
+Both reported metric status
+`profile_bound_native_metric_derived_intrinsics_present` and reason
+`CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED`. These are
+bounded execution and latency traces, not representative depth-accuracy,
+camera-calibration, long-duration thermal, or BVI-user validation.
+
+The first physical attempt identified a framing root cause: the 200 ms socket
+timeout could interrupt a length-prefixed record after consuming part of its
+prefix or payload, and the prior stateless retry discarded that partial state.
+The stream then became misaligned. The stateful reader now retains its byte
+offset and resumes that record across timeouts. The final runs also exercised
+authenticated close after it was moved to a bounded dedicated worker, keeping
+the close operation off the Android main thread.
+
+When a device supplies complete Camera2 calibration metadata, the implementation
+validates and scales it. The observed Style metadata do not establish verified
+factory calibration. Android does not define a zero principal point as an
+unknown-value sentinel. The client therefore permits metadata-based derivation
+only for the exact, device-observed Rokid fingerprint: focal length, physical
+sensor size, pixel and pre-correction arrays, orientation, `CENTER_ONLY`
+cropping, zero distortion vector, and the observed invalid zero principal-point
+values must all agree. That path is always marked `DERIVED`.
+Its uncertainty remains unquantified (the protobuf standard-deviation field is
+omitted rather than populated with heuristic percentages). The request pins
+unit zoom, no rotate-and-crop, distortion correction off, video stabilization
+off, optical stabilization off, the full crop, and the declared focal length
+where Camera2 reports those controls. A safely
+timestamp-correlated result must agree with every verifiable requested value;
+contradictions remove intrinsics from that frame. If the result callback is not
+correlatable, the client preserves availability with the documented static
+center-crop derivation. Missing or contradictory static inputs are rejected,
+and no calibration claim follows merely from receiving derived intrinsics. For
+this target fingerprint, the centered 1920×1080 derivation is approximately
+`[fx, fy, cx, cy, s] = [904.7619, 904.7619, 960, 540, 0]`. It remains
+`DERIVED` with unquantified parameter uncertainty. The pinned Depth Anything V2
+Metric heads produce native scalar camera-frame metric output without consuming
+intrinsics; missing or rejected intrinsics disable pixel-to-ray/vector geometry,
+not that scalar inference.
+
+`SENSOR_ORIENTATION` (including the observed 270-degree value) describes the
+sensor-to-device-natural/display rotation. It does not establish the physical
+`HEAD <- CAMERA` mounting rotation or translation. Consequently, the host's
+`head_camera_extrinsic_missing` gate remains explicit until authoritative
+mounting/calibration metadata is available; model-name hardcoding is not used.
+The official Rokid product/SDK material and Android Camera2 semantics checked on
+2026-08-23 publish no Style factory matrix, distortion residual, or
+`HEAD <- CAMERA` extrinsic. The linked source record is in
+[Research evidence](RESEARCH_EVIDENCE.md). Empirical checkerboard or ChArUco
+calibration of the emitted 1920×1080 path is still required before marking the
+matrix `CALIBRATED` or claiming calibrated spatial/angular accuracy; a separate
+mounting/extrinsic measurement is still required for head-frame projection.
+
 ## Diagnostics
 
 Use the bounded helper first:
@@ -320,25 +451,27 @@ Use the bounded helper first:
 adb -s "$ROKID_SERIAL" logcat -d -s ConceptFlowRokid:I '*:S'
 ```
 
-Logs contain state, identifiers, counts, sizes, and coarse signal evidence,
-including aggregate maximum mean luma, minimum dark-pixel fraction, maximum
-focus score, and maximum motion score; never frame bytes, individual IMU
-values, or PCM samples. If Camera2 reports
+General capture/diagnostic logs contain state, bounded identifiers, counts,
+sizes, and coarse signal evidence, including aggregate maximum mean luma,
+minimum dark-pixel fraction, maximum focus score, and maximum motion score;
+never frame bytes, individual IMU values, or PCM samples. Direct-live logs are
+narrower and omit endpoint/session/lease/frame identifiers as described above.
+If Camera2 reports
 `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`, stop this service and record the
 conflict. Do not disable YodaOS security or services.
 
 ## Current boundary
 
-The client now has a physically exercised, bounded glasses-to-Ubuntu development
+The client has a physically exercised, bounded glasses-to-Ubuntu development
 slice: real Camera2/IMU/microphone activity, canonical protobuf negotiation and
 frame/result correlation, deterministic mock processing, stale-aware cue
-scheduling, and real glasses audio dispatch. This does not include the Poco in
-the data path and does not run a trained model or CUDA kernel. It also does not
-establish production authentication, reconnect/roaming behavior, open-ear
-localization quality, or sustained thermal behavior. The next transport slice
-is the project-owned authenticated glasses-to-Poco relay with a distinct
-low-latency IMU lane, preserving TLS, cancellation, reconnect, message limits,
-sensor/frame correlation, and cue TTL.
+scheduling, and real glasses audio dispatch. Its bounded direct private-WLAN
+mutual-TLS client, with distinct camera and realtime IMU lanes and microphone
+disabled, was also physically exercised with app-process HTP inference and
+authenticated close in the two final runs above. Those runs do not establish
+forced-reconnect or adverse-network behavior, production deployment readiness,
+open-ear localization quality, camera calibration, representative model
+accuracy, or sustained thermal behavior.
 
 Verified and unverified physical behavior is recorded without inference in
 [`VALIDATION.md`](../VALIDATION.md). No vendor SDK, client secret, proprietary

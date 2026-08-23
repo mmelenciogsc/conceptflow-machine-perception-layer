@@ -10,3 +10,6 @@
 -dontwarn javax.naming.directory.DirContext
 -dontwarn javax.naming.directory.InitialDirContext
 -keep class io.grpc.** { *; }
+
+# qnn_jni.cpp uses statically named JNI exports for this one exact Kotlin object.
+-keep class org.conceptflow.mpl.host.vision.QnnNativeBridge { *; }

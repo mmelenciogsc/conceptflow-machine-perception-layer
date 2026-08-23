@@ -4,6 +4,9 @@ package org.conceptflow.mpl.rokid.core
 enum class RuntimeCommand(val action: String) {
     START_CAPTURE("org.conceptflow.mpl.rokid.action.START_CAPTURE"),
     START_STREAM_TEST("org.conceptflow.mpl.rokid.action.START_STREAM_TEST"),
+    INITIALIZE_LIVE_IDENTITY("org.conceptflow.mpl.rokid.action.INITIALIZE_LIVE_IDENTITY"),
+    START_LIVE_LINK_TEST("org.conceptflow.mpl.rokid.action.START_LIVE_LINK_TEST"),
+    STOP_LIVE_LINK_TEST("org.conceptflow.mpl.rokid.action.STOP_LIVE_LINK_TEST"),
     START_PHYSICAL_TRACE("org.conceptflow.mpl.rokid.action.START_PHYSICAL_TRACE"),
     PLAY_LEFT_CUE("org.conceptflow.mpl.rokid.action.PLAY_LEFT_CUE"),
     PLAY_RIGHT_CUE("org.conceptflow.mpl.rokid.action.PLAY_RIGHT_CUE"),
@@ -13,4 +16,16 @@ enum class RuntimeCommand(val action: String) {
     companion object {
         fun fromAction(action: String?): RuntimeCommand? = entries.firstOrNull { it.action == action }
     }
+}
+
+/** Exported ADB controls that provision or operate the private live link are debug-build only. */
+object RuntimeCommandAuthorization {
+    private val debugOnly = setOf(
+        RuntimeCommand.INITIALIZE_LIVE_IDENTITY,
+        RuntimeCommand.START_LIVE_LINK_TEST,
+        RuntimeCommand.STOP_LIVE_LINK_TEST,
+    )
+
+    fun isAllowed(command: RuntimeCommand, debuggable: Boolean): Boolean =
+        debuggable || command !in debugOnly
 }

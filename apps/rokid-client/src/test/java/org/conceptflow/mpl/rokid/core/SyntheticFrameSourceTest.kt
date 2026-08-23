@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.rokid.core
 
+import org.conceptflow.mpl.v1.CameraIntrinsics
 import org.conceptflow.mpl.v1.FramePayload
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -60,6 +61,48 @@ class SyntheticFrameSourceTest {
         assertEquals(2, validator.historyCount())
         validator.reset()
         assertEquals(0, validator.historyCount())
+    }
+
+    @Test
+    fun jpegFrameCarriesOnlyExplicitlyProvidedCameraIntrinsics() {
+        val intrinsics = CameraIntrinsics.newBuilder()
+            .setFocalXPixels(960.0)
+            .setFocalYPixels(960.0)
+            .setPrincipalXPixels(960.0)
+            .setPrincipalYPixels(540.0)
+            .setCalibratedWidth(1_920)
+            .setCalibratedHeight(1_080)
+            .build()
+
+        val calibrated = buildJpegFrame(
+            requestId = "calibrated",
+            sessionId = "session",
+            streamId = "camera",
+            frameId = 1L,
+            timestampNanos = 1L,
+            wallTimeMillis = 1L,
+            width = 1_920,
+            height = 1_080,
+            bytes = byteArrayOf(1),
+            synthetic = false,
+            intrinsics = intrinsics,
+        )
+        val uncalibrated = buildJpegFrame(
+            requestId = "uncalibrated",
+            sessionId = "session",
+            streamId = "camera",
+            frameId = 2L,
+            timestampNanos = 2L,
+            wallTimeMillis = 2L,
+            width = 1_920,
+            height = 1_080,
+            bytes = byteArrayOf(2),
+            synthetic = false,
+        )
+
+        assertTrue(calibrated.hasIntrinsics())
+        assertEquals(intrinsics, calibrated.intrinsics)
+        assertTrue(!uncalibrated.hasIntrinsics())
     }
 
     private fun frame(

@@ -96,6 +96,27 @@ class GlassesStreamIngress(
         return result
     }
 
+    /**
+     * Accepts a nested sensor record after LiveLinkEnvelope mutual-TLS binding and per-lane
+     * sequence validation have succeeded. The legacy cross-lane sequence is deliberately not
+     * synthesized; camera chunk and IMU batch/sample ordering remain fully enforced below.
+     */
+    @Synchronized
+    fun acceptAuthenticatedLane(envelope: SensorStreamEnvelope): StreamIngressDisposition {
+        expireCameraAssembly()
+        if (envelope.sessionId != expectedSessionId || envelope.leaseId != expectedLeaseId) {
+            return reject(StreamIngressDisposition.REJECTED_IDENTITY)
+        }
+        val result = when (envelope.payloadCase) {
+            SensorStreamEnvelope.PayloadCase.CAMERA_CHUNK -> acceptCamera(envelope)
+            SensorStreamEnvelope.PayloadCase.IMU_BATCH -> acceptImu(envelope.imuBatch)
+            SensorStreamEnvelope.PayloadCase.MICROPHONE_CHUNK -> StreamIngressDisposition.REJECTED_UNAUTHORIZED
+            else -> StreamIngressDisposition.REJECTED_MALFORMED
+        }
+        if (result.name.startsWith("REJECTED_")) rejected += 1L else accepted += 1L
+        return result
+    }
+
     @Synchronized
     fun takeLatestCamera(): FramePayload? = latestCamera.also { latestCamera = null }
 

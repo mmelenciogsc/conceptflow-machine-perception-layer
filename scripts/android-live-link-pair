@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+
+readonly ROKID_PACKAGE="org.conceptflow.mpl.rokidclient"
+readonly ROKID_COMPONENT="$ROKID_PACKAGE/org.conceptflow.mpl.rokid.RokidCommandActivity"
+readonly ROKID_INIT_ACTION="org.conceptflow.mpl.rokid.action.INITIALIZE_LIVE_IDENTITY"
+readonly ROKID_ALIAS="org.conceptflow.mpl.rokid.live-link.v1"
+readonly POCO_PACKAGE="org.conceptflow.mpl.androidhost"
+readonly POCO_COMPONENT="$POCO_PACKAGE/org.conceptflow.mpl.host.MainActivity"
+readonly POCO_INIT_ACTION="org.conceptflow.mpl.host.action.INITIALIZE_LIVE_IDENTITY"
+readonly POCO_ALIAS="org.conceptflow.mpl.androidhost.live-link.v1"
+readonly PUBLIC_CERT_PATH="no_backup/live-link/public-identity.der"
+readonly CONFIG_PATH="no_backup/live-link/live-link.properties"
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --rokid-serial SERIAL --poco-serial SERIAL --poco-address PRIVATE_IP [OPTIONS]" \
+        "Options: --realtime-port PORT --camera-port PORT (defaults: 39431 and 39432)" \
+        "Creates non-exportable identities on both devices and pins only their public certificates." \
+        "Writes role-specific configuration into each debuggable app's private no-backup directory." \
+        "Does not start the Poco listener or Rokid capture; start the listener first after pairing."
+}
+
+fail() {
+    printf 'error: %s\n' "$*" >&2
+    exit 1
+}
+
+rokid_serial=""
+poco_serial=""
+poco_address=""
+realtime_port=39431
+camera_port=39432
+while (($#)); do
+    case "$1" in
+        --rokid-serial) rokid_serial="${2:-}"; shift 2 ;;
+        --poco-serial) poco_serial="${2:-}"; shift 2 ;;
+        --poco-address) poco_address="${2:-}"; shift 2 ;;
+        --realtime-port) realtime_port="${2:-}"; shift 2 ;;
+        --camera-port) camera_port="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unsupported argument; use --help" ;;
+    esac
+done
+
+[[ -n "$rokid_serial" && -n "$poco_serial" && -n "$poco_address" ]] || {
+    usage >&2
+    exit 2
+}
+[[ "$rokid_serial" != "$poco_serial" ]] || fail "Rokid and Poco serials must identify different devices"
+[[ "$rokid_serial" != *$'\n'* && "$poco_serial" != *$'\n'* ]] || fail "device serial is malformed"
+[[ "$realtime_port" =~ ^[0-9]+$ && "$camera_port" =~ ^[0-9]+$ ]] || fail "ports must be integers"
+((realtime_port >= 1024 && realtime_port <= 65535)) || fail "realtime port is outside its bound"
+((camera_port >= 1024 && camera_port <= 65535)) || fail "camera port is outside its bound"
+((realtime_port != camera_port)) || fail "camera and realtime ports must differ"
+if [[ ! "$poco_address" =~ ^10\.([0-9]{1,3}\.){2}[0-9]{1,3}$ &&
+    ! "$poco_address" =~ ^192\.168\.([0-9]{1,3}\.)[0-9]{1,3}$ &&
+    ! "$poco_address" =~ ^172\.([1-2][0-9]|3[0-1])\.([0-9]{1,3}\.)[0-9]{1,3}$ &&
+    ! "$poco_address" =~ ^169\.254\.([0-9]{1,3}\.)[0-9]{1,3}$ &&
+    ! "$poco_address" =~ ^[fF][c-dD][0-9a-fA-F:]+$ &&
+    ! "$poco_address" =~ ^[fF][eE][89aAbB][0-9a-fA-F:]+$ ]]; then
+    fail "Poco address must be a private or link-local IP literal"
+fi
+if [[ "$poco_address" == *.* ]]; then
+    IFS=. read -r -a address_octets <<<"$poco_address"
+    ((${#address_octets[@]} == 4)) || fail "Poco IPv4 address is malformed"
+    for octet in "${address_octets[@]}"; do
+        if [[ ! "$octet" =~ ^(0|[1-9][0-9]{0,2})$ ]] || ((10#$octet > 255)); then
+            fail "Poco IPv4 address is malformed"
+        fi
+    done
+fi
+
+command -v adb >/dev/null || fail "adb is required"
+command -v openssl >/dev/null || fail "openssl is required"
+command -v base64 >/dev/null || fail "base64 is required"
+command -v cmp >/dev/null || fail "cmp is required"
+
+for serial in "$rokid_serial" "$poco_serial"; do
+    [[ "$(adb -s "$serial" get-state 2>/dev/null || true)" == "device" ]] || {
+        fail "one selected Android device is not authorized and online"
+    }
+done
+adb -s "$rokid_serial" shell pm path "$ROKID_PACKAGE" >/dev/null 2>&1 || {
+    fail "install the debuggable Rokid Node APK first"
+}
+adb -s "$poco_serial" shell pm path "$POCO_PACKAGE" >/dev/null 2>&1 || {
+    fail "install the debuggable Android Node APK first"
+}
+
+temporary_directory="$(mktemp -d)"
+trap 'rm -rf -- "$temporary_directory"' EXIT
+chmod 700 "$temporary_directory"
+
+adb -s "$rokid_serial" shell am start --user 0 -W -n "$ROKID_COMPONENT" -a "$ROKID_INIT_ACTION" >/dev/null
+adb -s "$poco_serial" shell am start --user 0 -W -n "$POCO_COMPONENT" -a "$POCO_INIT_ACTION" >/dev/null
+
+export_public_certificate() {
+    local serial="$1"
+    local package_name="$2"
+    local target="$3"
+    local remaining=20
+    while ((remaining > 0)); do
+        if adb -s "$serial" exec-out run-as "$package_name" cat "$PUBLIC_CERT_PATH" >"$target" 2>/dev/null &&
+            [[ -s "$target" ]] && openssl x509 -inform DER -in "$target" -noout >/dev/null 2>&1; then
+            chmod 600 "$target"
+            return
+        fi
+        : >"$target"
+        sleep 0.25
+        remaining=$((remaining - 1))
+    done
+    fail "a device did not produce a valid app-private public certificate"
+}
+
+export_public_certificate "$rokid_serial" "$ROKID_PACKAGE" "$temporary_directory/rokid.der"
+export_public_certificate "$poco_serial" "$POCO_PACKAGE" "$temporary_directory/poco.der"
+
+write_config() {
+    local output="$1"
+    local identity_alias="$2"
+    local peer_certificate="$3"
+    {
+        printf 'schema_version=1\n'
+        printf 'address=%s\n' "$poco_address"
+        printf 'realtime_port=%s\n' "$realtime_port"
+        printf 'camera_port=%s\n' "$camera_port"
+        printf 'identity_alias=%s\n' "$identity_alias"
+        printf 'peer_certificate_der_base64='
+        base64 -w0 "$peer_certificate"
+        printf '\nconnect_timeout_ms=5000\n'
+        printf 'socket_read_timeout_ms=4000\n'
+        printf 'camera_ticket_lifetime_ms=10000\n'
+    } >"$output"
+    chmod 600 "$output"
+}
+
+write_config "$temporary_directory/rokid.properties" "$ROKID_ALIAS" "$temporary_directory/poco.der"
+write_config "$temporary_directory/poco.properties" "$POCO_ALIAS" "$temporary_directory/rokid.der"
+
+install_config() {
+    local serial="$1"
+    local package_name="$2"
+    local source="$3"
+    local temporary_path="$CONFIG_PATH.tmp"
+    local verification_copy="$temporary_directory/verify-${package_name##*.}.properties"
+    adb -s "$serial" shell run-as "$package_name" mkdir -p no_backup/live-link >/dev/null
+    adb -s "$serial" shell run-as "$package_name" chmod 700 no_backup/live-link >/dev/null
+    adb -s "$serial" shell run-as "$package_name" rm -f "$temporary_path" >/dev/null 2>&1 || true
+    if ! adb -s "$serial" exec-in run-as "$package_name" tee "$temporary_path" \
+        <"$source" >/dev/null; then
+        adb -s "$serial" shell run-as "$package_name" rm -f "$temporary_path" >/dev/null 2>&1 || true
+        fail "private live-link configuration transfer failed"
+    fi
+    adb -s "$serial" shell run-as "$package_name" chmod 600 "$temporary_path" >/dev/null || {
+        adb -s "$serial" shell run-as "$package_name" rm -f "$temporary_path" >/dev/null 2>&1 || true
+        fail "private live-link configuration permission update failed"
+    }
+    if ! adb -s "$serial" exec-out run-as "$package_name" cat "$temporary_path" >"$verification_copy" ||
+        ! cmp -s "$source" "$verification_copy"; then
+        adb -s "$serial" shell run-as "$package_name" rm -f "$temporary_path" >/dev/null 2>&1 || true
+        fail "private live-link configuration verification failed"
+    fi
+    adb -s "$serial" shell run-as "$package_name" mv "$temporary_path" "$CONFIG_PATH" >/dev/null || {
+        adb -s "$serial" shell run-as "$package_name" rm -f "$temporary_path" >/dev/null 2>&1 || true
+        fail "private live-link configuration commit failed"
+    }
+    adb -s "$serial" shell run-as "$package_name" chmod 600 "$CONFIG_PATH" >/dev/null
+}
+
+install_config "$rokid_serial" "$ROKID_PACKAGE" "$temporary_directory/rokid.properties"
+install_config "$poco_serial" "$POCO_PACKAGE" "$temporary_directory/poco.properties"
+
+printf 'Live-link pairing complete. Private keys remained non-exportable in each Android Keystore.\n'
+printf 'Only public certificates were exchanged; app-private configurations were installed without printing contents.\n'

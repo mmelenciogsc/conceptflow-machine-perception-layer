@@ -17,7 +17,9 @@ lint_repository() {
         scripts/perception-training \
         scripts/android-model-install scripts/android-model-prepare scripts/android-qnn-build \
         scripts/android-qnn-depth-build scripts/android-qnn-depth-benchmark \
-        scripts/rokid-install scripts/rokid-control scripts/lib/common.sh scripts/lib/rokid-adb.sh
+        scripts/android-qnn-jni-build scripts/android-qnn-private-provision \
+        scripts/android-live-link-pair scripts/rokid-install scripts/rokid-control \
+        scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }
 lint_python() {
     local python_executable

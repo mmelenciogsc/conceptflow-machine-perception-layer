@@ -98,9 +98,14 @@ the service/pressure/budget policy selects one resolution. A balanced request
 may degrade to 336 only before artifact selection. Explicit reference,
 calibration, or sparse-ambiguity work selects 518, and reference work is
 rejected under device pressure. After selection, the depth result must return
-the same profile ID and calibration must exist for that profile plus the active
-camera-intrinsics fingerprint. Availability of a different tier is not a
-fallback.
+the same profile ID. The official metric heads declare direct metre output with
+a `20 m` Hypersim maximum and `80 m` VKITTI maximum. The host binds that pinned
+native contract to the exact profile, rejects non-finite, non-positive, and
+above-contract values, and records model error as unquantified instead of
+inventing an accuracy value. Intrinsics are required to turn scalar depth into
+a camera ray/vector, not to preserve the scalar metre result. A guided
+calibration may replace the identity semantics only when bound to that profile
+and the active intrinsics. Availability of a different tier is not a fallback.
 
 No representative task-accuracy claim is made for any resolution, and the
 standalone medians must not be reported as end-to-end pipeline latency.

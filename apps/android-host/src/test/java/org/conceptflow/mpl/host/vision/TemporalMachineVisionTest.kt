@@ -70,6 +70,22 @@ class TemporalMachineVisionTest {
     }
 
     @Test
+    fun intrinsicsProvenanceParticipatesInCalibrationFingerprint() {
+        val calibrated = CameraIntrinsics(
+            640,
+            480,
+            500.0,
+            500.0,
+            320.0,
+            240.0,
+            CameraIntrinsicsSource.CALIBRATED,
+        )
+        val derived = calibrated.copy(source = CameraIntrinsicsSource.DERIVED)
+
+        assertFalse(calibrated.calibrationFingerprint == derived.calibrationFingerprint)
+    }
+
+    @Test
     fun robustFusionUsesAgreeingPriorAndRejectsOutlier() {
         val calibrated = MetricDepthEstimate(2.0, 0.20, false)
         val agreeing = RobustMetricDepthFusion.fuse(
@@ -87,7 +103,10 @@ class TemporalMachineVisionTest {
 
         assertTrue(agreeing.usedDimensionPrior)
         assertTrue(agreeing.estimate.distanceMeters in 2.0..2.2)
-        assertTrue(agreeing.estimate.uncertaintyMeters >= calibrated.uncertaintyMeters)
+        assertTrue(
+            requireNotNull(agreeing.estimate.uncertaintyMeters) >=
+                requireNotNull(calibrated.uncertaintyMeters),
+        )
         assertFalse(agreeing.rejectedDimensionPriorAsOutlier)
         assertFalse(outlier.usedDimensionPrior)
         assertTrue(outlier.rejectedDimensionPriorAsOutlier)
@@ -113,6 +132,23 @@ class TemporalMachineVisionTest {
         assertFalse(propagated.translationApplied)
         assertEquals(-2.0, propagated.cameraVectorMeters.x, 1e-9)
         assertEquals(0.0, propagated.cameraVectorMeters.z, 1e-9)
+    }
+
+    @Test
+    fun delayedKeyframeUsesCapturePoseWithoutRollingBackLatestPose() {
+        val store = store()
+        assertTrue(store.updatePose(pose(200_000_000L)).accepted)
+
+        val update = store.updateKeyframe(
+            frame(1L, 100_000_000L),
+            listOf(track(captureNanos = 100_000_000L)),
+            pose(100_000_000L),
+        )
+
+        assertTrue(update.accepted)
+        assertEquals(1, update.tracks.size)
+        assertTrue(update.tracks.single().propagated)
+        assertEquals(200_000_000L, update.tracks.single().outputMonotonicTimestampNanos)
     }
 
     @Test
@@ -235,6 +271,21 @@ class TemporalMachineVisionTest {
         assertEquals(0.10, measured.uncertaintyMeters, 1e-9)
         assertEquals(0.60, propagated.uncertaintyMeters, 1e-9)
         assertTrue(propagated.uncertaintyMeters > measured.uncertaintyMeters)
+    }
+
+    @Test
+    fun unquantifiedNativeMetricTrackNeverBecomesTemporalAnchor() {
+        val store = store()
+        val unquantified = track().copy(
+            representativeDistance = requireNotNull(
+                OfficialDepthAnythingV2MetricSemanticsProvider
+                    .resolve(MachineVisionModelProfiles.depthIndoorBalanced)
+                    ?.estimate(2.0),
+            ),
+        )
+
+        assertTrue(store.updateKeyframe(frame(1L, 0L), listOf(unquantified), pose(0L)).tracks.isEmpty())
+        assertTrue(store.updatePose(pose(100_000_000L)).tracks.isEmpty())
     }
 
     @Test

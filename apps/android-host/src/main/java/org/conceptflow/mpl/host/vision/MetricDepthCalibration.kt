@@ -26,9 +26,60 @@ data class GuidedCalibrationSample(
 
 data class MetricDepthEstimate(
     val distanceMeters: Double,
-    val uncertaintyMeters: Double,
+    /** Null means the model has no validated per-observation error bound. */
+    val uncertaintyMeters: Double?,
     val extrapolated: Boolean,
-)
+    val provenance: MetricDepthProvenance = MetricDepthProvenance.guidedTwoAnchor,
+    val uncertaintyBasis: MetricDepthUncertaintyBasis = MetricDepthUncertaintyBasis.GUIDED_RESIDUAL,
+) {
+    init {
+        require(distanceMeters.isFinite() && distanceMeters > 0.0)
+        require(uncertaintyMeters == null || (uncertaintyMeters.isFinite() && uncertaintyMeters >= 0.0))
+        require(
+            (uncertaintyBasis == MetricDepthUncertaintyBasis.UNQUANTIFIED_MODEL_ERROR) ==
+                (uncertaintyMeters == null),
+        )
+    }
+}
+
+enum class MetricDepthProvenanceKind {
+    GUIDED_TWO_ANCHOR,
+    PINNED_OFFICIAL_NATIVE_METRIC,
+}
+
+enum class MetricDepthUncertaintyBasis {
+    GUIDED_RESIDUAL,
+    UNQUANTIFIED_MODEL_ERROR,
+}
+
+data class MetricDepthProvenance(
+    val kind: MetricDepthProvenanceKind,
+    val depthProfileId: String? = null,
+    val sourceModelId: String? = null,
+    val sourceRevision: String? = null,
+    val sourceCheckpointSha256: String? = null,
+    val declaredMaximumDepthMeters: Double? = null,
+) {
+    init {
+        if (kind == MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC) {
+            require(!depthProfileId.isNullOrBlank() && depthProfileId.length <= 128)
+            require(!sourceModelId.isNullOrBlank())
+            require(GIT_REVISION.matches(sourceRevision.orEmpty()))
+            require(SHA256.matches(sourceCheckpointSha256.orEmpty()))
+            require(declaredMaximumDepthMeters?.let { it.isFinite() && it > 0.0 } == true)
+        } else {
+            require(depthProfileId == null && sourceModelId == null && sourceRevision == null &&
+                sourceCheckpointSha256 == null)
+            require(declaredMaximumDepthMeters == null)
+        }
+    }
+
+    companion object {
+        val guidedTwoAnchor = MetricDepthProvenance(MetricDepthProvenanceKind.GUIDED_TWO_ANCHOR)
+        private val GIT_REVISION = Regex("[a-f0-9]{40}")
+        private val SHA256 = Regex("[a-f0-9]{64}")
+    }
+}
 
 data class MetricDepthCalibrationBinding(
     val depthProfileId: String,
@@ -56,6 +107,8 @@ fun interface MetricDepthCalibrationProvider {
     ): MetricDepthCalibration?
 
     companion object {
+        fun none(): MetricDepthCalibrationProvider = MetricDepthCalibrationProvider { _, _ -> null }
+
         fun single(calibration: MetricDepthCalibration): MetricDepthCalibrationProvider =
             MetricDepthCalibrationProvider { profile, intrinsics ->
                 val binding = calibration.binding
@@ -68,6 +121,67 @@ fun interface MetricDepthCalibrationProvider {
                     null
                 }
             }
+    }
+}
+
+/**
+ * Pinned upstream output contract. The official metric head returns metres after multiplying its
+ * sigmoid output by 20 m (Hypersim) or 80 m (VKITTI). This is an identity semantics descriptor,
+ * not a claim that the monocular estimate has been measured or calibrated on the glasses camera.
+ */
+fun interface NativeMetricDepthSemanticsProvider {
+    fun resolve(depthProfile: MachineVisionModelProfile): MetricDepthCalibration?
+
+    companion object {
+        fun none(): NativeMetricDepthSemanticsProvider = NativeMetricDepthSemanticsProvider { null }
+    }
+}
+
+object OfficialDepthAnythingV2MetricSemanticsProvider : NativeMetricDepthSemanticsProvider {
+    private data class Contract(
+        val upstreamModelId: String,
+        val modelRevision: String,
+        val checkpointSha256: String,
+        val maximumDepthMeters: Double,
+    )
+
+    private val contracts = mapOf(
+        "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small" to Contract(
+            "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
+            "3bc65d4e14a6786a61acec16453c50e12bf5f338",
+            "b782898d8a3e8be1f639de33837ed85e9b4b73e40f8f5e5cd99067588d722545",
+            20.0,
+        ),
+        "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small" to Contract(
+            "depth-anything/Depth-Anything-V2-Metric-VKITTI-Small",
+            "c725b8589bdf6ab04072cab74c0467830db80d6d",
+            "9203e538d35255c90dda4b7fedb47ff33fe725497bcca3b1e53b3a65ee63f0cb",
+            80.0,
+        ),
+    )
+
+    override fun resolve(depthProfile: MachineVisionModelProfile): MetricDepthCalibration? {
+        val canonical = MachineVisionModelProfiles.allProfiles.singleOrNull { it.id == depthProfile.id }
+        if (canonical != depthProfile || depthProfile.kind != MachineVisionModelKind.METRIC_DEPTH) return null
+        val contract = contracts[depthProfile.upstreamModelId] ?: return null
+        return MetricDepthCalibration(
+            representation = RelativeDepthRepresentation.DEPTH,
+            scale = 1.0,
+            offsetMeters = 0.0,
+            nearFeature = 0.0,
+            farFeature = contract.maximumDepthMeters,
+            residualMeters = null,
+            contributingSamples = 0,
+            binding = null,
+            provenance = MetricDepthProvenance(
+                MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC,
+                depthProfile.id,
+                contract.upstreamModelId,
+                contract.modelRevision,
+                contract.checkpointSha256,
+                contract.maximumDepthMeters,
+            ),
+        )
     }
 }
 
@@ -100,32 +214,58 @@ data class MetricDepthCalibration(
     val offsetMeters: Double,
     val nearFeature: Double,
     val farFeature: Double,
-    val residualMeters: Double,
+    val residualMeters: Double?,
     val contributingSamples: Int,
     val binding: MetricDepthCalibrationBinding? = null,
+    val provenance: MetricDepthProvenance = MetricDepthProvenance.guidedTwoAnchor,
 ) {
     init {
         require(scale.isFinite() && scale > 0.0)
         require(offsetMeters.isFinite())
         require(nearFeature.isFinite() && farFeature.isFinite() && farFeature > nearFeature)
-        require(residualMeters.isFinite() && residualMeters >= 0.0)
-        require(contributingSamples >= 2)
+        when (provenance.kind) {
+            MetricDepthProvenanceKind.GUIDED_TWO_ANCHOR -> {
+                require(residualMeters?.let { it.isFinite() && it >= 0.0 } == true)
+                require(contributingSamples >= 2)
+            }
+            MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC -> {
+                require(representation == RelativeDepthRepresentation.DEPTH)
+                require(scale == 1.0 && offsetMeters == 0.0 && nearFeature == 0.0)
+                require(farFeature == provenance.declaredMaximumDepthMeters)
+                require(residualMeters == null && contributingSamples == 0 && binding == null)
+            }
+        }
     }
 
+    fun acceptsRawDepthValue(value: Double): Boolean =
+        value.isFinite() && value > 0.0 &&
+            (provenance.kind != MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC || value <= farFeature)
+
     fun estimate(relativeDepthValue: Double): MetricDepthEstimate? {
-        if (!relativeDepthValue.isFinite() || relativeDepthValue <= 0.0) return null
+        if (!acceptsRawDepthValue(relativeDepthValue)) return null
         val feature = representation.feature(relativeDepthValue)
         val rawDistance = scale * feature + offsetMeters
         if (!rawDistance.isFinite() || rawDistance <= 0.0) return null
         val extrapolated = feature !in nearFeature..farFeature
+        if (provenance.kind == MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC) {
+            return MetricDepthEstimate(
+                distanceMeters = rawDistance,
+                uncertaintyMeters = null,
+                extrapolated = false,
+                provenance = provenance,
+                uncertaintyBasis = MetricDepthUncertaintyBasis.UNQUANTIFIED_MODEL_ERROR,
+            )
+        }
         val boundedDistance = rawDistance.coerceIn(MIN_DISTANCE_METERS, MAX_DISTANCE_METERS)
-        val calibrationUncertainty = max(MIN_UNCERTAINTY_METERS, residualMeters)
+        val calibrationUncertainty = max(MIN_UNCERTAINTY_METERS, requireNotNull(residualMeters))
         val extrapolationPenalty = if (extrapolated) boundedDistance * 0.20 else 0.0
         return MetricDepthEstimate(
             distanceMeters = boundedDistance,
             uncertaintyMeters = (calibrationUncertainty + extrapolationPenalty)
                 .coerceAtMost(MAX_UNCERTAINTY_METERS),
             extrapolated = extrapolated,
+            provenance = provenance,
+            uncertaintyBasis = MetricDepthUncertaintyBasis.GUIDED_RESIDUAL,
         )
     }
 
@@ -283,7 +423,9 @@ object RobustMetricDepthFusion {
             return FusedMetricDepthEstimate(calibratedDepth, false, false)
         }
 
-        val depthSigma = max(MIN_SIGMA_METERS, calibratedDepth.uncertaintyMeters)
+        val quantifiedDepthUncertainty = calibratedDepth.uncertaintyMeters
+            ?: return FusedMetricDepthEstimate(calibratedDepth, false, false)
+        val depthSigma = max(MIN_SIGMA_METERS, quantifiedDepthUncertainty)
         val priorSigma = max(MIN_SIGMA_METERS, dimensionPrior.uncertaintyMeters)
         val difference = abs(calibratedDepth.distanceMeters - dimensionPrior.distanceMeters)
         val gate = max(
@@ -307,7 +449,7 @@ object RobustMetricDepthFusion {
             normalizedPriorWeight *
             (dimensionPrior.distanceMeters - distance) * (dimensionPrior.distanceMeters - distance)
         val uncertainty = max(
-            calibratedDepth.uncertaintyMeters,
+            quantifiedDepthUncertainty,
             sqrt(1.0 / totalWeight + residualVariance),
         )
         return FusedMetricDepthEstimate(
@@ -315,6 +457,8 @@ object RobustMetricDepthFusion {
                 distanceMeters = distance,
                 uncertaintyMeters = uncertainty,
                 extrapolated = calibratedDepth.extrapolated,
+                provenance = calibratedDepth.provenance,
+                uncertaintyBasis = calibratedDepth.uncertaintyBasis,
             ),
             usedDimensionPrior = true,
             rejectedDimensionPriorAsOutlier = false,

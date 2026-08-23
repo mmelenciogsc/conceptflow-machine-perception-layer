@@ -113,15 +113,19 @@ standalone APK through the 5-pin ADB cable and contains no Rokid companion-SDK
 or client-secret integration. A bounded development adapter negotiates and
 submits one physical frame through canonical gRPC over an authorized ADB
 reverse loopback tunnel; release/non-loopback transport remains TLS-only.
-`CueTransport` remains transport-neutral for the future project-owned
-authenticated phone data plane.
+`CueTransport` remains transport-neutral. The project-owned direct Android
+data plane now uses two mutually authenticated TLS lanes for realtime/control
+and camera traffic; its bounded physical validation is recorded separately.
 
 The host app includes `AndroidCapabilityDetector`, `GlassesStreamIngress`, `BoundedFramePreprocessor`,
 `RoutingPolicy`, `BoundedFrameQueue`, `SessionStateMachine`, `ResultCorrelator`,
-and `CueScheduler`. `GrpcPerceptionTransport.secure` is implemented. The current
-`MainActivity`, however, constructs `InProcessHostTransport` and
-`InProcessCueDispatchTransport`; therefore the two APKs do not yet establish a
-real phone-to-glasses data path.
+and `CueScheduler`. `GrpcPerceptionTransport.secure` is implemented. The
+synthetic diagnostic still uses `InProcessHostTransport` and
+`InProcessCueDispatchTransport`, while the explicit debug live-test path starts
+the project-owned mutual-TLS listener and app-process QNN executor. Two bounded
+physical Rokid-to-Poco runs exercised that live path; it is not yet a production
+background service and forced reconnect/adverse-network behavior remains
+unvalidated.
 
 ## Windows execution path
 

@@ -5,11 +5,13 @@ The Android Node is the phone-side policy and cue-dispatch reference. It detects
 available platform capabilities, validates and queues frames, chooses a local
 or remote route, tracks session and result state, schedules cues, and exposes
 accessible feedback. Its current activity runs an in-process synthetic
-vertical slice; it does not yet exchange frames or cues with the Rokid app. The
-host now also contains a bounded `GlassesStreamIngress` for the shared leased
-sensor envelopes, but no physical phone-to-glasses network adapter is wired to
-it. A separate direct Rokid-to-Ubuntu development trace exercises the shared
-protobuf contract without changing this boundary.
+vertical slice and an explicit, debuggable bounded live test. The live path
+uses the project-owned mutual-TLS Android transport to ingest leased camera and
+IMU envelopes directly from the Rokid app. Two physical 2026-08-23 runs
+exercised this path and authenticated close; production deployment, forced
+reconnect, and adverse-network behavior remain validation gates. A separate
+direct Rokid-to-Ubuntu development trace also exercises the shared protobuf
+contract.
 
 Its first product sublayer is Machine Vision. The implemented pure-Kotlin core
 has a fixed 40-class BVI vocabulary, dual indoor/outdoor Depth Anything profile
@@ -19,9 +21,10 @@ fixed-vocabulary artifact verification, and truthful QNN HTP capability
 planning for the Poco F7 Ultra. See
 [Android Machine Vision](ANDROID_MACHINE_VISION.md) and
 [Environment classification](ENVIRONMENT_CLASSIFICATION.md). No model runtime
-or model weight is bundled. External FP16 model libraries have been executed
-through standalone QNN tooling on the Poco; the APK does not yet load them
-in-process.
+or model weight is bundled. Privately provisioned external FP16 model libraries
+have been executed through both standalone QNN tooling and the debug APK's
+in-process QNN HTP adapter on the Poco. No proprietary runtime or model artifact
+is stored in this repository or shipped by its default build.
 
 ## Build baseline
 

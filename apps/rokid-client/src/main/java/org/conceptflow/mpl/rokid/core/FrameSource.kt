@@ -2,6 +2,7 @@
 package org.conceptflow.mpl.rokid.core
 
 import com.google.protobuf.ByteString
+import org.conceptflow.mpl.v1.CameraIntrinsics
 import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImageDescriptor
 import org.conceptflow.mpl.v1.ImageEncoding
@@ -91,6 +92,14 @@ data class CapturePipelineSnapshot(
     }
 }
 
+enum class CameraCalibrationCapabilityState(val diagnosticLabel: String) {
+    VERIFIED_WITH_DISTORTION("verified_with_distortion"),
+    VERIFIED_WITHOUT_DISTORTION("verified_without_distortion"),
+    DERIVED_UNQUANTIFIED("derived_unquantified"),
+    UNAVAILABLE("unavailable"),
+    REJECTED("rejected"),
+}
+
 enum class FrameRejection {
     MISSING_IDENTITY,
     INVALID_DIMENSIONS,
@@ -164,6 +173,7 @@ interface FrameSource : AutoCloseable {
         fun onFrame(frame: FramePayload)
         fun onCaptureGate(event: CaptureGateEvent) = Unit
         fun onCaptureSessionReady(readyMonotonicTimestampNanos: Long) = Unit
+        fun onCameraCalibrationCapability(state: CameraCalibrationCapabilityState) = Unit
         fun onCaptureTiming(event: CaptureTimingEvent) = Unit
         fun onCapturePipelineSnapshot(snapshot: CapturePipelineSnapshot) = Unit
         fun onError(message: String)
@@ -304,6 +314,7 @@ internal fun buildJpegFrame(
     height: Int,
     bytes: ByteArray,
     synthetic: Boolean,
+    intrinsics: CameraIntrinsics? = null,
 ): FramePayload {
     val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
     val descriptor = ImageDescriptor.newBuilder()
@@ -314,7 +325,7 @@ internal fun buildJpegFrame(
         .setPayloadBytes(bytes.size.toLong())
         .setSha256(ByteString.copyFrom(digest))
         .build()
-    return FramePayload.newBuilder()
+    val payload = FramePayload.newBuilder()
         .setRequestId(requestId)
         .setSessionId(sessionId)
         .setStreamId(streamId)
@@ -324,5 +335,6 @@ internal fun buildJpegFrame(
         .setImage(descriptor)
         .setFrameData(ByteString.copyFrom(bytes))
         .setSynthetic(synthetic)
-        .build()
+    intrinsics?.let(payload::setIntrinsics)
+    return payload.build()
 }

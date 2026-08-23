@@ -62,6 +62,7 @@ data class MachineVisionModelProfile(
     val depthResolutionTier: DepthResolutionTier? = null,
     val measuredStandaloneMedianMillis: Double? = null,
     val fixedVocabularySha256: String? = null,
+    val trustedArtifactSha256: Set<String> = emptySet(),
     val maximumArtifactBytes: Long = 512L * 1_024L * 1_024L,
     val artifactRequirement: ModelArtifactRequirement = ModelArtifactRequirement.REQUIRED_RUNTIME,
 ) {
@@ -84,6 +85,7 @@ data class MachineVisionModelProfile(
                 (inputWidth == depthResolutionTier.inputSize && inputHeight == depthResolutionTier.inputSize),
         )
         fixedVocabularySha256?.let { require(SHA256.matches(it)) }
+        require(trustedArtifactSha256.all(SHA256::matches))
     }
 
     private companion object {
@@ -104,6 +106,7 @@ object MachineVisionModelProfiles {
         inputHeight = 640,
         numericProfile = QnnNumericProfile.FLOAT16,
         fixedVocabularySha256 = fixedVocabularySha256,
+        trustedArtifactSha256 = setOf("960f857f26798622021e92ee4a8deb73c6e8bcae3a9455de3e71e623c88682c2"),
         maximumArtifactBytes = 256L * 1_024L * 1_024L,
     )
 
@@ -146,6 +149,7 @@ object MachineVisionModelProfiles {
         depthEnvironment = DepthEnvironment.INDOOR,
         depthResolutionTier = DepthResolutionTier.BALANCED,
         measuredStandaloneMedianMillis = 108.44,
+        trustedArtifactSha256 = setOf("e79b4c0e3b38b815be47287b232137b4217097a7553da90869dfd482cd2a449d"),
     )
 
     val depthOutdoorBalanced = MachineVisionModelProfile(
@@ -159,6 +163,7 @@ object MachineVisionModelProfiles {
         depthEnvironment = DepthEnvironment.OUTDOOR,
         depthResolutionTier = DepthResolutionTier.BALANCED,
         measuredStandaloneMedianMillis = 111.43,
+        trustedArtifactSha256 = setOf("f77804ac22fd6f7586e640b231df9e2e759e7325308f2430fae6f67be0be60c4"),
     )
 
     val depthIndoorReference = MachineVisionModelProfile(
@@ -330,7 +335,10 @@ data class ModelBundleStatus(
  * Every binary needs a sibling `.sha256` file; repository builds never fetch
  * or package model weights.
  */
-class PrivateModelBundleVerifier {
+class PrivateModelBundleVerifier(
+    /** Development-only escape hatch. Production callers must keep this false. */
+    private val allowUntrustedDevelopmentArtifacts: Boolean = false,
+) {
     fun inspect(directory: File): ModelBundleStatus = ModelBundleStatus(
         requiredArtifacts = MachineVisionModelProfiles.requiredProfiles.map { inspect(directory, it) },
         optionalArtifacts = MachineVisionModelProfiles.optionalProfiles.map { inspect(directory, it) },
@@ -356,6 +364,9 @@ class PrivateModelBundleVerifier {
         val actual = sha256(artifact)
         if (!MessageDigest.isEqual(declared.encodeToByteArray(), actual.encodeToByteArray())) {
             return ModelArtifactCheck(profile, false, "checksum_mismatch", actual, size)
+        }
+        if (!allowUntrustedDevelopmentArtifacts && actual !in profile.trustedArtifactSha256) {
+            return ModelArtifactCheck(profile, false, "artifact_digest_not_trusted", actual, size)
         }
         profile.fixedVocabularySha256?.let { expectedVocabulary ->
             val vocabularySidecar = File(directory, "${profile.artifactFileName}.vocabulary.sha256")

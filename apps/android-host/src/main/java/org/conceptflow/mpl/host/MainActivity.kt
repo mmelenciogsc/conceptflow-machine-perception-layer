@@ -2,6 +2,8 @@
 package org.conceptflow.mpl.host
 
 import android.Manifest
+import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
@@ -67,6 +69,7 @@ import org.conceptflow.mpl.host.vision.UnitQuaternion
 import org.conceptflow.mpl.host.vision.VisualKeyframeSignal
 import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.protocol.SyntheticImageFixtures
+import org.conceptflow.mpl.transport.LiveLinkProvisioningStore
 import org.conceptflow.mpl.v1.CapabilitySet
 import org.conceptflow.mpl.v1.CueCategory
 import org.conceptflow.mpl.v1.CueModality
@@ -92,6 +95,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var capabilityView: TextView
     private lateinit var machineVisionView: TextView
+    private lateinit var liveMachineVisionView: TextView
     private lateinit var environmentStatusView: TextView
     private lateinit var cueStatusView: TextView
     private lateinit var automaticEnvironmentButton: Button
@@ -113,6 +117,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var gnssEnvironmentSource: AndroidGnssEnvironmentSource
     private var environmentMode = EnvironmentSelectionMode.AUTOMATIC
     private var lastGnssEvidenceNanos: Long? = null
+    private var liveMachineVisionController: LiveMachineVisionController? = null
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -140,6 +145,7 @@ class MainActivity : AppCompatActivity() {
         statusView = findViewById(R.id.session_status)
         capabilityView = findViewById(R.id.capability_status)
         machineVisionView = findViewById(R.id.machine_vision_status)
+        liveMachineVisionView = findViewById(R.id.live_machine_vision_status)
         environmentStatusView = findViewById(R.id.environment_status)
         cueStatusView = findViewById(R.id.cue_status)
         automaticEnvironmentButton = findViewById(R.id.environment_automatic)
@@ -180,6 +186,7 @@ class MainActivity : AppCompatActivity() {
         }
         cueDispatch = InProcessCueDispatchTransport(dispatcher::dispatch)
         gnssEnvironmentSource = AndroidGnssEnvironmentSource(this, clock, onSample = { sample ->
+            liveMachineVisionController?.updateGnss(sample)
             if (environmentCoordinator.updateGnss(sample)) {
                 lastGnssEvidenceNanos = sample.timestampNanos
                 runOnUiThread {
@@ -196,6 +203,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.connect).setOnClickListener { connect() }
         findViewById<Button>(R.id.process_frame).setOnClickListener { processSyntheticFrame() }
         findViewById<Button>(R.id.machine_vision_diagnostic).setOnClickListener { runMachineVisionDiagnostic() }
+        findViewById<Button>(R.id.start_live_machine_vision).setOnClickListener { startLiveMachineVision() }
+        findViewById<Button>(R.id.stop_live_machine_vision).setOnClickListener { stopLiveMachineVision() }
         automaticEnvironmentButton.setOnClickListener {
             selectEnvironmentMode(EnvironmentSelectionMode.AUTOMATIC, requestLocationPermission = true)
         }
@@ -212,6 +221,13 @@ class MainActivity : AppCompatActivity() {
         showMachineVisionReadiness()
         showEnvironmentMode(speak = false)
         announceState(getString(R.string.idle_status), speak = false)
+        handleDebugLiveAction(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDebugLiveAction(intent)
     }
 
     override fun onStart() {
@@ -227,6 +243,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        liveMachineVisionController?.close()
+        liveMachineVisionController = null
         activeOperation?.cancel()
         gnssEnvironmentSource.close()
         cueDispatch.close()
@@ -240,6 +258,8 @@ class MainActivity : AppCompatActivity() {
         KeyEvent.KEYCODE_C -> true.also { connect() }
         KeyEvent.KEYCODE_P -> true.also { processSyntheticFrame() }
         KeyEvent.KEYCODE_V -> true.also { runMachineVisionDiagnostic() }
+        KeyEvent.KEYCODE_L -> true.also { startLiveMachineVision() }
+        KeyEvent.KEYCODE_S -> true.also { stopLiveMachineVision() }
         KeyEvent.KEYCODE_A -> true.also {
             selectEnvironmentMode(EnvironmentSelectionMode.AUTOMATIC, requestLocationPermission = true)
         }
@@ -250,6 +270,78 @@ class MainActivity : AppCompatActivity() {
         KeyEvent.KEYCODE_D -> true.also { disconnect() }
         else -> super.onKeyUp(keyCode, event)
     }
+
+    private fun handleDebugLiveAction(intent: Intent?) {
+        val action = intent?.action ?: return
+        if (action !in DEBUG_LIVE_ACTIONS) return
+        if (!isDebuggableBuild()) {
+            liveMachineVisionView.text = getString(R.string.live_debug_action_rejected)
+            return
+        }
+        when (action) {
+            ACTION_INITIALIZE_LIVE_IDENTITY -> initializeLiveIdentity()
+            ACTION_START_LIVE_TEST -> {
+                val mode = when (intent.getStringExtra(EXTRA_ENVIRONMENT)?.lowercase()) {
+                    "indoor" -> EnvironmentSelectionMode.FORCE_INDOOR
+                    "outdoor" -> EnvironmentSelectionMode.FORCE_OUTDOOR
+                    else -> EnvironmentSelectionMode.AUTOMATIC
+                }
+                val duration = intent.getIntExtra(EXTRA_DURATION_SECONDS, DEFAULT_LIVE_DURATION_SECONDS)
+                val frames = intent.getIntExtra(EXTRA_MAXIMUM_FRAMES, DEFAULT_LIVE_MAXIMUM_FRAMES)
+                startLiveMachineVision(LiveMachineVisionTestSpec(mode, duration, frames))
+            }
+            ACTION_STOP_LIVE_TEST -> stopLiveMachineVision()
+        }
+    }
+
+    private fun initializeLiveIdentity() {
+        val succeeded = runCatching {
+            LiveLinkProvisioningStore(this).ensureIdentity(LIVE_IDENTITY_ALIAS)
+        }.isSuccess
+        liveMachineVisionView.text = getString(
+            if (succeeded) R.string.live_identity_ready else R.string.live_identity_failed,
+        )
+    }
+
+    private fun startLiveMachineVision(
+        spec: LiveMachineVisionTestSpec = LiveMachineVisionTestSpec(environmentMode = environmentMode),
+    ) {
+        if (!isDebuggableBuild()) {
+            liveMachineVisionView.text = getString(R.string.live_debug_action_rejected)
+            return
+        }
+        val current = liveMachineVisionController
+        val currentPhase = current?.snapshot()?.phase
+        if (currentPhase != null && currentPhase in ACTIVE_LIVE_PHASES) {
+            liveMachineVisionView.text = current?.snapshot()?.accessibleSummary()
+            return
+        }
+        current?.close()
+        val controller = LiveMachineVisionController(this) { liveStatus ->
+            runOnUiThread {
+                liveMachineVisionView.text = liveStatus.accessibleSummary()
+                showMachineVisionReadiness(liveStatus)
+            }
+        }
+        liveMachineVisionController = controller
+        runCatching { controller.start(spec) }.onFailure {
+            liveMachineVisionView.text = controller.snapshot()
+                ?.takeIf { snapshot -> snapshot.phase == LiveMachineVisionPhase.FAILED }
+                ?.accessibleSummary()
+                ?: getString(R.string.live_test_start_failed)
+            controller.close()
+            if (liveMachineVisionController === controller) liveMachineVisionController = null
+        }
+    }
+
+    private fun stopLiveMachineVision() {
+        liveMachineVisionController?.close()
+        liveMachineVisionController = null
+        liveMachineVisionView.text = getString(R.string.live_machine_vision_idle)
+    }
+
+    private fun isDebuggableBuild(): Boolean =
+        applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     private fun showCapabilities(capabilities: RuntimeCapabilities) {
         capabilityView.text = getString(
@@ -263,7 +355,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun showMachineVisionReadiness() {
+    private fun showMachineVisionReadiness(liveStatus: LiveMachineVisionStatus? = null) {
         val modelStatus = PrivateModelBundleVerifier().inspect(filesDir.resolve("models"))
         val availableModels = modelStatus.artifacts.count { it.available }
         val socManufacturer: String
@@ -285,10 +377,26 @@ class MainActivity : AppCompatActivity() {
                 cpuReferenceBackendAvailable = true,
             ),
         )
-        val backend = when (plan.target) {
-            AcceleratorTarget.QNN_HTP -> getString(R.string.machine_vision_backend_htp)
-            AcceleratorTarget.CPU_REFERENCE -> getString(R.string.machine_vision_backend_reference, plan.reason)
-            AcceleratorTarget.UNAVAILABLE -> getString(R.string.machine_vision_backend_unavailable)
+        val backend = when (liveQnnBackendEvidence(liveStatus)) {
+            LiveQnnBackendEvidence.HTP_EXECUTED -> getString(
+                R.string.machine_vision_backend_htp_live,
+                requireNotNull(liveStatus).inferenceSuccesses,
+            )
+            LiveQnnBackendEvidence.INITIALIZING -> getString(R.string.machine_vision_backend_htp_initializing)
+            LiveQnnBackendEvidence.QNN_FAILED -> getString(R.string.machine_vision_backend_htp_failed)
+            LiveQnnBackendEvidence.LIVE_FAILED_BEFORE_QNN_EXECUTION ->
+                getString(R.string.machine_vision_backend_live_failed_before_qnn)
+            LiveQnnBackendEvidence.NOT_EXERCISED -> when (plan.target) {
+                AcceleratorTarget.QNN_HTP -> getString(R.string.machine_vision_backend_htp)
+                AcceleratorTarget.CPU_REFERENCE -> {
+                    if (plan.reason == "QNN adapter unavailable") {
+                        getString(R.string.machine_vision_backend_not_exercised)
+                    } else {
+                        getString(R.string.machine_vision_backend_reference, plan.reason)
+                    }
+                }
+                AcceleratorTarget.UNAVAILABLE -> getString(R.string.machine_vision_backend_unavailable)
+            }
         }
         machineVisionView.text = getString(
             R.string.machine_vision_readiness,
@@ -704,6 +812,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
+        const val ACTION_INITIALIZE_LIVE_IDENTITY =
+            "org.conceptflow.mpl.host.action.INITIALIZE_LIVE_IDENTITY"
+        const val ACTION_START_LIVE_TEST = "org.conceptflow.mpl.host.action.START_LIVE_TEST"
+        const val ACTION_STOP_LIVE_TEST = "org.conceptflow.mpl.host.action.STOP_LIVE_TEST"
+        const val EXTRA_ENVIRONMENT = "environment"
+        const val EXTRA_DURATION_SECONDS = "duration_seconds"
+        const val EXTRA_MAXIMUM_FRAMES = "maximum_frames"
+        const val DEFAULT_LIVE_DURATION_SECONDS = 30
+        const val DEFAULT_LIVE_MAXIMUM_FRAMES = 150
+        const val LIVE_IDENTITY_ALIAS = "org.conceptflow.mpl.androidhost.live-link.v1"
+        val DEBUG_LIVE_ACTIONS = setOf(
+            ACTION_INITIALIZE_LIVE_IDENTITY,
+            ACTION_START_LIVE_TEST,
+            ACTION_STOP_LIVE_TEST,
+        )
+        val ACTIVE_LIVE_PHASES = setOf(
+            LiveMachineVisionPhase.OPENING_QNN_HTP,
+            LiveMachineVisionPhase.LISTENING,
+            LiveMachineVisionPhase.STREAMING,
+        )
         const val ENVIRONMENT_MODE_KEY = "environment_selection_mode"
         const val GNSS_EVIDENCE_MAXIMUM_AGE_NANOS = 15_000_000_000L
         val SYNTHETIC_MASK_FINGERPRINT = "d".repeat(64)

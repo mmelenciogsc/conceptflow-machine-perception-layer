@@ -24,9 +24,12 @@ on the very profile it is deciding. Every stage carries a monotonic timestamp
 and frame ID. Results with the wrong frame, future completion time, excessive
 age, wrong model profile, or wrong vocabulary fingerprint fail closed.
 
-The current public APK implements this orchestration and deterministic test
-adapters. It does not yet contain the separately governed QNN runtime adapter,
-YOLOE weights, or either Depth Anything model library.
+The public APK implements this orchestration, deterministic test adapters, and
+an opt-in JNI adapter for privately provisioned QNN artifacts. It does not
+bundle the proprietary QNN runtime, YOLOE weights, or either Depth Anything
+model library. Two bounded physical debug runs exercised the in-process adapter
+with the indoor and outdoor 392 profiles; representative classification and
+depth accuracy remain unvalidated.
 
 ## Evidence policy
 

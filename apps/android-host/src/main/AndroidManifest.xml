@@ -18,9 +18,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ConceptFlow.Host"
         android:usesCleartextTraffic="false">
+        <!-- Poco exposes this DSP RPC transport in /vendor/etc/public.libraries.txt. Optional
+             keeps non-Qualcomm installs valid while granting Android 12+ linker-namespace access
+             when the platform provides it. The library is never packaged by this application. -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

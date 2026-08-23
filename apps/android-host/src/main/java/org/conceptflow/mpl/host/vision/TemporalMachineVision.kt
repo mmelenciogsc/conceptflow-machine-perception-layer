@@ -24,6 +24,30 @@ data class MetricVector3(
     operator fun minus(other: MetricVector3) = MetricVector3(x - other.x, y - other.y, z - other.z)
 }
 
+enum class CameraIntrinsicsSource {
+    CALIBRATED,
+    DERIVED,
+}
+
+/** Only identity distortion is admitted until bounded inverse distortion is implemented. */
+enum class CameraLensDistortionModel {
+    BROWN_CONRADY_ZERO,
+}
+
+data class CameraIntrinsicsStandardDeviation(
+    val focalLengthXPixels: Double,
+    val focalLengthYPixels: Double,
+    val principalPointXPixels: Double,
+    val principalPointYPixels: Double,
+) {
+    init {
+        require(focalLengthXPixels.isFinite() && focalLengthXPixels >= 0.0)
+        require(focalLengthYPixels.isFinite() && focalLengthYPixels >= 0.0)
+        require(principalPointXPixels.isFinite() && principalPointXPixels >= 0.0)
+        require(principalPointYPixels.isFinite() && principalPointYPixels >= 0.0)
+    }
+}
+
 data class CameraIntrinsics(
     val imageWidthPixels: Int,
     val imageHeightPixels: Int,
@@ -31,6 +55,9 @@ data class CameraIntrinsics(
     val focalLengthYPixels: Double,
     val principalPointXPixels: Double,
     val principalPointYPixels: Double,
+    val source: CameraIntrinsicsSource = CameraIntrinsicsSource.CALIBRATED,
+    val standardDeviation: CameraIntrinsicsStandardDeviation? = null,
+    val distortionModel: CameraLensDistortionModel = CameraLensDistortionModel.BROWN_CONRADY_ZERO,
 ) {
     val calibrationFingerprint: String
         get() {
@@ -41,6 +68,16 @@ data class CameraIntrinsics(
                 java.lang.Double.toHexString(focalLengthYPixels),
                 java.lang.Double.toHexString(principalPointXPixels),
                 java.lang.Double.toHexString(principalPointYPixels),
+                source.name,
+                distortionModel.name,
+                standardDeviation?.let {
+                    listOf(
+                        java.lang.Double.toHexString(it.focalLengthXPixels),
+                        java.lang.Double.toHexString(it.focalLengthYPixels),
+                        java.lang.Double.toHexString(it.principalPointXPixels),
+                        java.lang.Double.toHexString(it.principalPointYPixels),
+                    ).joinToString(",")
+                } ?: "uncertainty-unreported",
             ).joinToString("|")
             return MessageDigest.getInstance("SHA-256")
                 .digest(canonical.encodeToByteArray())
@@ -317,9 +354,6 @@ class TemporalMetricTrackStore(
             return TemporalTrackUpdate(false, "pose_too_far_from_keyframe", snapshotAtLatestPose(pose.monotonicTimestampNanos))
         }
         val currentPose = latestPose
-        if (currentPose != null && pose.monotonicTimestampNanos < currentPose.monotonicTimestampNanos) {
-            return TemporalTrackUpdate(false, "non_monotonic_pose", snapshotInternal(currentPose.monotonicTimestampNanos))
-        }
         require(measuredTracks.map(MetricSemanticTrack::trackId).toSet().size == measuredTracks.size)
         require(measuredTracks.all {
             it.frameId == frame.frameId &&
@@ -328,7 +362,9 @@ class TemporalMetricTrackStore(
 
         lastKeyframeId = frame.frameId
         lastKeyframeTimestampNanos = frame.captureMonotonicTimestampNanos
-        latestPose = pose
+        if (currentPose == null || pose.monotonicTimestampNanos >= currentPose.monotonicTimestampNanos) {
+            latestPose = pose
+        }
         measuredTracks.forEach { track ->
             if (!isTemporalAnchorEligible(track)) {
                 anchors.remove(track.trackId)
@@ -338,8 +374,9 @@ class TemporalMetricTrackStore(
                 anchors.remove(track.trackId)
                 return@forEach
             }
-            if (track.confidence < minimumConfidence ||
-                track.representativeDistance.uncertaintyMeters > maximumUncertaintyMeters
+            val sourceUncertainty = track.representativeDistance.uncertaintyMeters
+            if (track.confidence < minimumConfidence || sourceUncertainty == null ||
+                sourceUncertainty > maximumUncertaintyMeters
             ) {
                 anchors.remove(track.trackId)
                 return@forEach
@@ -348,7 +385,11 @@ class TemporalMetricTrackStore(
             anchors[track.trackId] = Anchor(track, pose, worldVector)
         }
         enforceCapacity()
-        return TemporalTrackUpdate(true, "keyframe_updated", snapshotInternal(pose.monotonicTimestampNanos))
+        return TemporalTrackUpdate(
+            true,
+            "keyframe_updated",
+            snapshotInternal(latestPose?.monotonicTimestampNanos ?: pose.monotonicTimestampNanos),
+        )
     }
 
     @Synchronized
@@ -427,7 +468,8 @@ class TemporalMetricTrackStore(
             } else {
                 orientationOnlyUncertaintyMetersPerSecond * ageSeconds
             }
-            val uncertainty = anchor.track.representativeDistance.uncertaintyMeters + positionUncertainty
+            val uncertainty = requireNotNull(anchor.track.representativeDistance.uncertaintyMeters) +
+                positionUncertainty
             if (confidence < minimumConfidence || uncertainty > maximumUncertaintyMeters) {
                 expired += anchor.track.trackId
                 return@mapNotNull null

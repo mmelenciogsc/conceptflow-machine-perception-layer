@@ -267,6 +267,17 @@ class MachineVisionPipeline(
         frame: VisionFrame,
         selectedDepthProfile: MachineVisionModelProfile,
     ): String? {
+        if (calibration.provenance.kind == MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC) {
+            val canonical = OfficialDepthAnythingV2MetricSemanticsProvider.resolve(selectedDepthProfile)
+                ?: return "native_metric_profile_unverified"
+            return if (calibration == canonical &&
+                calibration.provenance.depthProfileId == selectedDepthProfile.id
+            ) {
+                null
+            } else {
+                "native_metric_profile_mismatch"
+            }
+        }
         val binding = calibration.binding
         if (binding == null) {
             return if (calibrationBindingPolicy == CalibrationBindingPolicy.ALLOW_SYNTHETIC_UNBOUND &&

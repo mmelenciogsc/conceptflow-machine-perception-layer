@@ -49,6 +49,16 @@
             android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
 
         <TextView
+            android:id="@+id/live_machine_vision_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:accessibilityLiveRegion="polite"
+            android:focusable="true"
+            android:text="@string/live_machine_vision_idle"
+            android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
+
+        <TextView
             android:id="@+id/cue_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -93,9 +103,29 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
-            android:nextFocusDown="@id/environment_automatic"
+            android:nextFocusDown="@id/start_live_machine_vision"
             android:nextFocusUp="@id/process_frame"
             android:text="@string/run_machine_vision_diagnostic" />
+
+        <Button
+            android:id="@+id/start_live_machine_vision"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/stop_live_machine_vision"
+            android:nextFocusUp="@id/machine_vision_diagnostic"
+            android:text="@string/start_live_machine_vision" />
+
+        <Button
+            android:id="@+id/stop_live_machine_vision"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/environment_automatic"
+            android:nextFocusUp="@id/start_live_machine_vision"
+            android:text="@string/stop_live_machine_vision" />
 
         <Button
             android:id="@+id/environment_automatic"
@@ -104,7 +134,7 @@
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
             android:nextFocusDown="@id/environment_indoor"
-            android:nextFocusUp="@id/machine_vision_diagnostic"
+            android:nextFocusUp="@id/stop_live_machine_vision"
             android:text="@string/environment_automatic" />
 
         <Button

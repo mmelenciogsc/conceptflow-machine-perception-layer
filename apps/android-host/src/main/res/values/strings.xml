@@ -4,8 +4,18 @@
     <string name="app_name">Machine Perception Layer, Android Node</string>
     <string name="checking_capabilities">Checking device capabilities.</string>
     <string name="machine_vision_checking">Checking Machine Vision readiness.</string>
+    <string name="live_machine_vision_idle">Live glasses Machine Vision test is idle.</string>
+    <string name="live_identity_ready">App-private live-link identity is ready. Only its public certificate may be exported.</string>
+    <string name="live_identity_failed">App-private live-link identity initialization failed.</string>
+    <string name="live_test_start_failed">Live glasses Machine Vision test could not start. Check app-private provisioning and QNN artifacts.</string>
+    <string name="live_debug_action_rejected">The requested ADB live-test action is available only in a debuggable build.</string>
     <string name="machine_vision_readiness">Machine Vision sublayer. Fixed BVI classes: %1$d. Integrity-checked private artifact slots: %2$d of %3$d. Backend: %4$s. Geometry awareness remains independent of semantic recognition.</string>
     <string name="machine_vision_backend_htp">QNN HTP initialized</string>
+    <string name="machine_vision_backend_htp_live">QNN HTP executed successfully for %1$d live frames</string>
+    <string name="machine_vision_backend_htp_initializing">QNN HTP live initialization or session setup is in progress</string>
+    <string name="machine_vision_backend_htp_failed">QNN HTP live initialization or execution failed; CPU reference diagnostics remain available</string>
+    <string name="machine_vision_backend_live_failed_before_qnn">The live session ended before QNN HTP completed an inference; CPU reference diagnostics remain available</string>
+    <string name="machine_vision_backend_not_exercised">CPU reference diagnostics are available; QNN HTP has not yet been exercised in this app process</string>
     <string name="machine_vision_backend_reference">CPU reference mode; %1$s</string>
     <string name="machine_vision_backend_unavailable">no verified inference backend</string>
     <string name="machine_vision_diagnostic_passed">Synthetic Machine Vision diagnostic passed. %1$s calibrated distance: %2$.2f metres. Exact 392-pixel balanced tier selected. Stable track propagated using an orientation-only pose tick. This is deterministic test data, not live inference.</string>
@@ -43,6 +53,8 @@
     <string name="connect">Connect session — C key</string>
     <string name="process_frame">Process synthetic frame (P)</string>
     <string name="run_machine_vision_diagnostic">Run synthetic Machine Vision diagnostic (V)</string>
+    <string name="start_live_machine_vision">Start bounded 30-second glasses Machine Vision diagnostic (L)</string>
+    <string name="stop_live_machine_vision">Stop live glasses Machine Vision diagnostic (S)</string>
     <string name="environment_automatic">Automatic environment mode (A)</string>
     <string name="environment_indoor">Manual indoor profile (I)</string>
     <string name="environment_outdoor">Manual outdoor profile (O)</string>

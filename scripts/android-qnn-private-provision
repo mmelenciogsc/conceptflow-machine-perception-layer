@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+readonly PACKAGE="org.conceptflow.mpl.androidhost"
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --serial SERIAL --qnn-sdk DIR" \
+        "Privately provisions the exact pinned QAIRT 2.48 HTP runtime into a debuggable app." \
+        "No runtime is copied into the repository or packaged by Gradle."
+}
+
+serial=""
+qnn_sdk=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        --qnn-sdk) qnn_sdk="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+[[ -n "$serial" && -n "$qnn_sdk" ]] || { usage >&2; exit 2; }
+[[ "$serial" =~ ^[A-Za-z0-9._:-]+$ ]] || { printf 'Unsafe device serial.\n' >&2; exit 2; }
+command -v adb >/dev/null || { printf 'adb is required.\n' >&2; exit 1; }
+command -v sha256sum >/dev/null || { printf 'sha256sum is required.\n' >&2; exit 1; }
+qnn_sdk="$(realpath -e -- "$qnn_sdk")"
+
+declare -A expected=(
+    [libQnnHtp.so]="6e6da5284060ca4369bb6fd3c6f2b661a9cebabb2cf4cf695cd77f558082265f"
+    [libQnnHtpPrepare.so]="cd31f94ae79ad402312e75262297d1e1073f85927d95f7905357a10b1d32a263"
+    [libQnnHtpV79Stub.so]="b3b4cca02e1f2cb5778ef9f18850814358d62a0b90123b25bb2806731a6af8b3"
+    [libQnnSystem.so]="4cd077547a939b131c4733391545d64bdc4f9d0c86de78793335ddd18348789e"
+    [libQnnHtpV79Skel.so]="974583f0cdc3d42de7a0633c9b987b160ad033a4cd53be30f9b5480b7e5a3213"
+)
+declare -A source=(
+    [libQnnHtp.so]="$qnn_sdk/lib/aarch64-android/libQnnHtp.so"
+    [libQnnHtpPrepare.so]="$qnn_sdk/lib/aarch64-android/libQnnHtpPrepare.so"
+    [libQnnHtpV79Stub.so]="$qnn_sdk/lib/aarch64-android/libQnnHtpV79Stub.so"
+    [libQnnSystem.so]="$qnn_sdk/lib/aarch64-android/libQnnSystem.so"
+    [libQnnHtpV79Skel.so]="$qnn_sdk/lib/hexagon-v79/unsigned/libQnnHtpV79Skel.so"
+)
+
+adb -s "$serial" get-state 2>/dev/null | grep -qx device || { printf 'Selected device is unavailable.\n' >&2; exit 1; }
+adb -s "$serial" shell pm path "$PACKAGE" >/dev/null 2>&1 || { printf 'Install a debuggable Android Node first.\n' >&2; exit 1; }
+adb -s "$serial" shell run-as "$PACKAGE" mkdir -p files/qnn-runtime
+adb -s "$serial" shell run-as "$PACKAGE" chmod 700 files/qnn-runtime
+
+for name in libQnnHtp.so libQnnHtpPrepare.so libQnnHtpV79Stub.so libQnnSystem.so libQnnHtpV79Skel.so; do
+    artifact="${source[$name]}"
+    [[ -f "$artifact" ]] || { printf 'Missing QAIRT artifact: %s\n' "$artifact" >&2; exit 1; }
+    digest="$(sha256sum -- "$artifact")"; digest="${digest%% *}"
+    [[ "$digest" == "${expected[$name]}" ]] || {
+        printf 'Refusing unpinned QAIRT artifact %s (%s).\n' "$name" "$digest" >&2
+        exit 1
+    }
+    adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/qnn-runtime/$name.tmp"
+    adb -s "$serial" exec-in run-as "$PACKAGE" sh -c \
+        "umask 077; cat > files/qnn-runtime/$name.tmp" < "$artifact"
+    installed="$(adb -s "$serial" shell run-as "$PACKAGE" sha256sum "files/qnn-runtime/$name.tmp")"
+    installed="${installed%% *}"
+    [[ "$installed" == "$digest" ]] || {
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "files/qnn-runtime/$name.tmp" || true
+        printf 'Post-transfer checksum mismatch: %s\n' "$name" >&2
+        exit 1
+    }
+    adb -s "$serial" shell run-as "$PACKAGE" mv \
+        "files/qnn-runtime/$name.tmp" "files/qnn-runtime/$name"
+    adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/qnn-runtime/$name"
+done
+
+printf 'Provisioned five pinned QAIRT 2.48 files under app-private files/qnn-runtime.\n'
+printf 'This is not proof that the Android app linker namespace or SELinux permits execution.\n'

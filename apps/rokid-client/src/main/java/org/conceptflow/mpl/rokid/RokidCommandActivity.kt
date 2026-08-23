@@ -5,11 +5,13 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
 import android.view.WindowManager
 import org.conceptflow.mpl.rokid.core.RuntimeCommand
+import org.conceptflow.mpl.rokid.core.RuntimeCommandAuthorization
 
 class RokidCommandActivity : Activity(), android.content.ServiceConnection {
     private var runtime: RokidRuntimeService.RuntimeBinder? = null
@@ -21,7 +23,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        pendingCommand = RuntimeCommand.fromAction(intent?.action)
+        pendingCommand = authorizedCommand(intent?.action)
         if (pendingCommand == null) {
             Log.w(TAG, "state=rejected reason=unknown_command")
             finishAndRemoveTask()
@@ -41,7 +43,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val command = RuntimeCommand.fromAction(intent.action)
+        val command = authorizedCommand(intent.action)
         if (command == null) {
             Log.w(TAG, "state=rejected reason=unknown_command")
             return
@@ -80,6 +82,16 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
     private fun dispatch(binder: RokidRuntimeService.RuntimeBinder, command: RuntimeCommand) {
         pendingCommand = null
         binder.execute(command) { runOnUiThread(::finishAndRemoveTask) }
+    }
+
+    private fun authorizedCommand(action: String?): RuntimeCommand? {
+        val command = RuntimeCommand.fromAction(action) ?: return null
+        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (!RuntimeCommandAuthorization.isAllowed(command, debuggable)) {
+            Log.w(TAG, "state=rejected reason=debug_only_command")
+            return null
+        }
+        return command
     }
 
     companion object {

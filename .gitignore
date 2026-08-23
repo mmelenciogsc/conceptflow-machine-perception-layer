@@ -51,6 +51,7 @@ dist/
 cmake-build-*/
 **/build-*/
 **/CMakeFiles/
+**/.cxx/
 **/CMakeCache.txt
 **/CTestTestfile.cmake
 **/cmake_install.cmake

@@ -11,6 +11,24 @@ import org.junit.Test
 
 class MachineVisionModelsTest {
     @Test
+    fun productionVerifierRejectsSelfSuppliedChecksumForUntrustedBytes() {
+        val directory = Files.createTempDirectory("conceptflow-untrusted-model-").toFile()
+        try {
+            val profile = MachineVisionModelProfiles.depthIndoorBalanced
+            val bytes = aarch64ElfFixture("self-supplied")
+            File(directory, profile.artifactFileName).writeBytes(bytes)
+            File(directory, "${profile.artifactFileName}.sha256").writeText(sha256(bytes))
+
+            val check = PrivateModelBundleVerifier().inspect(directory, profile)
+
+            assertFalse(check.available)
+            assertEquals("artifact_digest_not_trusted", check.reason)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun catalogPinsEnvironmentWeightsAndThreeStaticResolutionTiers() {
         assertEquals(
             "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small",
@@ -185,7 +203,7 @@ class MachineVisionModelsTest {
                     File(directory, "${profile.artifactFileName}.vocabulary.sha256").writeText(it)
                 }
             }
-            val verifier = PrivateModelBundleVerifier()
+            val verifier = PrivateModelBundleVerifier(allowUntrustedDevelopmentArtifacts = true)
             val requiredOnly = verifier.inspect(directory)
             assertTrue(requiredOnly.allRequiredAvailable)
             assertEquals(3, requiredOnly.requiredArtifacts.size)

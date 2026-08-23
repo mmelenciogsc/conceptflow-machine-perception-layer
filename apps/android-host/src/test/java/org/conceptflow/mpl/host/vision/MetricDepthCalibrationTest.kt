@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class MetricDepthCalibrationTest {
@@ -88,12 +89,54 @@ class MetricDepthCalibrationTest {
             ),
         )!!
         assertEquals(2.0, estimate.distanceMeters, 1e-9)
-        assertTrue(estimate.uncertaintyMeters > 0.0)
+        assertTrue(requireNotNull(estimate.uncertaintyMeters) > 0.0)
         assertNull(
             PinholeDimensionEstimator.estimate(
                 MaskExtentObservation("wall", 300, 300, 1_000.0, 1_000.0, 0.9),
             ),
         )
+    }
+
+    @Test
+    fun pinnedOfficialMetricProfilesPreserveMetresAndExposeUnquantifiedError() {
+        val indoor = requireNotNull(
+            OfficialDepthAnythingV2MetricSemanticsProvider.resolve(
+                MachineVisionModelProfiles.depthIndoorBalanced,
+            ),
+        )
+        val outdoor = requireNotNull(
+            OfficialDepthAnythingV2MetricSemanticsProvider.resolve(
+                MachineVisionModelProfiles.depthOutdoorBalanced,
+            ),
+        )
+
+        val indoorEstimate = requireNotNull(indoor.estimate(2.75))
+        assertEquals(2.75, indoorEstimate.distanceMeters, 0.0)
+        assertNull(indoorEstimate.uncertaintyMeters)
+        assertEquals(MetricDepthUncertaintyBasis.UNQUANTIFIED_MODEL_ERROR, indoorEstimate.uncertaintyBasis)
+        assertEquals(MetricDepthProvenanceKind.PINNED_OFFICIAL_NATIVE_METRIC, indoor.provenance.kind)
+        assertEquals(20.0, indoor.provenance.declaredMaximumDepthMeters!!, 0.0)
+        assertNull(indoor.estimate(20.000_001))
+        assertEquals(79.0, requireNotNull(outdoor.estimate(79.0)).distanceMeters, 0.0)
+        assertNull(outdoor.estimate(80.000_001))
+        assertNull(indoor.estimate(Double.NaN))
+        assertNull(indoor.estimate(Double.POSITIVE_INFINITY))
+        assertNull(indoor.estimate(0.0))
+    }
+
+    @Test
+    fun nativeProviderRejectsUnknownOrAlteredProfiles() {
+        val intrinsics = CameraIntrinsics(640, 360, 500.0, 500.0, 320.0, 180.0)
+        val canonical = MachineVisionModelProfiles.depthIndoorBalanced
+        val altered = canonical.copy(id = "unverified-native-metric-profile")
+
+        assertNull(OfficialDepthAnythingV2MetricSemanticsProvider.resolve(altered))
+        val official = requireNotNull(OfficialDepthAnythingV2MetricSemanticsProvider.resolve(canonical))
+        assertThrows(IllegalArgumentException::class.java) {
+            official.copy(
+                binding = MetricDepthCalibrationBinding.forProfile(canonical, intrinsics),
+            )
+        }
     }
 
     private fun sample(classId: String, distance: ReferenceDistance, value: Double) = GuidedCalibrationSample(
