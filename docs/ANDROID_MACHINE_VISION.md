@@ -10,7 +10,7 @@ other future sublayers are not collapsed into this package.
 The current Kotlin implementation provides a deterministic, model-neutral
 semantic/depth fusion path:
 
-1. `BviClassCatalog` defines a closed 40-class vocabulary. YOLOE-26S supplies
+1. `BviClassCatalog` defines a closed 330-class vocabulary. YOLOE-26S supplies
    instance-segmentation class semantics, confidence, track identity, and mask
    geometry only within that catalog. Runtime prompts and prompt-free discovery
    are rejected by design.
@@ -40,14 +40,17 @@ semantic/depth fusion path:
 7. `MachineVisionPipeline` verifies frame correlation, result age, vocabulary
    fingerprint, exact profile identity, class membership, mask-associated depth,
    and camera geometry before producing metric semantic tracks.
-8. `VisualKeyframeGate` admits observed frames at 3 FPS in the relaxed tier and
-   at no more than 5 FPS when meaningful motion or uncertainty requests a
-   keyframe. `TemporalMetricTrackStore` can propagate only already measured,
-   short-lived anchors carrying explicit `CONFIRMED_STATIC_WORLD` evidence
-   between those visual updates. Motion evidence defaults to `UNKNOWN`, which
-   is not eligible for propagation.
+8. The Rokid capture source remains independently gated at 3 FPS when relaxed
+   and up to 5 FPS after meaningful change. On the phone,
+   `LiveSemanticDepthAdmissionPolicy` admits substantially fewer frames to the
+   paired segmentation/depth graphs: 1 FPS while stable, 3 FPS for material
+   motion, track staleness, or uncertainty, and at most 5 FPS only for low
+   confidence, stale depth, occlusion, or rapid approach. A single latest-only
+   slot replaces queued camera work. `LightweightTrackMaintainer` and
+   `TemporalMetricTrackStore` provide bounded state between admitted model
+   keyframes without treating prediction as a new visual observation.
 
-At 80 records, an immutable process-local exact vector scan is lower overhead
+At 660 records, an immutable process-local exact vector scan is lower overhead
 than adding a database engine. The interface can later be backed by an ANN
 store if the governed corpus grows, without changing record semantics.
 
@@ -61,9 +64,11 @@ have zero calibration weight. Immediate body-clearance geometry must not wait
 for, or trust, semantic recognition.
 
 The model export must bake `BviClassCatalog.prompts` and publish the resulting
-SHA-256 vocabulary fingerprint beside the private artifact. The locally found
-legacy ONNX export contains a different 330-class vocabulary and is therefore
-not accepted by this verifier.
+SHA-256 vocabulary fingerprint beside the private artifact. The current fixed
+vocabulary fingerprint is
+`f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6`.
+The generated graph and private library are accepted only when that exact
+ordered vocabulary and a code-pinned artifact digest both match.
 
 ## Poco F7 Ultra acceleration
 
@@ -92,10 +97,42 @@ supplies the primary camera evidence before depth executes. Optional GNSS
 reception quality can reinforce outdoor evidence, but no coordinates are
 retained, GNSS alone cannot select a profile, and weak reception never proves
 an indoor setting. Ambiguous, stale, duplicate, or out-of-order evidence cannot
-advance selection. A switch requires three qualifying samples by default, is
-held for at least ten seconds to prevent model thrashing, and expires after 30
-seconds without confirmation. Manual indoor/outdoor modes are immediate and
-accessible.
+advance selection. A switch requires two qualifying high-confidence visual
+samples by default, is held for at least ten seconds to prevent model
+thrashing, and expires after 90 seconds without confirmation. Manual
+indoor/outdoor modes are immediate and accessible.
+
+Automatic mode also has a separately governed Qwen3-VL-2B-Instruct Q4_0 scene
+classifier through GenieX 0.4.0. There is no official Qwen2.5-VL 2B model, so
+the implementation does not invent one. The classifier receives a private
+transient 224×224 JPEG only after a cadence gate admits a request, returns only
+`INDOOR`, `OUTDOOR`, `TRANSITION`, or `UNKNOWN`, and deletes the image. Two
+consistent startup results establish a stable state. After bootstrap there is
+no periodic refresh: another classification is admitted only after two
+consecutive frames cross the lighting or scene-structure change gate. Forced
+modes do not bind or invoke the VLM.
+
+QNN graphs and the isolated VLM process share a deadline-bounded,
+kernel-backed HTP execution lease. QNN publishes cross-process demand before
+waiting and has a 250 ms acquisition deadline; a new VLM request has a 25 ms
+admission deadline and defers immediately when QNN demand or another HTP owner
+is visible. File locks are released by the operating system if either process
+dies. Wait and hold time are logged as content-free telemetry. This avoids
+knowingly dispatching QAIRT QNN and GenieX work concurrently, the condition
+associated with the observed DSP failure, but it is not hardware preemption.
+
+An admitted VLM polls QNN demand every 20 ms and, when demand appears, invokes
+the existing GenieX streaming cancellation/`stopStream` path, destroys the
+wrapper, and releases the lease. That is cooperative cancellation only. The
+8,000 ms coroutine inference timeout is also cooperative: if a proprietary
+native kernel does not yield to cancellation, there is no proven hard maximum
+for the residual in-flight hold. The 2026-08-27 device run measured
+approximately 6.8 seconds cold and 4.2 seconds warm for this narrow task. If
+QNN cannot acquire within 250 ms, that visual keyframe is skipped, explicitly
+labeled maintained state is published, and the latest-only scheduler can try a
+newer frame. The event-driven two-frame lighting/scene gate is unchanged.
+These arbitration changes have deterministic JVM coverage but have not yet
+been exercised on the physical Poco/GenieX runtime.
 
 Environment chooses the metric head; `DepthServiceTier` chooses the static
 resolution. Balanced runtime uses 392×392. Thermal/battery pressure or a
@@ -138,15 +175,22 @@ retaining `CALIBRATED` versus `DERIVED` provenance. Provenance and any actually
 reported parameter standard deviations participate in the calibration
 fingerprint; an absent protobuf uncertainty message remains unreported rather
 than becoming zero uncertainty. A separately verified HEAD←CAMERA orientation
-extrinsic and a capture-correlated pose are required only for head/world temporal propagation;
-their absence is exposed as an aggregate status reason without discarding the
-current scalar or camera-frame metric track.
+extrinsic and a capture-correlated pose are required only for head/world
+temporal propagation; their absence is exposed as an aggregate status reason
+without discarding the current scalar or camera-frame metric track. The physical
+Rokid target now supplies a Camera2 sensor-coordinate rotation, which the
+runtime validates and inverts into the rigid glasses/head proxy. Its
+`PRIMARY_CAMERA` zero translation is correctly kept unavailable. See
+[Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md).
 
-Derived intrinsics with no reported parameter uncertainty can still support a
-current-frame camera vector, but they cannot seed head/world temporal anchors.
-The fusion result reports
-`CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED` until measured
-intrinsics or derived intrinsics with reported uncertainty are supplied.
+Derived intrinsics with no reported parameter uncertainty can support a
+current-frame camera vector and rotation-only temporal propagation when a
+verified orientation extrinsic and correlated head pose are present. The fusion
+result remains
+`METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED` so that propagation is
+not confused with calibrated angular accuracy. Without the extrinsic it reports
+`CAMERA_METRIC_TRACKS_READY_PROPAGATION_EXTRINSIC_MISSING`; without a correlated
+pose it reports the corresponding stale/missing-pose state.
 
 See [Indoor/outdoor classification and depth routing](ENVIRONMENT_CLASSIFICATION.md)
 for the exact stages, thresholds, uncertainty behavior, clock boundary, and
@@ -165,27 +209,43 @@ promoted to sensor-grade truth. Extrapolated estimates receive an uncertainty
 penalty.
 
 Native-metric estimates carry pinned model provenance and an explicit
-`UNQUANTIFIED_MODEL_ERROR` state. They may be emitted for the current frame but
-cannot become temporal anchors while uncertainty is unquantified. A separately
+`UNQUANTIFIED_MODEL_ERROR` state until a qualifying known-dimension prior adds
+a conservative bound. They may be emitted for the current frame but cannot
+become temporal anchors while uncertainty is unquantified. A separately
 validated guided calibration can replace the identity semantics only when it
 matches both the exact depth profile and camera-intrinsics fingerprint.
 Consequently a guided binding made with a measured matrix cannot silently match
 the same numeric matrix when it arrives with derived provenance.
-Known-dimension priors are fused only when the primary calibration has
-quantified uncertainty, so a class-size prior cannot manufacture confidence for
-an otherwise unvalidated monocular estimate.
+Known-dimension priors are admitted only for the 170 classes with explicit,
+nonzero calibration weight and only when observed angular extent lies within
+the class's uncertainty-padded 0.6096 m to 2.4384 m anchor envelope. For an
+official native-metric result with no published target-camera error bound, the
+prior can make at most a 35 percent weighted correction and adds an explicit
+conservative `DIMENSION_PRIOR_BOUND` uncertainty. The other 160 family-default
+rows remain available for semantics but have zero calibration weight. This is
+per-observation bounded calibration, not sensor-grade truth.
 
 ## Observed keyframes and pose propagation
 
-The temporal layer does not synthesize visual observations. A first observed
-frame may seed anchors; later observed frames are admitted at the relaxed 3 FPS
-cadence or at the bounded 5 FPS cadence when meaningful motion or uncertainty
-crosses the configured threshold. Non-monotonic frames are rejected. This
-host-side observed-keyframe policy is distinct from the glasses Camera2 source
-cadence, even though both currently use the same 3/5 FPS ceilings. The
-direct-live executor does not add `VisualKeyframeGate`; its input cadence is the
-glasses-side gate, and host backpressure retains only the latest complete frame
-awaiting inference.
+The temporal layer does not synthesize visual observations. The Rokid camera
+gate may deliver approximately 3 FPS in its relaxed tier and up to 5 FPS after
+meaningful source-side change. That transport cadence is separate from Android
+model admission. `LiveSemanticDepthAdmissionPolicy` admits the first frame,
+then defaults paired YOLOE/depth execution to 1 FPS while maintained state is
+stable. Material camera-cadence motion, track staleness, or uncertainty selects
+the 3 FPS tier. Only low track confidence, stale depth, occlusion, or rapid
+approach selects the bounded 5 FPS urgent tier. Forced material/urgent refresh
+suppresses opportunistic VLM work; unresolved automatic-environment bootstrap
+retains a restrained 1 FPS VLM opportunity unless track-health urgency wins.
+
+Both camera assembly and pending model work are latest-only and bounded: a
+newer complete frame replaces older unprocessed work. Non-keyframe frames
+publish a short-lived maintained state. It may use bounded constant-velocity
+2D mask-box prediction and, for already measured explicitly static anchors,
+pose-correlated orientation propagation. No optical-flow measurement or
+appearance encoder is wired into this live path, and this is not classic
+DeepSORT. Predictions are explicitly labeled as having no visual correction;
+they expire rather than becoming observations.
 
 High-rate pose updates may rotate only existing anchors that came from a
 successful visual keyframe and explicit static-world eligibility. A class label
@@ -203,6 +263,15 @@ and explicit occlusion removes an anchor. Pose or IMU updates never create a
 new object, create depth, refresh a moving object, or reveal an object that was
 not in a visual keyframe; IMU alone cannot observe external scene change.
 
+The current Rokid IMU mapping contributes timestamped HEAD orientation only.
+It does not integrate acceleration into translation and does not establish
+absolute metric scale. A new run resets the admission schedule, maintained
+tracks, correlated poses, frame-supplied camera-to-head extrinsic, and selected
+live depth profile. Authenticated session replacement, reconnect, and stop
+repeat those resets; session begin or invalidation also clears the previous head
+state exposed through `PerceptionBus`. A constructor-supplied verified
+extrinsic remains configuration and is restored on reset.
+
 The physically tested 336/392 variants, tier policy, and reproducible
 standalone HTP benchmark are documented in
 [Android depth-resolution experiments](ANDROID_DEPTH_VARIANTS.md).
@@ -213,13 +282,19 @@ The Android Node has a debuggable-build-only listener for the direct
 Rokid-to-Poco path. It receives camera and IMU over independent private-WLAN TLS
 1.3 mutual-TLS lanes. Pairing exchanges only public certificates; private keys
 remain non-exportable in Android Keystore. The negotiated live lease accepts
-camera and IMU only, so microphone data cannot enter this path.
+camera and IMU only by default. While that authenticated lease is active, the
+separate Android Node microphone control can request an exact-binding mic-only
+sublease for at most ten seconds. Microphone data cannot enter the live path
+outside that explicit window, and this v1 path does not support a standalone
+microphone session.
 
-The default run stops after 30 seconds or 150 received frames. Camera input is
-gated on the glasses at 3 FPS relaxed and up to 5 FPS after meaningful change;
-nominal 100 Hz IMU input is deduplicated into bounded batches with at most 20 ms
-batch delay and an absolute refresh at least once per second. The Poco keeps at
-most the latest frame awaiting inference.
+The default run stops after 30 seconds or 150 model-inference attempts. Camera
+input is gated on the glasses at 3 FPS relaxed and up to 5 FPS after meaningful
+change; nominal 100 Hz IMU input is deduplicated into bounded batches with at
+most 20 ms batch delay and an absolute refresh at least once per second. The
+Poco retains only the latest complete frame and independently applies the
+1 FPS stable, 3 FPS material, and 5 FPS urgent model-admission policy described
+above.
 
 For each admitted frame, `QnnLiveFrameExecutor` performs bounded JPEG decode and
 preprocessing, executes fixed-vocabulary YOLOE first, and then executes exactly
@@ -247,6 +322,12 @@ with 5.3 ms p95 clock uncertainty. Outdoor VKITTI 392 received 81 frames,
 succeeded on 61/62 inference attempts, emitted 9,373,504 positive depth outputs,
 accepted 1,438/1,438 poses, and measured corresponding p95 values of 1,183.5,
 591.0, 107.8, 74.4, 373.2, and 5.8 ms.
+
+Those physical runs remain evidence for transport and QNN execution, but they
+predate the current three-tier Android admission policy. The current admission,
+bounded-maintenance, coordinate-validity, and reset behavior has JVM, lint, and
+APK-build validation; a new physical Poco run is still required to measure its
+actual HTP cadence, energy, and thermal effect.
 
 Both runs reported
 `profile_bound_native_metric_derived_intrinsics_present` with reason
@@ -319,7 +400,7 @@ installation can be provisioned without putting weights in Git:
 
 ```bash
 ./scripts/android-model-install --serial "$POCO_SERIAL" \
-  --yoloe "$QNN_MODEL_DIR/libyoloe_bvi40_fp16.so" \
+  --yoloe "$QNN_MODEL_DIR/libyoloe_bvi330_fp16.so" \
   --depth-indoor-392 "$QNN_MODEL_DIR/libdepth_indoor_392_fp16.so" \
   --depth-outdoor-392 "$QNN_MODEL_DIR/libdepth_outdoor_392_fp16.so" \
   --depth-indoor-336 "$QNN_MODEL_DIR/libdepth_indoor_336_fp16.so" \

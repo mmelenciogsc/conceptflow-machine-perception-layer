@@ -6,6 +6,85 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Rokid camera/head rotation and change-gated VLM — 2026-08-27
+
+The connected non-display Style target reported Camera2 camera `0` pose
+reference `PRIMARY_CAMERA`, pose quaternion `[0,0,0,1]` in `(x,y,z,w)` order,
+translation `[0,0,0]`, and sensor orientation 270 degrees. Current AOSP
+metadata semantics establish that the quaternion maps Android sensor axes to
+camera-aligned axes, while the `PRIMARY_CAMERA` zero translation is relative to
+the main camera itself. Rokid Node now publishes the inverse identity as a
+rotation-only camera-to-rigid-head-proxy extrinsic with typed Camera2 provenance
+and a SHA-256 evidence binding. It explicitly publishes translation unavailable.
+See `docs/ROKID_CAMERA_HEAD_EXTRINSIC.md` for the source and transform boundary.
+
+Both updated APKs were built and replacement-installed. TalkBack remained the
+enabled accessibility service with touch exploration enabled. The isolated
+Qwen3-VL service physically completed a full image-plus-token prewarm before
+accepting camera classification. The following two startup classifications were
+both `INDOOR`:
+
+| Frame | Service inference | Capture-to-result |
+| ---: | ---: | ---: |
+| 1 | 4,055 ms | 5,069 ms |
+| 17 | 3,980 ms | 4,594 ms |
+
+No periodic third classification occurred through an 8-minute 49-second
+stable-scene live run that observed and queued 1,562 additional camera frames.
+This
+physically verifies removal of the old timer-driven 60-second refresh for the
+observed stable scene. Deterministic tests separately verify two-frame
+persistent lighting/layout-change admission, one-frame flash rejection, and
+request/result continuity rejection.
+
+A subsequent controlled physical transition kept the data cable connected,
+moved the glasses from the settled indoor view to a bright exterior-facing
+window view, held that view, and then returned the glasses indoors. The warm
+VLM produced agreeing `OUTDOOR` results for frames 537 and 562 in 4,464 and
+4,510 ms of service time (5,460 and 5,561 ms capture-to-result). The router
+recorded `environment_evidence_pending` and then changed from Hypersim to
+VKITTI with `profile_switched`, confidence `0.94`, and `vlmEvidence=true` at
+08:30:48.487. A later held portion produced another agreeing `OUTDOOR` pair.
+Returning the camera indoors produced agreeing `INDOOR` results for frames 753
+and 778; further physical repositioning reopened the gate, so the held outdoor
+profile did not immediately switch back before the stream ended. Intermediate
+`UNKNOWN`/`TRANSITION` results while the camera was being moved were rejected
+from stable routing rather than treated as indoor or outdoor proof.
+
+This validates physical change admission, warm inference, two-label
+confirmation, and indoor-to-outdoor depth-profile switching. It is one
+operator-guided scene and does not establish classifier accuracy. The sensor
+session later encountered Wi-Fi Direct `BUSY` while rediscovering the retained
+group and ended with a socket timeout; that occurred after the verified profile
+switch and is retained as separate transport evidence, not hidden as a clean
+close.
+
+That extended run observed 52,192 raw IMU samples and queued 29,730 samples
+after the unchanged IMU gate, with zero camera, IMU, audio, or touch queue drops,
+zero link disconnects, zero microphone captures, and an authenticated clean
+close. A separate bounded direct-camera diagnostic logged the first emitted
+1920×1080 frame with Camera2 provenance, quaternion
+`[-0.0,-0.0,-0.0,1.0]`, and `translation_available=false`.
+
+A 30-second direct Rokid-to-Poco QNN-enabled run reconstructed 77 frames,
+executed 33 of 42 admitted YOLOE-plus-indoor-depth attempts, accepted
+1,614/1,614 IMU samples, recorded zero link interruptions and zero microphone
+bytes, and completed an authenticated close. The host repeatedly reached
+`METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED`. That state is emitted
+only after the frame extrinsic and a capture-correlated head pose are accepted;
+it retains the explicit warning that the derived camera intrinsics have no
+measured uncertainty. The scene produced no current semantic tracks, so this
+run correctly reported zero propagated objects rather than manufacturing a
+positive result. Its p95 measurements were 1,003.3 ms end-to-end, 778.9 ms
+capture-to-receive, 60.7 ms segmentation, 27.8 ms depth, 219.4 ms executor, and
+4.4 ms clock uncertainty. These are one bounded run, not sustained thermal or
+accuracy claims.
+
+The final applicable validation passed 188 Android-host, 215 Rokid-client, and
+123 live-transport JVM tests; all three Android lint tasks passed. Shared
+protocol descriptor validation, 12 Python protocol tests, and repository policy
+validation also passed.
+
 ## Direct Rokid-to-Poco live-link and QNN boundary — 2026-08-23
 
 The current source implements a debug-only direct private-WLAN transport from
@@ -974,3 +1053,393 @@ or safety guarantee. See [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md),
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), and
 [`docs/LATENCY_BENCHMARKING.md`](docs/LATENCY_BENCHMARKING.md) before extending
 the system toward physical or production use.
+
+## RV203 two-finger input boundary — 2026-08-26
+
+- The official Rokid Bare Metal receiver/sample was inspected, then its action
+  names and ordered-broadcast assumption were tested on the attached
+  non-display RV203 rather than transferred from the sample's display target.
+- A simultaneous Linux `getevent` and application `logcat` run correlated five
+  broad two-finger holds with `KEY_PROG2`/scan 149 and five
+  `ACTION_SETTINGS_KEY` deliveries. Every application delivery was
+  non-ordered; none was aborted or consumed.
+- Fingertip-only attempts were frequently classified by the firmware as
+  `KEY_PROG1` plus ordered `ACTION_AI_START`. CONCEPTFlow leaves that built-in
+  Talk-to-AI path untouched.
+- The OEM receiver queried `settings_shortcuts` and reported it disabled for
+  each two-finger-hold trial, then performed no shortcut action. This is a
+  current-device precondition, not a public API guarantee. Enabling that Hi
+  Rokid setting would reintroduce an OEM collision that a sideloaded app cannot
+  suppress because the broadcast is non-ordered.
+- Rokid Node now models the accepted gesture as one semantic
+  `TWO_FINGER_LONG_PRESS`/`TRIGGERED` event. Focused packetizer, hub, protocol,
+  and Android-ingress JVM tests passed. The custom event remains command-free
+  and the older gesture-command gate remains observe-only pending an enforceable
+  Shortcuts-disabled policy and a complete live Rokid-to-Poco event trace.
+
+## Persistent Rokid-to-Poco node validation — 2026-08-25
+
+- The operator confirmed physical forward-swipe plus quick one-finger
+  double-tap activation and local Rokid Node audio output.
+- Focused Android transport/host/Rokid JVM tests, both debug APK builds, both
+  Android lint tasks, and `git diff --check` passed.
+- Replacement installation preserved the Rokid private prerecorded voice set,
+  pairing state, accessibility observer, and gesture-command gate. Poco
+  replacement installation preserved TalkBack and all three private QNN
+  artifact slots.
+- A representative authenticated lease produced 82 Rokid camera frames and 780
+  selected IMU batches. Android Node independently reported all 82 frames, all
+  780 batches, and 1,552 accepted pose samples with zero pose rejection.
+- Android Node's cumulative accessible status reached 252 frames, 2,362 IMU
+  batches, and 4,749 accepted pose samples across three bounded leases.
+- While the Poco display remained in Doze, its connected-device foreground
+  service stayed active. Rokid completed an 88-frame/796-batch lease and
+  authenticated the next lease. A deliberate Android APK replacement caused a
+  bounded network interruption; the clients subsequently reconnected.
+- No foreground-start rejection, camera denial, or sensor-source failure was
+  observed after the Rokid foreground transition repair. Raw frames, PCM, and
+  individual IMU values were neither logged nor retained for this validation.
+- QNN inference did not run in this specific automatic-environment trace because
+  environment selection remained pending. This result validates transport and
+  pose ingestion, not model accuracy, depth calibration, localization, battery
+  endurance, thermal behavior, or BVI usability.
+
+## In-memory sensor-backbone refactor — 2026-08-25
+
+The pre-change sensing contract was frozen in machine-readable and human-readable
+form before the handoff changed. Camera still acquires exact 1920×1080 hardware
+JPEG, runs the existing 160×90 darkness/blur/motion/cadence gate, then performs
+the existing aspect-preserving 640-high centered 640×640 crop. The production
+handoff now publishes packed RGB8 from one processing slot plus one
+latest-pending slot. IMU, microphone and raw touch preserve their previous
+selection and authorization semantics. The legacy JPG/WAV/JSON route is an
+explicit disabled-by-default diagnostic.
+
+A current-APK standalone Rokid regression produced 18 analyzed camera samples,
+16 gate-admitted frames, 797 IMU samples at 98.7 Hz, and 16 separately
+authorized microphone chunks / 65,536 bytes. The microphone lease ended after
+two seconds. Camera measured 3.082 analyzed FPS and 2.727 emitted FPS in the
+active interval, with request-to-image p50/p95 443.0/622.8 ms, processor
+p50/p95 41.1/56.8 ms, zero darkness/blur rejection, zero capture failures, and
+zero outstanding requests at shutdown. Nine late Camera2 result callbacks were
+observed after image/request retirement; the run closed all resources, but that
+HAL callback ordering remains a diagnostic rather than being reported as zero.
+
+A corrected 30-second production-link run reconstructed 76 camera frames and
+received 762 IMU batches / 1,463 samples. One camera frame was rejected by the
+host freshness gate, 54 correlated frames completed QNN execution and 21 were
+deliberately replaced by newer pending work. No transport queue drops or
+disconnect occurred. HTP graph p95 was 89.6 ms for YOLOE-26S segmentation and
+71.0 ms for outdoor Depth Anything V2 Metric 392; executor p95 was 310.1 ms.
+Capture-to-receive p95 was 687.2 ms, aggregate end-to-end p95 1,030.6 ms, and
+clock uncertainty p95 3.4 ms. These are measurements of that scene and build,
+not guaranteed budgets or accuracy evidence.
+
+The matching legacy-spool run created 80 camera and 692 IMU records. It wrote
+6,843,275 artifact bytes, 35,406,382 JSON-manifest bytes and 46,751,870
+recovery-state bytes in 30 seconds. Android pulled 793 poses, 717 already stale;
+no camera completed before shutdown, and 47 camera plus 302 IMU records remained
+backlogged. The comparison found and repaired a pre-session recovery-index race.
+Captured diagnostic files were removed after aggregate metrics were retained.
+
+Validation after the repair passed 220 Python tests, native CTest, all Android
+JVM tests and both generic debug APK assemblies. The opt-in QNN JNI build also
+passed and preserved a separately named QNN-enabled APK. FMOD Studio 2.03.14
+reopened, validated and rebuilt both project platforms; its CLI reported two
+events, two anchor voices, six field voices and limiter presence. The Unity
+6000.3.22f1 headless rerun could not start because the machine currently has no
+valid editor entitlement, so prior Unity evidence was not upgraded. The
+cross-platform desktop-relay core passed all 156 tests; the WPF solution remains
+unbuildable on this Ubuntu SDK because WindowsDesktop targets are absent.
+
+The latest exact-hash-verified Rokid APK is installed with the production RAM
+handoff selected and its runtime stopped. The corresponding Poco APK and final
+current-build 10-minute soak remain pending because the Poco was not ADB-visible
+at this checkpoint. No VLM artifact or hand-tracking runtime/model was found, so
+neither is represented as implemented or accelerator-validated.
+
+The Poco subsequently became ADB-visible and the exact QNN-enabled APK was
+installed and hash-verified. A full 600-second outdoor-profile soak reached its
+time limit and completed authenticated request/write/drain/ack shutdown. Rokid
+observed and queued 1,781 camera frames with no camera-queue drop, and observed
+59,200 IMU samples, queueing 27,156 selected samples in 14,641 batches with no
+IMU-queue drop. Android executed 696 successful correlated inferences in that
+session. Graph p95 was 82.9 ms segmentation and 71.3 ms depth; executor p95 was
+287.3 ms; capture-to-receive p95 was 748.8 ms; end-to-end p95 was 1,039.8 ms;
+clock uncertainty p95 was 5.1 ms. Twelve memory samples were non-monotonic:
+Poco PSS ranged 544,586–562,871 KiB and ended 554,122 KiB; Rokid PSS ranged
+39,191–71,677 KiB. Poco battery temperature rose from 33.5 to 34.7 C. These are
+aggregate engineering observations, not energy, thermal-throttling, accuracy or
+BVI-usability conclusions.
+
+That soak also showed that the 750 ms camera-ingress freshness threshold sat on
+the physical capture/transform/transport latency distribution and rejected too
+many useful frames. The host-only threshold was changed to a measured bounded
+1.20 seconds; the separate 1.50-second post-inference freshness gate remains.
+On the next exact-APK 30-second run, Android reconstructed 76 frames, rejected
+zero at ingress, attempted 57 inferences, completed 56, rejected one result that
+became stale after inference, and deliberately replaced 19 pending frames.
+Authenticated close and zero transport queue drops still passed. Normal remote
+completion was also separated from unexpected network/timeout interruption
+accounting; this presentation-only correction has deterministic unit coverage.
+
+With that final accounting build, a clean outdoor run reconstructed 79 frames,
+rejected none at ingress, completed 61 of 62 inference attempts and reported
+zero link interruptions after authenticated close. A separately restarted
+indoor run selected the Hypersim 392 HTP graph, reconstructed 75 frames,
+rejected none at ingress, completed 58 of 59 inference attempts, accepted all
+1,242 poses and again reported zero clean-close interruptions. Indoor graph p95
+was 91.2 ms segmentation and 72.7 ms depth; executor p95 was 298.2 ms.
+
+A deliberate Android Node process stop eight seconds into a bounded Rokid lease
+then listener restart exercised peer recovery. Rokid reported two authenticated
+sessions, five bounded connection attempts while the host was absent, two
+producer starts, 39 camera frames and 821 selected IMU samples with zero
+camera/IMU queue drops, then reached its original deadline and authenticated
+close. The replacement Android process recorded one genuine link interruption;
+normal completion did not add another.
+
+## Android Wi-Fi Direct data-plane validation — 2026-08-26
+
+Strict `wifi_direct_required` provisioning was installed on the attached Poco
+F7 Ultra (Android 16/API 36) and non-display Rokid AI Glasses Style (Android
+12/API 32). Both devices advertised `android.hardware.wifi.direct`. Android Node
+created the group, was reported by both frameworks as group owner, and Rokid
+Node joined as a client. Both `p2p0` interfaces were up and the negotiated radio
+frequency was 5180 MHz. The dynamic group-owner address—not the compatibility
+address in schema 1—was supplied to the existing pinned mutual-TLS lanes. No
+address, peer identifier, group name, passphrase, certificate, frame, audio
+content, or IMU value was retained in this evidence.
+
+The first join exercised Android's system-owned connection confirmation. The
+applications do not and cannot bypass that security boundary. The established
+OS group then survived replacement installation and routine service stops.
+With the group retained, two measured Rokid application reconnects reached an
+authenticated streaming state in 2,320 ms and 2,144 ms respectively, without a
+new dialog. Stopping Android Node preserved the group on both peers; after the
+listener and then Rokid Node restarted, streaming resumed on the retained group.
+
+A complete 600-second P2P soak reached its time limit and completed the
+authenticated request/write/drain/ack shutdown. Rokid admitted and queued 1,753
+camera frames and observed 59,206 IMU samples, selecting 31,327 samples in
+16,572 batches. The completed session reported zero camera, IMU, microphone,
+and touch-queue drops. Android reconstructed 1,753 camera frames and received
+16,571 IMU batches / 31,325 samples; it accepted 31,302 poses and rejected 23
+through the existing validation gate. A ten-second on-demand microphone lease
+delivered 74 chunks / 303,104 bytes with zero audio transport drops and no PCM
+persistence. The bounded Android audio timeline evicted 58 old chunks after
+receipt because no downstream audio consumer drained the diagnostic run; this
+is observable retention backpressure, not loss on the P2P wire.
+
+The same run measured camera request-to-image p50/p95/p99 at 450.4/483.1/489.7
+ms, camera acquisition p95 at 2.7 ms, gate/resize p50/p95/p99 at
+38.6/43.5/44.4 ms, and listener p95 at 3.7 ms. These measurements describe this
+build and scene only. QNN inference was not exercised because the currently
+installed generic debug build contains no ready private QNN runtime. No physical
+touch gesture was generated during this P2P soak; the existing typed touch path
+and its prior hardware evidence remain unchanged. TalkBack remained enabled on
+the Poco before and after installation and validation.
+
+The final rebuilt APKs were then replacement-installed, reprovisioned in strict
+Wi-Fi Direct mode, and verified byte-for-byte against the installed packages.
+An incomplete pre-session socket timed out before the bounded Rokid run began;
+the persistent Android listener contained that failed attempt and retained the
+OS P2P group. A subsequent bounded run reached authenticated streaming in
+4,074 ms without re-pairing or a new confirmation dialog. It delivered 81
+camera frames and 841 IMU batches / 1,620 selected samples with zero transport
+queue drops, then completed authenticated request/write/drain/ack shutdown.
+Both devices still reported the P2P group active afterward, and TalkBack
+remained enabled. This validates routine retained-group application recovery;
+device-reboot group reconstruction remains a separate, unexecuted test.
+
+Finally, Rokid Node was armed in its persistent sensor-off rendezvous mode and
+an active session was subjected to a controlled Rokid Wi-Fi radio off/on cycle.
+The existing session reported network loss, the P2P client rediscovered the
+Android-owned group, and mutual-TLS streaming resumed automatically 9,707 ms
+after the radio was re-enabled. No re-provisioning or new system confirmation
+was required. The run was then stopped through the normal idle-disable path;
+Rokid capture and its foreground service were inactive, while Android Node
+remained available for the next session.
+
+## BVI330 automatic HTP vision pipeline — 2026-08-27
+
+The canonical local BVI source produced an ordered 330-class closed vocabulary
+and a 330-row catalog. `KnownDimensionVectorTable` generated exactly 660
+immutable records: one 0.6096 m and one 2.4384 m angular/dimension anchor for
+every class. Of those classes, 170 have explicit nonzero calibration weight;
+family-default rows remain zero-weight and cannot manufacture metric evidence.
+The vocabulary SHA-256 is
+`f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6`.
+
+The externally governed YOLOE-26S segmentation checkpoint was exported with
+those exact prompts. The ONNX graph retained input `1×3×640×640`, detection
+output `1×300×38`, and prototype output `1×32×160×160`; its SHA-256 is
+`3f3dac0b5708c6641247eb582101fc48e2d109aa028669a00d662f21b2a4cff0`.
+QAIRT 2.48.40 produced the AArch64 FP16 library whose pinned SHA-256 is
+`4631e169dd0a335e48f9f3bb039be414810450ae232a1d1d1212bd457f954fd7`.
+Weights, SDK binaries, and generated private model artifacts were not added to
+Git.
+
+No official Qwen2.5-VL 2B model exists, so automatic routing uses the real
+Qwen3-VL-2B-Instruct Q4_0 identity instead of fabricating one. The pinned GGUF
+and projector were provisioned privately. Device logs showed GenieX 0.4.0
+loading its V79 HTP/CDSP backend. Concurrent GenieX and QNN dispatch initially
+failed the DSP; a fair process-local permit plus app-private kernel file lock
+now serializes graph execution across Android Node's main and `:local_vlm`
+processes. A coroutine thread-migration bug in the first lock revision was
+found physically and repaired by replacing the thread-affine lock with a
+semaphore.
+
+The final automatic 30-second Rokid-to-Poco run classified the scene twice as
+`INDOOR` (about 6.8 seconds cold and 4.2 seconds warm), selected the 392×392
+Hypersim profile, and completed 16 of 24 full YOLOE-plus-depth attempts without
+a DSP or application crash. It reconstructed 79 frames, deliberately replaced
+55 stale pending frames, accepted 1,576 of 1,576 IMU pose samples, and reported
+zero Rokid camera/IMU transport-queue drops. Graph p95 was 84.6 ms segmentation
+and 33.5 ms depth; executor p95 was 324.1 ms. End-to-end p95 was 1,351.4 ms,
+including 814.9 ms capture-to-receive. One completed result crossed the bounded
+freshness deadline and was rejected.
+
+A separate clean forced-indoor run did not bind the VLM and completed 47 of 48
+inference attempts from 75 frames, with 27 deliberate latest-frame
+replacements, 1,528 accepted IMU samples, and zero Rokid transport-queue drops.
+Its graph p95 was 147.9 ms segmentation and 75.8 ms depth; executor p95 was
+435.6 ms. This run followed several HTP tests and is not a cold-device thermal
+benchmark.
+
+Automated validation covers ordered catalog loading, the 660-record invariant,
+cross-thread HTP lease exclusion, delayed sparse VLM evidence, two-confirmation
+selection, persistent two-frame scene-change admission with no periodic stable
+refresh, 90-second profile reuse,
+two/eight-foot angular-envelope admission, bounded native-metric correction,
+outlier rejection, and the stable named-output QNN ABI. The Android JVM suite
+passed 181 tests; the focused Python model/JNI contract suites passed 14 tests.
+
+This evidence validates execution and orchestration, not YOLO task accuracy,
+indoor/outdoor accuracy, monocular metric accuracy, or safe mobility. Current
+camera intrinsics remain `DERIVED` with unreported parameter uncertainty. A
+Camera2-sourced HEAD←CAMERA rotation is now installed for the rigid Android
+sensor/head proxy, allowing explicitly unquantified rotation-only propagation;
+physical translation and anatomical alignment remain unavailable. Reboot-time
+Wi-Fi Direct group reconstruction remains explicitly deferred by the user.
+
+## YodaOS runtime-pressure and radio recovery — 2026-08-27
+
+Read-only system logs isolated the failure previously presented as repeated
+socket timeouts. Android's low-memory killer terminated a vendor payment helper;
+concurrent dead binder calls then terminated the persistent Sprite assist
+service. On restart, that service loaded its private Wi-Fi-disabled preference
+and asked Android to disable Wi-Fi, which removed the P2P interface. Rokid Node
+remained alive and was unable to reconnect because no radio data plane existed.
+
+The updated resolver was replacement-installed on both devices. During a
+forced Rokid Wi-Fi off/on cycle it emitted one `WAITING_FOR_RADIO` transition,
+made zero failing P2P calls during the observed disabled interval, retained the
+Rokid Node process, detected restoration, re-formed the phone-owned group,
+reauthenticated mutual TLS, and resumed streaming as session 2. This validates
+application recovery after platform radio restoration; it does not claim that
+an unprivileged app can override a YodaOS or user decision to keep Wi-Fi off.
+
+The same build removed full-resolution post-gate decode and redundant crop,
+pixel-array, protobuf-frame, and per-chunk payload copies. A 10-minute bounded
+run spanning the forced outage completed with 1,703 queued camera frames,
+26,282 queued selected IMU samples, one camera drop, zero IMU drops, 19 bounded
+latest-worker replacements, and authenticated close. That run preceded the
+last per-chunk-copy removal. After that final change, a separate 30-second run
+observed 81 camera frames, queued 80, queued 1,277 IMU samples, had one camera
+drop and zero IMU drops, and closed with authenticated drain/ack. Sampled Rokid
+RSS ranged from 88,724 to 121,212 KiB; `oom_score_adj` was 0 while active; no
+matching large-object-GC message appeared in the bounded final run. Camera
+transform p50/p95/p99 was 105.9/117.2/143.3 ms. These results are device/run
+measurements, not indefinite uptime, battery, or cross-firmware guarantees.
+
+A later exact-build 30-second diagnostic received 18 frames and 401 IMU samples
+before the glasses process disappeared. `ApplicationExitInfo` identified the
+cause as `LOW_MEMORY`/`TOO_MANY_EMPTY_PROCS`; no application exception was
+recorded. Android Node's `FRAMING_TRUNCATED_RECORD` was therefore a secondary
+mid-record disconnect. The one-shot command is intentionally nonpersistent, so
+it did not authorize same-boot reconstruction.
+
+The production path was then validated separately. Android Node was placed in
+automatic listen mode and Rokid Node was armed with `idle-enable`. PID 14757 was
+terminated with a same-UID signal, without force-stopping the package. YodaOS
+started replacement PID 15078 in about 1.3 seconds; the accessibility service
+requested the visible same-boot broker; the runtime reported streaming about
+4 seconds after termination. Host counters advanced from 133 to 201 camera
+frames and from 2,146 to 3,237 IMU samples. This proves same-boot process and
+transport reconstruction for the persisted production path; it does not prove
+that LMKD can never select the process or that reboot reconstruction is already
+validated.
+
+## Native 648 camera and bounded HTP pipeline soak — 2026-08-27
+
+The exact rebuilt Rokid APK SHA-256 was
+`76e9aaefdff98e76d76642742ed6488b0e3b55368b69754ed4d89cc024b50d6c`
+(10,384,743 bytes). The exact QNN-enabled Android APK SHA-256 was
+`e3f057a5c6d7adc32ffde104ac641a788a78f2b94c4ce808a01fd5981db5d3f6`
+(105,003,492 bytes). Both replacement installs succeeded and retained private
+app data; TalkBack remained enabled on the Poco.
+
+The automatic physical run used the private-LAN configuration only to bypass a
+stale OS-owned P2P group during this validation. It ran from 15:20:10 through
+15:30:11 and reached the exact 600-second application deadline. Rokid observed
+and queued 1,759 camera frames with 33,421 bounded chunks and no camera drop. It
+observed 59,088 IMU samples and queued 29,388 selected samples in 15,902 batches
+with no IMU drop. Microphone remained correctly disabled and no raw frame, IMU,
+or audio content was logged or persisted. Authenticated request/write/drain/ack
+closure completed.
+
+The native 648×648 YUV path sustained approximately 2.93 relaxed FPS. Its
+request-to-image p50/p95/p99 was 349.4/392.9/445.0 ms; direct image acquisition
+p95 was 1.62 ms; native gate/resize p50/p95/p99 was 54.9/67.3/74.9 ms; and the
+listener p95 was 11.1 ms. Camera request backpressure, supersession, unmatched
+images, capture failures, and late callbacks were all zero. Rokid PSS samples
+were about 55–61 MiB and did not show monotonic growth. The 5 FPS motion tier
+was not physically induced in this run.
+
+Android reconstructed all 1,759 frames and rejected none as stale at ingress.
+It completed 1,362 of 1,367 QNN attempts, deliberately replaced 43 pending
+frames, and rejected one completed stale result. All 29,388 normalized IMU
+poses were accepted. End-to-end p95 was 935.7 ms; capture-to-receive p95 was
+307.5 ms; segmentation graph p95 was 110.6 ms; depth graph p95 was 39.6 ms;
+executor p95 was 373.4 ms; and clock uncertainty p95 was 5.0 ms. Poco PSS
+samples remained about 528–545 MiB after model initialization. Device logs
+proved QAIRT 2.48.40 loading `libQnnHtpV79Skel.so` through CDSP and GenieX
+loading its V79 Hexagon backend in the isolated VLM process.
+
+Qwen3-VL completed its full image-plus-token prewarm and then classified two
+startup frames as `INDOOR`; the two-confirmation policy selected the Hypersim
+392 Depth Anything V2 Metric graph. Cross-process HTP leases did not overlap.
+The current 8.5-second VLM completion window is cooperative, not a hard native
+kernel-preemption guarantee. Direct motion, occlusion, or rapid approach has
+precedence over routine stale-depth/track maintenance and requests VLM
+cancellation; deterministic mixed-signal and lazy-job-cancellation tests cover
+those races.
+
+Two subsequent exact-build 30-second sessions each delivered 85 camera frames,
+ended with authenticated closure, and emitted no dead-handler warning. The
+Camera2 recovery path now preserves the authenticated session and IMU/mic/touch
+producers, uses a controller-owned frame sequence across camera replacements,
+bounds restart and thread-join waits, and records unambiguous Camera2 error
+domain/code/symbol telemetry. Deterministic tests prove frame 158 is followed
+by 159 and accepted by host ingress. Because the physical HAL did not fail
+during these final runs, an actual on-device camera-only restart was not
+observed and is not claimed.
+
+After testing, both nodes were stopped and their private configuration was
+restored to strict `wifi_direct_required`. Reboot-time P2P reconstruction remains
+deferred as previously requested. Current camera-to-head translation and
+factory-calibration uncertainty remain unverified, so physical status did not
+claim translation-based world anchoring or calibrated spatial accuracy.
+
+A final audit then found that the disabled diagnostic spool still accepted only
+the former JPEG camera payload. It now validates the production 640×640 packed
+RGB8 descriptor, stride, byte count, and hash before encoding a bounded JPEG;
+the stored descriptor is rewritten as JPEG with the resulting byte count and
+hash. Malformed inputs fail categorically and are counted rather than silently
+persisted. All 242 Rokid JVM tests, Rokid lint, and Rokid debug assembly passed
+after this repair. The rebuilt and replacement-installed Rokid APK is
+`d1c185a43c30ce5e2891312f7933a9df98bf354fbddfe72fc20ae5cb50c4d32a`
+(10,401,127 bytes). This post-soak change affects only the explicitly enabled
+diagnostic persistence route; the 600-second RAM-streaming evidence above
+belongs to the preceding exact soak artifact and was not relabelled.

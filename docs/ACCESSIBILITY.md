@@ -48,6 +48,19 @@ operational state.
   accessibility service is enabled.
 - “Near-real-time” and “zero-touch” are interaction goals only. They do not mean
   zero physical latency, complete perception, or any safety guarantee.
+- On the displayless Rokid, optional standby is explicitly armed. An optional
+  AccessibilityService can observe only the documented PSOC key candidates and
+  always returns `false`, preserving native YodaOS handling including
+  Talk-to-AI long press. Its command gate defaults to observe-only and requires
+  a separate debug-ADB opt-in after physical callback and coexistence testing.
+  Camera and IMU stay off until an authenticated Poco Start request grants the
+  bounded live session. Gesture microphone start is a session-bound request and
+  cannot start capture before host authorization; gesture stop closes local
+  microphone capture before its ordered stop request.
+  Cable-free retry wakeups use bounded alarms and a finite pre-authentication
+  CPU wake lease; they never activate sensors without the authenticated Poco
+  lease. Reboot restores only inert state and requires explicit re-arm before
+  network rendezvous resumes.
 
 ## Implemented semantics
 
@@ -56,9 +69,11 @@ operational state.
 `apps/android-host/src/main/res/layout/activity_main.xml` uses stock `TextView`
 and `Button` controls, marks the title as a heading, exposes session status as a
 polite live region, sets 48 dp minimum button heights, and defines directional
-focus between Connect, Process, environment mode, diagnostics, Cancel, and
+focus between Connect, Process, live Start, the separate ten-second glasses
+microphone request, live Stop, environment mode, diagnostics, Cancel, and
 Disconnect. Matching keyboard shortcuts are handled in
-`MainActivity.onKeyUp`: `C`, `P`, `V`, `A`, `I`, `O`, `E`, `X`, and `D`.
+`MainActivity.onKeyUp`: `C`, `P`, `V`, `L`, `M`, `S`, `A`, `I`, `O`, `E`, `X`,
+and `D`.
 
 Automatic, manual-indoor, and manual-outdoor buttons expose selected state with
 `ViewCompat.setStateDescription`. The environment status is a polite live
@@ -77,10 +92,21 @@ avoiding competing application speech.
 ### Rokid client
 
 Rokid AI Glasses Style is a non-display device. The client therefore has no
-launcher activity, layout, visual controls, focus order, or touchpad workflow.
-Its current development interface is explicit authorized-ADB control of a
-nonvisual activity and private bound service. This is inspectable engineering
-access, not an acceptable end-user control surface.
+launcher activity, layout, visual controls, or focus order. Its current
+development interfaces are explicit authorized-ADB control of a nonvisual
+activity and an optional key-observer AccessibilityService. Granting any
+accessibility service is broad platform trust. This service asks for no window
+content, gestures, or touch exploration, ignores accessibility events, limits
+key diagnostics to five candidate keycodes, and never consumes a key. Those
+narrower declarations do not remove the need for informed operator consent,
+audit, physical validation, or coexistence tests with other enabled services.
+
+Use `scripts/rokid-accessibility-control` to inspect, enable, disable, and
+separately opt in to gesture commands. The helper preserves unrelated enabled
+services and verifies configured and bound state. Command dispatch remains
+observe-only by default. The PSOC Android keycode translation, OEM Talk-to-AI
+coexistence, off-head silence, and accessibility-origin foreground-service
+start must all be validated on the target before `commands-enable` is used.
 
 `InspectableCueRenderer` records disposition, frame, stereo balance, and
 haptic use. It rejects invalid, stale, duplicate, and older-frame cues. These
@@ -127,13 +153,19 @@ method, app revision, and transport mode.
 5. From the phone host, deny camera permission and confirm the denial is
    announced and glasses capture remains stopped. Grant permission, start and
    stop capture, disconnect, and confirm state remains available nonvisually.
-6. Trigger left and right synthetic cues. Confirm equivalent text remains
+6. During an authenticated live session, activate **Request 10-second glasses
+   microphone** by touch exploration and with keyboard `M`. Confirm Requested,
+   Active, and Complete states are available in the polite status region. Deny
+   `RECORD_AUDIO` on the Rokid and confirm rejection is reported while camera
+   and IMU continue. Confirm the control is disabled before a live session and
+   while a microphone request or window is active.
+7. Trigger left and right synthetic cues. Confirm equivalent text remains
    available and that stereo/haptic feedback is distinguishable without being
    painful, startling, or mistaken for a safety instruction.
-7. Cause a malformed, stale, timeout, transport-loss, and overload condition in
+8. Cause a malformed, stale, timeout, transport-loss, and overload condition in
    a synthetic environment. Confirm the user can identify the failure and
    return to a safe stopped state.
-8. On the phone, increase display/font size, enable high contrast or color
+9. On the phone, increase display/font size, enable high contrast or color
    correction, and test supported orientations. Confirm controls remain usable.
 
 Status: not yet manually validated on the attached Rokid consumer device or a

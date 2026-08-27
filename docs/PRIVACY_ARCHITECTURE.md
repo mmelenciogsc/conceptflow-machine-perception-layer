@@ -11,15 +11,16 @@ privacy failures.
 
 | Data | Current use | Default persistence |
 | --- | --- | --- |
-| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture; one-shot development transport; bounded direct mutual-TLS Rokid-to-Poco transfer and transient QNN input | None implemented |
-| Pose and intrinsics | Optional frame context; Android pose sampling; bounded live IMU batches and optional validated Camera2 calibration metadata | None implemented |
+| Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture; acknowledged Rokid-to-Poco pull spool and transient QNN input | App-private no-backup spool until authenticated acknowledgement, new-session purge, or quota eviction |
+| Pose and intrinsics | Optional frame context; Android pose sampling; gated IMU batches and optional validated Camera2 calibration metadata | Bounded app-private JSON manifest until acknowledgement, new-session purge, or quota eviction |
+| On-demand microphone PCM | Explicit, maximum-ten-second Rokid microphone sublease | App-private WAV chunks until acknowledgement, new-session purge, or quota eviction |
 | Environment evidence | Ephemeral semantic probabilities and optional aggregate GNSS reception quality | In-memory only; selected manual mode only is persisted |
 | Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status; ephemeral live session, lease, nonce, lane-ticket, and sequence state | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
 | Observations and cues | Assistive scheduling and rendering | In-memory queues; inspectable status history may display cue text |
 | Timing samples | Local latency summaries; live clock-offset/uncertainty evidence and aggregate p50/p95/p99 stage timing | Process memory or explicitly redirected command output |
 
-There is no repository implementation for a frame database, capture archive,
+There is no repository implementation for a durable frame database, capture archive,
 analytics uploader, background telemetry service, model-training ingestion, or
 automatic publication. “No retention by default” does not mean bytes never
 exist: a frame is held transiently in application, protobuf, gRPC, and worker
@@ -36,9 +37,20 @@ explicit `--grant-camera` and `--grant-microphone` operator actions.
 `rokid-control capture-start`, the bounded eight-second `stream-test`, and the
 one-shot `physical-trace` are separate authorized-ADB commands. The debug-only
 direct live test is another explicit action: it runs for at most 30 seconds,
-negotiates camera and IMU only, and can be stopped from either device. It never
-opens the microphone source. Pairing, Poco listener startup, and Rokid client
-startup are separate steps; pairing alone cannot begin capture.
+negotiates camera and IMU only, and can be stopped from either device. A
+separate accessible Android control may request one mic-only window of at most
+ten seconds after that session is mutually authenticated. The request is bound
+to the exact active session/lease and must set explicit microphone intent;
+missing permission or any mismatch rejects it without affecting camera/IMU.
+Pairing, Poco listener startup, and Rokid client startup are separate steps;
+pairing alone cannot begin capture.
+Wearer gesture intents and Android Node commands contain only an ephemeral
+session/lease binding, monotonic IDs/timestamps, an allowlisted operation, and
+authorization/result flags. They contain no raw touch coordinates, key-event
+history, stable user identifier, camera content, microphone content, or
+location. They travel only inside the existing mutually authenticated TLS
+control lane. ADB Wi-Fi and Bluetooth pairing are not treated as runtime
+authorization.
 `Camera2FrameSource` uses `acquireLatestImage`, a two-image reader, a configured
 byte limit, and adaptive physical requests near 3 FPS relaxed/up to 5 FPS after
 material change. Stopping the nonvisual activity unbinds the service and closes
@@ -50,6 +62,28 @@ cannot silently extend microphone consent. `physical-trace` sends one bounded
 JPEG and matched HEAD pose; microphone samples never enter its wire message and
 only nonzero local signal gates dispatch. This development control is not the
 intended product consent interface.
+
+Live microphone PCM is never logged. Gate-admitted samples are written as
+bounded app-private WAV chunks solely for the authenticated Android pull path;
+they are excluded from Android backup and deleted after acknowledgement,
+new-session purge, or quota eviction. Android host status contains only
+aggregate chunk and byte counts. Per-chunk admission enforces the monotonic microphone deadline;
+a dedicated deadline task closes the recorder, with the 20 ms controller poll
+as a fallback. The Rokid emits short local start/stop earcon hooks; these are
+status indicators, not content recording.
+
+The pull spool is capped at 512 manifest records and 64 MiB of artifacts. It
+uses atomic JSON/index replacement, coalesces IMU-only durability updates to at
+most 10 Hz, validates relative paths and SHA-256 before host delivery, and does
+not expose a content provider, shared-storage path, analytics upload, or backup
+surface. See [Rokid pull spool](ROKID_PULL_SPOOL.md).
+
+Glasses gesture control transmits only a typed START/STOP operation, ephemeral
+session/lease binding, connection-local monotonic intent ID, monotonic
+timestamp, and bounded duration. It contains no audio. STOP closes the local
+recorder before network acknowledgement and immediately revokes host admission;
+already-buffered audio received afterward is discarded. Intent metadata remains
+in memory for replay/freshness checks and is neither logged nor persisted.
 
 The Android host retains a synthetic diagnostic, and it now also implements a
 debug-only direct live listener. Authenticated camera chunks are reassembled
@@ -148,6 +182,16 @@ The Poco live status contains bounded counts, p50/p95/p99 latency aggregates,
 and p95 clock uncertainty. Neither includes frames, labels, raw IMU samples,
 addresses, certificates, or endpoint/session/lease/frame identifiers. This is
 local in-memory/UI/log status; no telemetry uploader is implemented.
+
+The optional Rokid AccessibilityService is a broad-trust platform component
+even though its manifest requests no screen content or touch exploration. It
+does not log text, windows, arbitrary keys, device names, or descriptors. Its
+local validation log is limited to candidate keycode/action/flag/scan metadata,
+an ephemeral input-device ID, numeric vendor/product/source fields, a bounded
+counter, and the allowlist result. Command dispatch defaults off and requires a
+separate app-private opt-in after physical validation. Provisioning preserves
+other enabled accessibility services and verifies that this service is bound,
+not merely listed as enabled.
 
 ## Deployment requirements
 

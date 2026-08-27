@@ -2,7 +2,7 @@
 # Android private QNN runtime adapter
 
 The Android host has an opt-in arm64 JNI adapter for three digest-pinned accepted
-graphs: YOLOE BVI40 640×640, Depth Anything V2 Metric Hypersim 392×392, and
+graphs: YOLOE BVI330 640×640, Depth Anything V2 Metric Hypersim 392×392, and
 Depth Anything V2 Metric VKITTI 392×392. Normal builds remain vendor-free. The
 adapter is compiled only when `QNN_SDK_ROOT` (or Gradle property `qnnSdkRoot`)
 points to an external QAIRT SDK.
@@ -26,15 +26,21 @@ scripts/android-qnn-jni-build \
   --qnn-sdk "$QNN_SDK_DIR" \
   --android-sdk "$ANDROID_SDK_ROOT"
 adb -s "$POCO_SERIAL" install -r \
-  apps/android-host/build/outputs/apk/debug/android-host-debug.apk
+  apps/android-host/build/qnn/android-host-qnn-debug.apk
 ```
+
+The QNN builder preserves that separately named APK outside Gradle's managed
+`outputs` directory after verifying that it contains
+`libconceptflow_qnn_jni.so`. A later ordinary Gradle debug build may replace
+`android-host-debug.apk` with the intentionally vendor-free build; it does not
+overwrite `build/qnn/android-host-qnn-debug.apk`.
 
 Provision only the three accepted model libraries:
 
 ```bash
 scripts/android-model-install \
   --serial "$POCO_SERIAL" \
-  --yoloe "$QNN_MODEL_DIR/libyoloe_bvi40.so" \
+  --yoloe "$QNN_MODEL_DIR/libyoloe_bvi330_fp16.so" \
   --depth-indoor-392 "$QNN_MODEL_DIR/libdepth_indoor_392_fp16.so" \
   --depth-outdoor-392 "$QNN_MODEL_DIR/libdepth_outdoor_392_fp16.so"
 ```
@@ -46,6 +52,19 @@ scripts/android-qnn-private-provision \
   --serial "$POCO_SERIAL" \
   --qnn-sdk "$QNN_SDK_DIR"
 ```
+
+Automatic environment routing additionally requires the exact externally
+obtained Qwen3-VL artifacts pinned by `LocalVlmModelProfile`:
+
+```bash
+scripts/android-vlm-provision \
+  --serial "$POCO_SERIAL" \
+  --model "$VLM_DIR/Qwen3-VL-2B-Instruct-Q4_0.gguf" \
+  --projector "$VLM_DIR/mmproj-F16.gguf"
+```
+
+That helper performs no download, verifies size, GGUF structure, and SHA-256,
+and stages the files only in Android Node's private data directory.
 
 The `*_DIR` variables above must point to separately governed locations outside
 the repository. Both provisioning paths compute hashes before transfer and
@@ -86,7 +105,7 @@ typed `QnnFailureCode`.
 `QnnStagedMachineVisionInferenceAdapter` obtains the exact JPEG by frame ID,
 validates frame metadata, decodes with bounded dimensions, applies deterministic
 aspect-fit letterboxing, and runs segmentation before the selected 392 depth
-graph. YOLO output is constrained to the baked BVI40 vocabulary and exact
+graph. YOLO output is constrained to the baked BVI330 vocabulary and exact
 `300×38` plus `160×160×32` shapes. Mask fingerprints are carried into bounded
 depth sampling and a 128-entry IoU tracker.
 
@@ -110,6 +129,12 @@ for Hypersim or `80 m` for VKITTI. Validation still occurs when no detections
 survive. It never falls back to CPU, 336, 518, or the opposite environment
 graph.
 
+Automatic routing uses a process-isolated Qwen3-VL-2B-Instruct Q4_0 classifier
+through the separately governed GenieX runtime. A shared app-private file lock
+serializes actual HTP execution across the QNN and isolated VLM processes;
+sensor callbacks never wait on that lock. This is dispatch arbitration, not an
+end-to-end zero-copy claim. Manual indoor/outdoor modes do not bind the VLM.
+
 If the Rokid frame lacks accepted calibrated/derived intrinsics,
 `QnnLiveFrameExecutor` records `UNCALIBRATED_INTRINSICS_MISSING` after tensor
 validation without disabling the exact official native-metric scalar output.
@@ -118,9 +143,11 @@ unquantified, and makes no physical-accuracy claim. Accepted intrinsics are
 required for a camera ray/vector. Aggregate status retains whether they were
 `CALIBRATED` or `DERIVED`, and the host does not infer parameter uncertainty
 when the optional uncertainty message is absent.
-HEAD←CAMERA extrinsics and
-capture-correlated pose separately gate head/world propagation. Real
-target-camera intrinsics and metric accuracy remain physical validation gates.
+HEAD←CAMERA extrinsics and capture-correlated pose separately gate head/world
+propagation. The target now supplies a Camera2 rotation into the rigid
+glasses/head sensor proxy; its `PRIMARY_CAMERA` zero does not supply translation.
+Real target-camera intrinsic accuracy, metric accuracy, anatomical alignment,
+and physical camera-to-head translation remain validation gates.
 
 ## Validation boundary
 

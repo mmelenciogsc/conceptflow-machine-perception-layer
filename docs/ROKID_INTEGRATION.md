@@ -40,6 +40,13 @@ Sources checked on 2026-08-21:
   define the camera API used here. Android's
   [motion-sensor guide](https://developer.android.com/develop/sensors-and-location/sensors/sensors_motion)
   defines the rotation-vector, gyroscope, and linear-acceleration sources.
+- Android's official
+  [alarm scheduling guide](https://developer.android.com/develop/background-work/services/alarms/schedule)
+  documents exact-alarm special access, `setExactAndAllowWhileIdle`, and the
+  inexact `setAndAllowWhileIdle` fallback. Its
+  [wake-lock guide](https://developer.android.com/develop/background-work/background-tasks/awake/wakelock)
+  requires finite acquisition and prompt release. These sources were rechecked
+  on 2026-08-24 for the cable-free rendezvous lifecycle.
 - The Linux kernel's official
   [USB error-code documentation](https://docs.kernel.org/driver-api/usb/error-codes.html)
   defines `-EPROTO` as a protocol-level failure such as no response or a
@@ -76,12 +83,14 @@ human perception remain separate empirical tests. The physical button and
 right-arm touch surface mappings below were measured directly with Linux
 `getevent`.
 
-Live Camera2 characteristics report an exact 1920×1080 JPEG output on this
-unit, so the normal path transmits that native size without a resize/re-encode.
-The camera also reports 16.67 ms minimum frame duration and 13.48 ms JPEG stall
-duration for that stream; these are capability metadata, not a sustained
-throughput claim. The game-rotation, gyroscope, and linear-acceleration sensors
-all accept a 10,000-microsecond sampling request. A bounded 2026-08-22 run
+Live Camera2 characteristics expose device-native 648×648 output for both
+format 35/`YUV_420_888` and format 33/JPEG. Continuous capture uses exact
+648×648 YUV; JPEG is not used by this path. The former 1920×1080 mode remains
+an enumerated camera capability but is not used by this path. Earlier inspection
+reported 16.67 ms minimum frame duration and 13.48 ms JPEG stall duration for the 1920×1080
+stream; those historical capability values are not measurements of the current
+648×648 mode or a sustained-throughput claim. The game-rotation, gyroscope, and
+linear-acceleration sensors all accept a 10,000-microsecond sampling request. A bounded 2026-08-22 run
 observed 98.8 fused orientation samples/s and a 10.1 ms maximum orientation
 gap. Android sensor periods are requests, so runtime measurements remain the
 authority.
@@ -89,33 +98,189 @@ authority.
 ## Non-display application model
 
 `apps/rokid-client` has no launcher entry or visual layout.
-`RokidRuntimeService` is a private bound Android service. Explicit development
-commands enter through a nonvisual `RokidCommandActivity`, protected by the
-shell-held `android.permission.DUMP` permission. The activity has no content
+`RokidRuntimeService` is private and has no intent filter in every build
+variant. YodaOS resolves an exported debug service but refuses both shell
+`startservice` forms, so no service export is retained. The service independently
+rejects its enable action unless the APK is debuggable; restore actions require
+app-created proof and unknown actions fail closed. Development commands enter through a nonvisual
+`RokidCommandActivity` protected by the same permission. The activity has no content
 view, controls, text, launcher entry, or user interaction. It owns the service
 binding because the observed YodaOS build blocks third-party background service
 and broadcast starts. Android still requires an activity window on its internal
 compatibility surface; no physical display exists and no visual interface is
-part of the product. The activity keeps that logical surface awake while
-capture runs because Android 12 otherwise classifies the non-display process as
-background and CameraService rejects access.
+part of the product. The Activity exists only as the short-lived, visible
+Android authorization broker required to establish the camera-capable
+foreground service. It finishes and unbinds immediately after successful arm.
 
-Live-link identity initialization, start, and explicit live-link stop are also
-runtime-gated by the app's debuggable flag. A release build rejects those
-commands before binding the private service. This is defense in depth beyond
-the exported activity's `DUMP` permission; it is not a product consent surface.
+The debug-only `idle-enable` helper explicitly launches the authorized
+nonvisual Activity. The Activity requests lock-screen visibility and screen-on
+state, waits until it is both resumed and window-focused, allows a bounded 150
+ms settling interval, then starts the private foreground service and binds to
+verify its complete persisted/started/foreground state. Verification fails
+closed after ten bounded observations. A failed Activity setup does not claim
+that idle control is armed. A normal sensor-off rendezvous cooldown remains
+armed; readiness does not depend on a connection attempt existing at the exact
+instant the Activity checks it. This broker path avoids the tested YodaOS rejection
+of direct shell starts while ensuring the app does not request its service from
+a sleeping-display/background Activity.
+Before the Poco authorizes capture, camera, IMU, and microphone producers are
+all absent. The armed service keeps only a bounded outbound mutual-TLS
+rendezvous active on the private network. Before the first authenticated
+session, one transient connection failure ends that rendezvous epoch. The
+service then uses jittered 15-, 30-, and 60-second cooldown levels for genuine
+network or rendezvous failures (bounded to
+plus or minus ten percent and capped at the final level across later failed
+epochs) and tries again only while the same explicit visible-arm generation
+and process capability remain valid. Cooldowns use an elapsed-realtime wakeup
+alarm rather than a main-thread delayed callback. On Android 12 and later the
+service uses exact allow-while-idle delivery only when
+`canScheduleExactAlarms()` reports that the declared `SCHEDULE_EXACT_ALARM`
+special access is available; otherwise it uses inexact allow-while-idle
+delivery and logs that degraded precision. Each managed epoch also has a
+service-owned 15-second total
+pre-authentication deadline covering TCP, TLS, lease, clock synchronization,
+and camera-lane admission; expiry closes its in-flight sockets. A
+non-reference-counted partial CPU wake lock and a non-reference-counted Wi-Fi
+low-latency lock keep only that deadline and handshake progressing. Both use a
+17-second hard timeout, providing a two-second release margin around the
+15-second deadline, and are released earlier on authentication, terminal,
+failed start, disable, or service destruction. The Wi-Fi lock can keep an
+already-enabled, associated radio responsive; Android does not permit this
+ordinary target-SDK-36 app to turn a disabled Wi-Fi radio on silently. No lock
+is held during cooldown. The nominal 66-second worst-case steady
+cooldown plus the handshake budget is 81 seconds, but neither exact nor
+inexact allow-while-idle alarms are a contractual 90-second delivery guarantee:
+Android can throttle them in Doze and the device vendor can impose additional
+power policy. A
+successfully authenticated session resets that escalation. Once authenticated,
+up to six transport interruptions remain bounded by the original active
+deadline. No
+20 ms sensor poll runs while merely connecting, and no continuous wake lock or
+`FLAG_KEEP_SCREEN_ON` is used for this idle posture. `BOOT_COMPLETED`, sticky
+restart, and `MY_PACKAGE_REPLACED` restore only an inert foreground state: no
+network rendezvous and no sensor producer begins until an authorized visible
+`idle-enable` arms a new generation.
+
+Within that explicitly armed boot, a YodaOS low-memory process eviction is
+recovered through the same short-lived nonvisual Activity broker used for the
+initial foreground-service authorization. The boot-count capability is checked
+before both the broker launch and runtime resume, and branding is not replayed.
+A graceful 10-minute lease rotation begins its next rendezvous immediately;
+failure backoff is not applied to normal rotation.
+
+The observed API 32 YodaOS build also applied
+`RUN_IN_BACKGROUND=ignore` and `RUN_ANY_IN_BACKGROUND=ignore` to the directly
+sideloaded Rokid Node. `am get-inactive` still reported `false`, Doze was
+disabled, and `START_FOREGROUND` was allowed, but this separate vendor policy
+stopped the foreground service at exactly 60 seconds. On that development
+target, inspect and explicitly provision the narrow reversible exception with:
+
+```bash
+./scripts/rokid-background-policy --serial "$ROKID_SERIAL" status
+./scripts/rokid-background-policy --serial "$ROKID_SERIAL" enable
+./scripts/rokid-background-policy --serial "$ROKID_SERIAL" disable
+```
+
+`enable` changes only this package: it sets `RUN_IN_BACKGROUND` to `allow`,
+resets `RUN_ANY_IN_BACKGROUND` to `default`, and adds the package to the
+device-idle whitelist. It verifies all three results without printing the ADB
+serial. `disable` resets both app-ops to `default` and removes only this package
+from that whitelist. This is an explicit ADB provisioning step for the observed
+YodaOS behavior, not an APK permission or a production policy assumption. The
+helper never launches the app and does not trigger playback, sensors, or a
+network connection.
+
+The optional `RokidInputAccessibilityService` observes a narrow allowlist of
+candidate right-arm key events and always returns `false`; it never consumes or
+remaps a key. Long press, repeat, cancellation, malformed ordering, timing
+expiry, or a device/source/scan-code mismatch resets its bounded recognizer, so
+the worn long-press remains available to YodaOS's Talk-to-AI behavior. The
+service requests neither screen content nor touch exploration. Accessibility
+service access is nevertheless broad platform trust and is disabled by
+default; provisioning and coexistence requirements are documented below.
+
+Visible arm establishes the camera-capable foreground-service type before the
+sensor-off rendezvous begins. On the tested Android 12/API 32 target it requests
+the camera type; API 34 and newer request camera plus `specialUse`. Only an
+authenticated Poco Start request can produce a valid camera+IMU lease. The
+controller publishes a camera-starting notification and establishes the camera
+foreground-service type immediately before either sensor factory is called. It
+publishes camera-active only after both producers start. A disconnect demotes
+the notification to sensor-off standby before reconnect; the next authenticated
+session repeats the starting-to-active transition. An ordinary debug run starts
+one non-extendable 30-second active deadline. The explicitly selected soak and
+armed-node paths use a bounded 10-minute deadline; reconnects cannot reset
+either deadline.
+Only after the controller reports its bounded transport terminal does the
+service return to the sensor-off standby notification.
+Disable and the generic `stop` command both clear the persisted enable choice,
+stop all producers even if that preference write reports failure, and wait for
+the authenticated live-link close. A 12-second service watchdog is longer than
+the transport's own 10-second close bound and exists only to prevent an
+indefinite foreground shutdown if the terminal callback itself is lost.
+
+Live-link identity initialization and ADB diagnostic start/stop remain
+runtime-gated by the app's debuggable flag. The accessible standard Start
+control in Machine Perception Layer, Android Node is the production capture
+authorization surface. The base lease grants exactly camera, IMU and touch and
+is capped at 10 minutes; the ordinary diagnostic controller closes it after 30
+seconds. While that bounded, mutually authenticated
+session is active, the Android Node exposes a separate accessible **Request
+10-second glasses microphone** control. It sends a second mic-only
+`StreamLeaseRequest` over the authenticated control lane with the exact active
+session and lease identifiers and `user_requested_microphone=true`. Rokid
+rejects mismatched, combined, expired, permissionless, repeated, or
+longer-than-ten-second requests without stopping camera or IMU. This reuses the
+typed request/grant protocol rather than introducing a second control channel.
+Packet admission checks the monotonic deadline on every chunk. A dedicated
+deadline task closes `AudioRecord` at that boundary, with the existing 20 ms
+controller poll as a second shutdown path.
+The input integration seam is
+`LiveLinkCaptureController.requestMicrophoneFromUserGesture()` and
+`stopMicrophoneFromUserGesture()`. Both fail closed without a STREAMING
+session. START only sends an authenticated intent and waits for the resulting
+sublease; STOP closes local capture first and is idempotent. The transport uses
+monotonic intent IDs and a one-second freshness window, and temporarily blocks
+older phone- or glasses-originated grants from overtaking STOP. This API does
+not assign a physical gesture by itself; that mapping remains in the separately
+validated input policy.
+This is an intentionally explicit but currently session-coupled sublease. The
+v1 transport still requires the authenticated camera lane and the Android
+Node's live Machine Vision runtime, so it must not be represented as a
+standalone on-demand microphone session.
+
+Node activation and sleep use a distinct application-level round trip. The
+validated gesture recognizer first creates an `RokidGestureIntent`; Rokid Node
+starts its local ready/branding feedback immediately so a missing phone cannot
+silence the user acknowledgement, and retains the newest unsent intent in a
+bounded, expiring outbox until a direct private-WLAN mutual-TLS session is
+authenticated. Android Node verifies its exact session/lease binding,
+clock-normalized freshness, user-origin flag, operation, and replay order, then
+returns a separately identified, two-second-TTL `RokidNodeCommand`. Rokid Node
+validates that command and returns an exact correlated result. ENABLE maps to
+ACTIVATE; DISABLE maps to SLEEP. A phone-originated accessible command can also
+request the complete brand sequence. ADB does not carry these operational
+messages and remains limited to installation, provisioning, and diagnostics.
+The current control plane requires the private WLAN radio and the bounded live
+session; Bluetooth/BLE wake or discovery is not implemented or claimed.
 
 The implemented hardware boundaries are:
 
-- `Camera2FrameSource`: bounded latest-only JPEG capture and monotonic frame IDs;
+- `Camera2FrameSource`: bounded latest-only YUV capture, post-gate RGB8 conversion,
+  and monotonic frame IDs;
 - `SensorManagerPoseSource`: unbatched nominal 100 Hz game-rotation snapshots,
   each carrying the latest three-axis gyroscope and gravity-compensated linear
   acceleration values plus their source timestamps and sensor accuracy;
 - `LiveLinkCaptureController`: a bounded authenticated camera+IMU session that
   starts producers only after the negotiated session/lease is ready, tears them
-  down before reconnect, and never opens a microphone source;
+  down before reconnect, and opens a microphone source only after the separate
+  authenticated mic-only grant is written;
+- `RokidCaptureSpool`: app-private `camera/` and `microphone/` artifacts plus an
+  atomic `manifest.json`; it receives only gate-admitted data and serves the
+  Android Node's bounded authenticated poll/fetch/ack flow;
 - `AudioRecordInputSource`: bounded 16-kHz mono PCM input with monotonic chunk
-  IDs and no persistence;
+  IDs; admitted chunks are temporarily persisted as private WAV files only
+  while awaiting Android acknowledgement;
 - `InspectableCueRenderer`: stale/duplicate/older-cue rejection;
 - `GrpcRemotePerceptionClient`: v1 capability negotiation, ephemeral session
   identity, bounded frame submission, strict result correlation, cancellation,
@@ -125,22 +290,48 @@ The implemented hardware boundaries are:
 
 ## Adaptive camera gate
 
-`Camera2FrameSource` first runs a bounded 640×480 headless YUV preview for one
-second so the standard Camera2 auto-exposure and white-balance loops can
-settle. It then closes that preview session and creates a JPEG-only session;
-this sequence is required because the tested vendor HAL stalls JPEG output
-when preview and JPEG requests overlap. The client begins physical JPEG capture
-near 3 FPS and raises it toward a 5 FPS ceiling after material pixel change.
-The delay is budgeted from capture-request time so JPEG processing is not added
+`Camera2FrameSource` creates one session containing both a bounded 640×480
+headless YUV preview and the exact 648×648 YUV output. The preview repeats for
+the session lifetime: its first second settles the standard Camera2
+auto-exposure and white-balance loops, then it keeps the vendor stream active
+between scheduled captures. Its listener only acquires and closes the latest
+image on a dedicated drain thread. Exact-image processing is on a second worker,
+while session callbacks and the opportunity timer stay on the Camera2 control
+thread. The client begins exact-size physical YUV capture near 3 FPS and raises
+it toward a 5 FPS ceiling after material pixel change. This is an ongoing
+sequence of timer-issued single `TEMPLATE_STILL_CAPTURE` requests alongside the
+repeating low-resolution keepalive, not a repeating 648×648 request.
+The delay is budgeted from capture-request time so YUV processing is not added
 on top of the intended period. A single monotonic opportunity timer permits at
 most three outstanding requests, discards rather than replays backpressured
 opportunities, and associates request tags with image sensor timestamps. Every
-image is processed in memory and discarded
-after the current decision. Capture-size selection prefers an exact 1920×1080
-source. If it is unavailable, it chooses the closest aspect-compatible source
-and aspect-fits it inside 1920×1080 using one uniform scale; it never crops,
-stretches, or upscales. A 4:3 source such as 4032×3024 therefore becomes
-1440×1080 rather than distorted 1920×1080.
+rejected image is discarded after the gate decision; accepted images enter the
+bounded live transform (and the private pull spool only when that diagnostic is
+enabled). Capture-size selection requires exact device-native 648×648
+`YUV_420_888` and fails closed if it is unavailable; there is no continuous
+JPEG fallback. The planes are borrowed synchronously only while the Android
+`Image` is open, with explicit row/pixel-stride validation and guaranteed
+closure. No Y/U/V plane arrays are copied or retained.
+
+The protected gate still evaluates a 90×90 thumbnail for this square source,
+but now samples Y directly and expands the declared BT.601 limited range; it
+does not read chroma. Its thresholds, state, and 3/5 FPS motion response remain
+unchanged. Only after admission, a packaged arm64 integer JNI converter reads
+the borrowed direct planes and converts YUV to YOLOE's 640×640 RGB8 input with
+the byte-exact fixed-point 80/81 scale and no crop. The Kotlin converter remains
+the deterministic fallback/reference. Cross-language production-size golden
+tests and Kotlin per-byte tests pin the bilinear RGB layout and BT.601
+limited-range result, including padded row strides and pixel-stride-two chroma.
+Stream diagnostics expose `camera_native_rgb_conversions` alongside total RGB
+conversions so fallback use is visible. The general aspect-fill geometry
+remains center-crop capable and never stretches or letterboxes the image. See
+[Rokid pull spool](ROKID_PULL_SPOOL.md).
+
+The live protocol continues to describe the post-gate 640×640 RGB8 payload; it
+has no source-acquisition tier field. Consequently it cannot yet request a
+future exclusive high-resolution capture. The existing 1920×1080 bounds remain
+available to legacy diagnostics/future policy, but they do not alter the
+continuous 648×648 source and no on-demand 1920 path is added by this change.
 
 The gate analyzes a bounded luma thumbnail (maximum 160×90):
 
@@ -162,7 +353,8 @@ engineering defaults and still require representative indoor/outdoor
 calibration; they are not evidence that a rejected frame contains nothing
 important.
 
-The current gRPC request advertises the 1920×1080, 2 MiB, 5 FPS maximum. It
+The legacy gRPC diagnostic request still advertises a 1920×1080, 2 MiB, 5 FPS
+maximum; it is not the continuous live camera acquisition contract. It
 still carries one timestamp-matched HEAD pose per emitted image. Independently,
 the stream packetizer can select meaningful samples from nominal 100 Hz IMU
 input, bound a batch to 20 ms, and send an absolute refresh at least once per
@@ -179,6 +371,104 @@ commands. A product release must expose capture state and stop control through
 the accessible phone host, distinctive nonvisual feedback, and verified
 physical controls; ADB is not a user control.
 
+## Branded audio on explicit activation
+
+Service/process creation, boot restore, package-replacement restore, and wear
+state are silent. A successful inactive-to-active explicit Node enable starts
+with a short, low-gain deep ready tone generated from bounded PCM at runtime;
+no vendor sound or other binary audio asset is committed. On the first such
+activation for each readable Android `Settings.Global.BOOT_COUNT`, the parent
+brand line, `CONCEPTFlow. Machine Intelligence. Human Architecture.`, follows
+the ready tone and is followed by a second deep separator tone. A persisted
+boot-count claim prevents later activations, service recreation, or process
+recreation during that boot from replaying the parent line. If the global boot
+count cannot be read, a process-local first-activation gate is used.
+
+The product line, `Machine Perception Layer. Map. Morph. Move.`, followed by a
+brief pause and `It's just supplemental awareness.`, has its own rolling
+72-hour persisted claim. It is independent of the per-boot parent line. Wear,
+proximity, service restore, and authenticated connection do not claim either
+cadence. A successful authenticated Android Node session keeps its existing,
+independent connection tone.
+
+For a bench-only immediate check, the debug-only command below exercises the
+exact complete sequence without changing either production cadence state:
+
+```bash
+./scripts/rokid-control --serial "$ROKID_SERIAL" brand-audio-test
+```
+
+Production acceptance must exercise an explicit enable transition. The debug
+full-sequence command above remains only a bench playback check and does not
+change production cadence.
+
+A private installation may use the consent-gated cloned voice
+identified by the operator as the voice from *Connected by Water*. The audited
+QUICKPub revision `27808e8f9d0ec073af6091a6b9a49f1d021779a9` does not contain
+that private reference sample or a consent or redistribution record for it,
+and the repository has no top-level project license. Its third-party notice
+identifies Chatterbox code as MIT-licensed, with separate model-card terms and
+a retained PerTh disclosure watermark. No QUICKPub code, model, reference
+sample, or cloned audio is copied into this repository. Generate a private
+eight-file phrase set only with the exact permitted sample and an explicit output
+directory outside the repository:
+
+```bash
+python3 scripts/generate-private-rokid-brand-voice.py \
+  --quickpub-root /path/to/QUICKPub \
+  --python /path/to/QUICKPub/chatterbox/python \
+  --model /path/to/chatterbox-turbo-model \
+  --voice-sample /path/to/permitted-reference.wav \
+  --output-dir /private/path/rokid-brand-voice \
+  --i-have-voice-permission
+```
+
+The script invokes QUICKPub's external Chatterbox worker, records the QUICKPub
+revision, worker and runtime-manifest hashes, pinned model revision, output
+hashes, consent affirmation, external-source assertion, and retained PerTh
+watermark in a private manifest. It records no reference-sample hash or other
+stable source fingerprint. It refuses a different QUICKPub revision, a
+modified worker/runtime manifest, or any output path inside this repository.
+The reference sample is never copied. Each phrase is generated as a separate,
+deterministically seeded WAV so the runtime owns the pauses rather than relying
+on synthesizer punctuation timing. The spoken input for the product brand is
+`Concept flow.` while the public written brand remains `CONCEPTFlow`. Private
+voice playback requests a bounded five-times gain lift over the previous
+profile; the platform loudness processor compresses over-range peaks before the
+system mixer. It does not change the user's system-volume setting.
+
+No Gradle source set includes private voice files. Provision a validated set
+only to a debuggable installed app:
+
+```bash
+./scripts/provision-private-rokid-brand-voice \
+  --serial "$ROKID_SERIAL" \
+  --voice-dir /private/path/rokid-brand-voice
+```
+
+The provisioner validates the exact manifest and WAV set, stops the app, stages
+and hash-verifies every transfer without printing hashes, applies directory
+mode `0700` and file mode `0600`, then replaces the app-private
+`no_backup/private/rokid_brand_voice` directory. It does not restart the app.
+Default debug and release APKs therefore contain no cloned voice. At runtime,
+an incomplete, modified, or absent app-private set is ignored.
+Use `--validate-only` to exercise the host checks without contacting a device.
+
+Without that private set, Android TextToSpeech selects an installed,
+non-network English voice by locale, quality, latency, and stable name. If none
+exists, it deterministically selects an available network English voice before
+falling back to the engine's US-English/default path. Android does not expose
+reliable cross-engine voice-gender metadata, so this fallback makes no female-
+voice or other gender promise.
+
+There is no validated Rokid-specific public wear API for this Style unit. The
+pinned official SDK demo contains only a commented
+`DeviceInfoManager.getWearingStatus()` call in its phone notification sample;
+it provides neither that manager's implementation nor a public wear callback.
+The Node therefore registers no proximity-based wear listener and neither
+activates nor narrates from proximity. The off-head observations below are only
+evidence of firmware input gating, not an application wear event.
+
 ## Verified physical input mappings
 
 The following mappings were captured on the attached Style unit while an
@@ -193,6 +483,8 @@ firmware, not a cross-version Rokid API guarantee.
 | Touch-surface double tap, while worn | `ROKID,PSOC-TP-R` (`event1`) | two `KEY_DASHBOARD` pulses, then `KEY_YELLOW` down/up |
 | Touch-surface swipe toward lenses, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then `KEY_VOLUMEUP` down/up |
 | Touch-surface swipe toward ear, while worn | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD` down/up, then one or more `KEY_VOLUMEDOWN` pulses |
+| Two-finger hold with separate fingertip contact | `ROKID,PSOC-TP-R` (`event1`) | often classified as one finger: `KEY_DASHBOARD`, then `KEY_PROG1` and the Talk-to-AI action |
+| Two-finger hold with broad side-by-side contact | `ROKID,PSOC-TP-R` (`event1`) | `KEY_DASHBOARD`, then `KEY_PROG2` (scan 149) and `ACTION_SETTINGS_KEY` |
 
 The isolated off-head tap and swipe trials produced no input events, while worn
 trials produced the listed key sequences. This is consistent with wear gating
@@ -202,6 +494,110 @@ Applications should treat the terminal key as the candidate semantic action
 and must test whether Android or a YodaOS system component consumes it before
 application dispatch. Raw `getevent` visibility alone does not prove that an
 ordinary app can intercept every system key.
+
+Rokid's current official Bare Metal input guide and downloadable sample were
+also inspected on 2026-08-26. They dynamically register a priority-1000
+receiver for documented system actions and call `abortBroadcast()` only when
+the delivery is ordered. The public guide is written for a display-equipped
+480×640 Rokid Glasses target, so every behavior was re-tested rather than
+assumed for this non-display RV203.
+
+On this RV203, broad two-finger holds reliably produced the documented
+`com.android.action.ACTION_SETTINGS_KEY` action. The underlying Linux event was
+`KEY_PROG2`/scan 149, but Android did not deliver that key to the enabled
+AccessibilityService. The semantic broadcast was non-ordered, so an ordinary
+sideloaded app cannot suppress it with `abortBroadcast()`. The installed Sprite
+firmware's receiver read `settings_shortcuts=false` for every physical trial
+and explicitly took no OEM action. This makes the gesture currently usable as
+an observed custom input, not an app-owned or universally collision-free key.
+If the Shortcuts option is enabled later in Hi Rokid, the same firmware path
+opens the OEM shortcut/AI scene and the CONCEPTFlow command mapping must remain
+disabled.
+
+The ordered `ACTION_AI_START` broadcast is technically abortable, but it is
+reserved for Rokid's one-finger Talk-to-AI behavior and CONCEPTFlow does not
+intercept it. Dedicated two-finger double-tap and swipe broadcasts did not fire
+in the physical RV203 trials even though their recognizer system properties
+were enabled; generic `KEY_DASHBOARD` contact pulses cannot distinguish finger
+count. The physical top button remains wholly excluded because its photo,
+video, power, and pairing functions are system-owned.
+
+Linux scan labels are not Android `KeyEvent` names. API-32 `Generic.kl`
+translates the PSOC candidates as follows: scan 204/`KEY_DASHBOARD` to
+`KEYCODE_NOTIFICATION` (83), 115/`KEY_VOLUMEUP` to 24,
+114/`KEY_VOLUMEDOWN` to 25, 148/`KEY_PROG1` to `KEYCODE_PROG_BLUE` (186), and
+400/`KEY_YELLOW` to `KEYCODE_PROG_YELLOW` (185). The top-button scan 139 is
+overridden by YodaOS to vendor `SPRITE_FUNCTION`, so the Node does not map
+`KEYCODE_MENU`.
+
+The candidate recognizer accepts only the nonvirtual input device named exactly
+`ROKID,PSOC-TP-R` with keyboard source `0x00000101`; runtime device ID is
+required to remain consistent within one sequence but is not pinned across
+boots. Scan code, source, name, virtual state, down/up pairing, cancellation,
+long-press flag, repeat count, and monotonic deadlines are all checked. A
+single-tap command has exact grammar `D,V,[same-V repeats],D,P`; a double-tap
+command has `D,V,[same-V repeats],D,D,Y`, where `D` is the notification
+preamble, `V` is one direction's volume key, `P` is program-blue, and `Y` is
+program-yellow. Repeated same-direction volume steps collapse without extending
+the total deadline. Any unrelated, late, opposite, cross-device, or malformed
+event resets the sequence. With no off-head events, no command can be formed.
+
+The AccessibilityService always returns `false`, including for `PROG_BLUE`, so
+YodaOS retains the native Talk-to-AI long press. It does not inspect
+accessibility events, text, windows, or touch exploration. Candidate-event logs
+are local and limited to a monotonic count, key code, action, repeat/cancel/
+long-press state, scan code, ephemeral device ID, vendor/product integers,
+source, and allowlist result; the device name and descriptor are not logged.
+
+The dynamic system-broadcast observer also remains non-intercepting. A
+physically recognized two-finger hold is published as one typed
+`TWO_FINGER_LONG_PRESS`/`TRIGGERED` event with its glasses monotonic observation
+time. It is not converted into invented key-down/key-up edges. Publication is
+non-buffered before an authenticated live touch lease, and Android's existing
+bounded ordered touch ingress remains authoritative. No command is assigned to
+this event until the OEM Shortcuts-disabled precondition has a durable
+operator-visible enforcement mechanism.
+
+The command gate defaults to observe-only. Install the APK, then use the
+reversible helper:
+
+```bash
+./scripts/rokid-accessibility-control --serial "$ROKID_SERIAL" status
+./scripts/rokid-accessibility-control --serial "$ROKID_SERIAL" enable
+# Capture and validate onKeyEvent metadata, exact grammar, OEM Talk-to-AI,
+# volume behavior, off-head silence, and foreground-service start behavior.
+./scripts/rokid-accessibility-control --serial "$ROKID_SERIAL" commands-enable
+./scripts/rokid-accessibility-control --serial "$ROKID_SERIAL" commands-disable
+./scripts/rokid-accessibility-control --serial "$ROKID_SERIAL" disable
+```
+
+`enable` canonicalizes and appends only this component to user 0's
+`enabled_accessibility_services`, preserves every other service, and verifies
+both the configured list and the service's bound state. On first addition it
+also establishes the app-private command gate as observe-only before exposing
+the service. `disable` removes only
+the full or short form of this component and leaves unrelated services and an
+unusual pre-existing master switch untouched; when it removes the only service,
+it disables the master switch. An absent-component disable is a no-op. Both
+mutating paths verify the installed component and
+`BIND_ACCESSIBILITY_SERVICE` declaration first and restore the original secure
+settings if verification fails.
+
+Do not run `commands-enable` until a physical AccessibilityService callback
+trace confirms the candidate mapping and tests native-control coexistence.
+Even then, direct foreground-service start from the system-bound accessibility
+context and the YodaOS background-policy exception remain physical acceptance
+gates. Failure is logged and no fallback input interception is attempted. The
+double-tap sequences enable or disable the Node. While active only, the
+single-tap sequences call the live controller's authenticated, session-bound
+microphone start/stop intent path. Start still waits for a valid host-authorized
+sublease; stop closes local microphone capture before sending its ordered stop
+intent. ENABLE and DISABLE use the authenticated gesture/command/result round
+trip described above; DISABLE also has a 750 ms local fail-safe so loss of the
+reply cannot prevent the wearer from stopping capture. A missing authenticated
+session fails closed for microphone start and cannot silently grant capture.
+Disable persists the off state and closes camera, IMU, microphone, and network
+producers.
 
 ## Cable and authorization
 
@@ -236,6 +632,20 @@ installation path, protocol, or application architecture.
 
 The repository does not bypass Android Debug Bridge authorization.
 
+Enable, inspect, and disable the cable-independent control posture with:
+
+```bash
+./scripts/rokid-control --serial "$ROKID_SERIAL" idle-enable
+./scripts/rokid-control --serial "$ROKID_SERIAL" status
+./scripts/rokid-control --serial "$ROKID_SERIAL" idle-disable
+```
+
+Disconnecting the development cable after `idle-enable` does not itself stop
+the foreground service. The Activity has already exited; the live link still
+requires valid app-private pairing, a reachable Poco listener, and an explicit
+Poco Start. A reboot receiver intentionally restores only inert state, so run
+authorized `idle-enable` again before the next private-network rendezvous.
+
 ## Build and direct sideload
 
 ```bash
@@ -246,6 +656,9 @@ read -r -p "Rokid ADB serial: " ROKID_SERIAL
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --inspect-only
 ./scripts/rokid-install --serial "$ROKID_SERIAL" --no-build
 ```
+
+The Rokid build pins Android NDK `27.0.12077973` and CMake `3.22.1` for the
+arm64 converter; CI installs those exact toolchain versions.
 
 Installation never starts capture. On a controlled development unit whose lack
 of display prevents an operable runtime permission dialog, camera and
@@ -350,33 +763,142 @@ The helper transfers only public certificates, verifies each private config
 byte for byte, and never exports a private key. Its values and certificate
 contents are not printed. It does not start either endpoint.
 
-Start the Poco listener before the Rokid client:
+Arm the Rokid sensor-off rendezvous through authorized development ADB:
 
 ```bash
-adb -s "$POCO_SERIAL" shell am start --user 0 -W \
-  -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity \
-  -a org.conceptflow.mpl.host.action.START_LIVE_TEST \
-  --es environment automatic --ei duration_seconds 30 --ei maximum_frames 150
-./scripts/rokid-control --serial "$ROKID_SERIAL" live-link-start
+./scripts/rokid-control --serial "$ROKID_SERIAL" idle-enable
 ```
 
-For an early stop, stop the producer and then the listener:
+Then open **Machine Perception Layer, Android Node** on the Poco and activate
+the accessible **Start persistent Android Node listener** button (keyboard
+`L`). The explicitly started connected-device foreground service, rather than
+the Activity, owns the listener and inference resources. Display sleep and
+Activity recreation therefore do not close the listener. Each armed-node
+capture epoch remains bounded to 10 minutes; after its graceful close, the
+Rokid immediately starts the next rendezvous to the same listener. Failure
+retries retain their bounded cooldown. For an early stop, use the
+Poco's accessible **Stop Android Node** action or control. Disable the Rokid
+standby only when needed:
 
 ```bash
-./scripts/rokid-control --serial "$ROKID_SERIAL" live-link-stop
-adb -s "$POCO_SERIAL" shell am start --user 0 -W \
-  -n org.conceptflow.mpl.androidhost/org.conceptflow.mpl.host.MainActivity \
-  -a org.conceptflow.mpl.host.action.STOP_LIVE_TEST
+./scripts/rokid-control --serial "$ROKID_SERIAL" idle-disable
 ```
 
-The start command runs for at most 30 seconds, requests only camera and IMU,
+To test microphone only after the status reports an authenticated active
+session, activate the separate accessible **Request 10-second glasses
+microphone** control (keyboard `M`). The button cannot arm standby or start an
+ordinary session. Its request is rejected if no authenticated session exists,
+another mic window is pending/active, the exact binding differs, or the Rokid
+lacks `RECORD_AUDIO`; camera and IMU continue independently after rejection or
+when the ten-second microphone deadline expires.
+
+Each ordinary glasses diagnostic runs for at most 30 seconds; an explicit soak
+or armed-node epoch runs for at most 10 minutes. The base lease requests camera,
+IMU and touch,
 uses the negotiated 3 FPS relaxed/5 FPS motion cadence and negotiated bounded
-IMU batch-delay/silence values, and terminates on the sixth disconnect (at most
-five reconnections). Logcat output for this direct-live test contains only
+IMU batch-delay/silence values, then releases the sensors before the next
+bounded rendezvous. The persistent Android Node listener accepts sequential
+authenticated leases and retries network interruption without an Activity-held
+90-second deadline. Logcat output for this direct-live test contains only
 aggregate counts and categorical status; it does not emit endpoint, session,
 lease, certificate, frame, or IMU values. The transport uses independent TLS
 1.3 mutual-TLS realtime/control and camera sockets. The second socket is
 admitted with a short-lived, single-use ticket issued over the first.
+
+### Persistent-node physical evidence — 2026-08-25
+
+The directly sideloaded Rokid Node and Poco Android Node completed repeated
+private-WLAN mutual-TLS leases after the listener was moved from the Activity
+to an explicit foreground service. One representative Rokid lease observed and
+queued 82 camera frames, produced 5,600 camera chunks, observed 2,910 IMU
+samples, and queued 1,581 selected samples in 780 batches. The Poco independently
+reported 82 received frames, 780 received batches, and 1,552 accepted pose
+samples with zero rejected poses. A later cumulative Poco snapshot reported
+252 frames, 2,362 batches, and 4,749 accepted pose samples across three leases.
+
+The Poco display was then put into Doze. Its connected-device foreground
+service remained active, and the Rokid completed another 88-frame/796-batch
+lease and authenticated the following lease while the display stayed off. An
+in-place Android Node APK replacement deliberately interrupted one connection;
+the Rokid reported a bounded network failure and subsequently reconnected after
+the listener restarted. The earlier YodaOS rejection of a delayed duplicate
+`startForeground()` call was removed by retaining the already-established
+camera foreground type and updating only the notification during later capture
+states. No raw frame, IMU sample, endpoint, certificate, or device identifier
+was written to this evidence.
+
+The operator also confirmed that the physical forward-swipe plus quick
+one-finger double-tap activation now produces the local Rokid Node audio. This
+confirms the physical input-to-local-activation path. It is not a localization,
+model-accuracy, sustained-battery, or BVI usability result. The corresponding
+typed gesture/command/result protocol remains covered by deterministic JVM
+tests; a separately recorded physical phone acknowledgement should still be
+captured before making a release claim about every gesture round-trip state.
+
+### Durable-link physical evidence — 2026-08-26
+
+A physical private-WLAN run exposed three causes previously reported together
+as timeouts: a disabled diagnostic-spool capability still being polled, a
+periodic clock sample exceeding the one-second quality ceiling, and YodaOS
+process eviction during system-wide low-memory pressure. The protocol now
+negotiates spool support exactly, retains the previous valid clock estimate
+when an otherwise well-formed periodic sample is too slow, and re-enters the
+visible nonvisual authorization broker after same-boot process recreation.
+Malformed records, failed authentication, and impossible timestamps still fail
+closed.
+
+The attached devices sustained one session across repeated ten-second clock
+rounds. A deliberate 20-second glasses Wi-Fi outage produced exactly one
+observable interruption; Android Node stayed listening and the nodes
+reauthenticated automatically after the radio returned. Camera and IMU delivery
+resumed without either app being manually restarted. A complete ten-minute
+lease later closed cleanly and a new session authenticated with no additional
+interruption. After the immediate-rotation change, a subsequent physical
+ten-minute boundary closed at 18:17:58.019, began rendezvous at 18:17:58.268,
+and reported streaming at 18:17:59.408: about 1.14 seconds from the new
+rendezvous to streaming, with no failure backoff or interruption increment.
+The accessible status identifies a diagnostic retained from an earlier
+interruption as previous history while a replacement session is streaming.
+That 2026-08-26 evidence used mutual-TLS app traffic over the shared private
+WLAN. The subsequently implemented and physically exercised phone-owned Wi-Fi
+Direct route is documented in [Wi-Fi Direct transport](WIFI_DIRECT_TRANSPORT.md).
+
+### YodaOS memory/radio hardening evidence — 2026-08-27
+
+Read-only device evidence traced a later outage to system-wide memory pressure:
+Android killed a vendor payment helper, concurrent dead binder calls terminated
+the persistent Sprite assist service, and its restart loaded a private
+`settings_wifi_enable=false` preference and disabled Wi-Fi/P2P. Rokid Node
+itself stayed alive. This establishes why repeated socket reconnect attempts
+could not succeed while the radio remained disabled.
+
+The resolver now enters `WAITING_FOR_RADIO`, cancels retry/watchdog callbacks,
+and performs no P2P operations while either Wi-Fi or P2P is reported disabled.
+A physical forced outage produced one wait transition and zero repeated P2P
+operation failures; after development-only radio restoration, the group
+re-formed, mutual TLS reauthenticated, and capture resumed as session 2.
+
+The post-gate camera path now converts borrowed YUV planes directly to the
+640×640 RGB8 output and transfers ownership of that single fresh RGB array into
+an immutable protobuf value. Packetization shares protobuf slices rather than
+allocating one byte array per 64-KiB camera chunk. The
+validated gate decisions, deterministic 648→640 no-crop downscale, intrinsics
+transform, source timestamps, IMU gate, microphone gate, and touch semantics
+did not change. A
+final 30-second physical run delivered 80 of 81 observed frames and 1,277 IMU
+samples with zero IMU drops, no disconnect, an authenticated close, sampled RSS
+of 86.6--118.4 MiB, and no matching large-object GC message. See
+[YodaOS runtime resilience](YODAOS_RUNTIME_RESILIENCE.md) for scope and limits.
+
+A later exact-build one-shot diagnostic was terminated by LMKD, which Android
+reported as `LOW_MEMORY`; the host's `FRAMING_TRUNCATED_RECORD` was the expected
+secondary symptom of losing the sender mid-record. That one-shot command does
+not persist recovery authorization. A subsequent production-mode test first
+used `idle-enable`, then terminated only the app process. YodaOS recreated the
+accessibility service in about 1.3 seconds, its same-boot broker rearmed the
+start-requested runtime, and authenticated camera/IMU streaming resumed in
+about 4 seconds without manual restart. Production resilience depends on the
+persisted idle-control path; it does not make the process immune to LMKD.
 
 ### Final direct-path evidence — 2026-08-23
 
@@ -422,25 +944,34 @@ contradictions remove intrinsics from that frame. If the result callback is not
 correlatable, the client preserves availability with the documented static
 center-crop derivation. Missing or contradictory static inputs are rejected,
 and no calibration claim follows merely from receiving derived intrinsics. For
-this target fingerprint, the centered 1920×1080 derivation is approximately
-`[fx, fy, cx, cy, s] = [904.7619, 904.7619, 960, 540, 0]`. It remains
-`DERIVED` with unquantified parameter uncertainty. The pinned Depth Anything V2
+this target fingerprint, the centered 648×648 capture derivation is
+approximately `[fx, fy, cx, cy, s] = [407.1429, 407.1429, 324, 324, 0]`.
+After the 648→640 transport scale it is approximately
+`[402.1164, 402.1164, 320, 320, 0]`. It remains `DERIVED` with unquantified
+parameter uncertainty. The pinned Depth Anything V2
 Metric heads produce native scalar camera-frame metric output without consuming
 intrinsics; missing or rejected intrinsics disable pixel-to-ray/vector geometry,
 not that scalar inference.
 
 `SENSOR_ORIENTATION` (including the observed 270-degree value) describes the
-sensor-to-device-natural/display rotation. It does not establish the physical
-`HEAD <- CAMERA` mounting rotation or translation. Consequently, the host's
-`head_camera_extrinsic_missing` gate remains explicit until authoritative
-mounting/calibration metadata is available; model-name hardcoding is not used.
-The official Rokid product/SDK material and Android Camera2 semantics checked on
-2026-08-23 publish no Style factory matrix, distortion residual, or
-`HEAD <- CAMERA` extrinsic. The linked source record is in
-[Research evidence](RESEARCH_EVIDENCE.md). Empirical checkerboard or ChArUco
-calibration of the emitted 1920×1080 path is still required before marking the
-matrix `CALIBRATED` or claiming calibrated spatial/angular accuracy; a separate
-mounting/extrinsic measurement is still required for head-frame projection.
+sensor-to-device-natural/display rotation and is not used as a mounting pose.
+The target separately reports Camera2 `LENS_POSE_REFERENCE=PRIMARY_CAMERA`,
+`LENS_POSE_ROTATION=[0,0,0,1]` in `(x,y,z,w)` order, and a zero translation.
+Android's official semantics make that quaternion a usable rotation between
+camera and Android sensor axes. The current Rokid pose producer uses the rigid
+Android sensor frame as its glasses/head proxy, so the inverse identity rotation
+is published with typed Camera2 provenance and a digest. This enables
+capture-time head/world **directional** propagation.
+
+The zero translation is not accepted as camera-to-head translation: under
+`PRIMARY_CAMERA` its origin is the sole camera itself. Translation therefore
+remains unavailable, and this path does not claim full 6-DoF point anchoring,
+an anatomical eye/gaze calibration, or numeric factory alignment uncertainty.
+Empirical checkerboard or ChArUco calibration of the exact acquired 648×648 YUV
+and published 640×640 RGB8 geometry is still required before marking intrinsics
+`CALIBRATED` or claiming calibrated spatial/angular accuracy. See
+[Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md)
+and [Research evidence](RESEARCH_EVIDENCE.md).
 
 ## Diagnostics
 
@@ -469,9 +1000,10 @@ scheduling, and real glasses audio dispatch. Its bounded direct private-WLAN
 mutual-TLS client, with distinct camera and realtime IMU lanes and microphone
 disabled, was also physically exercised with app-process HTP inference and
 authenticated close in the two final runs above. Those runs do not establish
-forced-reconnect or adverse-network behavior, production deployment readiness,
-open-ear localization quality, camera calibration, representative model
-accuracy, or sustained thermal behavior.
+broad adverse-network behavior, production deployment readiness, open-ear
+localization quality, camera calibration, representative model accuracy, or
+sustained thermal behavior. The later persistent-node run above establishes
+one bounded interruption/reconnect path and Poco display-off continuity.
 
 Verified and unverified physical behavior is recorded without inference in
 [`VALIDATION.md`](../VALIDATION.md). No vendor SDK, client secret, proprietary

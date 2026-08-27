@@ -21,6 +21,22 @@ emitter allocation, limits output to an anchor plus five field voices, derives
 an inspectable nonspatial single-actuator haptic state, and updates at most four
 audio command batches per second.
 
+## Android runtime boundary
+
+`AndroidPerceptionBridgeClient` is the thin Unity consumer for Android Node's
+`PerceptionBus`. It polls a compact versioned world snapshot and drains a
+bounded ordered touch batch through `AndroidJavaClass`. It never transfers raw
+camera/audio buffers, opens sockets, runs QNN or blocks for inference.
+`PerceptionBusBinaryDecoder` is exercised in EditMode and fails closed on
+truncation, wrong magic/version, invalid enums, excessive entity counts,
+invalid numeric fields or trailing bytes. Camera coordinates remain +X right,
++Y down and +Z optical-forward; camera vectors are never mislabeled BODY or
+WORLD.
+
+The FMOD-facing backend consumes semantic/spatial commands after world-state
+interpretation. Capture, network and inference threads never call FMOD. The
+proprietary FMOD Unity package is intentionally not committed.
+
 Controls are textual and keyboard accessible:
 
 - digits `0`–`9`: select the corresponding scenario;

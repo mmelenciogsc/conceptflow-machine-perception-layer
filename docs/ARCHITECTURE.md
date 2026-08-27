@@ -53,14 +53,28 @@ The public repository keeps the three trust transitions explicit:
    scheduling a `PerceptionCue`. A renderer exposes only assistive output, never
    raw frame bytes.
 
+The direct Rokid-to-Android hot path is now:
+
+```text
+ROKID PHYSICAL SENSORS → EXISTING VALIDATED CAPTURE/GATES/RESIZE
+→ IN-MEMORY SENSOR PUBLISHER → MUTUAL-TLS LOCAL DATA PLANE
+→ ANDROID SENSOR INGRESS → SYNCHRONIZED SENSOR TIMELINE
+→ QNN/HTP + HAND PERCEPTION SCHEDULER → PERCEPTION BUS/WORLD STATE
+→ UNITY 3D AR GAME → FMOD STUDIO ADAPTIVE/SPATIAL AUDIO
+```
+
+The Android runtime currently implements the model-neutral path through the
+PerceptionBus. QNN graphs have independent evidence where recorded; hand
+tracking and live Unity/FMOD playback remain separate integration stages. See
+[the streaming protocol](STREAMING_PROTOCOL.md).
+
 The canonical contract is
 [`perception.proto`](../packages/shared-protocol/proto/conceptflow/mpl/v1/perception.proto).
 Its `PerceptionService` has exactly three typed unary methods: `Negotiate`,
-`ProcessFrame`, and `Health`. The same schema now defines transport-neutral
-lease and sensor-stream envelopes, with a tested Rokid packetizer and Android
-host ingress. WebRTC signaling, authentication, and the physical data-channel
-adapter remain unimplemented; there is no fictitious WebRTC RPC in this
-repository. See [PROTOCOL.md](PROTOCOL.md).
+`ProcessFrame`, and `Health`. The same schema defines transport-neutral lease
+and sensor-stream envelopes, with a tested Rokid packetizer, authenticated
+two-lane direct transport and Android host ingress. There is no fictitious
+WebRTC RPC in this repository. See [PROTOCOL.md](PROTOCOL.md).
 
 ## Repository layers
 
@@ -126,6 +140,32 @@ the project-owned mutual-TLS listener and app-process QNN executor. Two bounded
 physical Rokid-to-Poco runs exercised that live path; it is not yet a production
 background service and forced reconnect/adverse-network behavior remains
 unvalidated.
+
+The direct live path separates capture from model admission. Rokid applies its
+3 FPS relaxed / 5 FPS meaningful-change camera gate. Android retains the latest
+complete camera frame and admits paired semantic/depth HTP work at 1 FPS when
+stable, 3 FPS for material motion, track staleness, or uncertainty, and 5 FPS
+only for urgent low-confidence, stale-depth, occlusion, or rapid-approach
+correction. A bounded maintainer publishes explicitly typed 2D, CAMERA, HEAD,
+or evidence-backed WORLD state between keyframes. It uses prior mask-box
+velocity and pose orientation; it has no optical-flow measurement or live
+appearance encoder and is not classic DeepSORT. IMU orientation cannot create
+translation, metric scale, depth, or new visual observations. Controller start
+resets session-owned scheduler, track, pose/extrinsic, and selected-profile
+state. Authenticated session replacement, reconnect, and stop repeat those
+resets; session begin or invalidation also clears previously published head
+state.
+
+QNN and the process-isolated environment VLM arbitrate HTP through two
+kernel-backed locks: a QNN-demand signal and the single execution lease. QNN
+signals before waiting and waits no more than 250 ms; VLM admission waits no
+more than 25 ms and refuses new work while QNN demand exists. An executing VLM
+checks demand every 20 ms and requests cooperative GenieX stream cancellation.
+This serializes admitted ownership and makes process-death cleanup automatic,
+but cannot forcibly preempt an already executing proprietary kernel. The VLM's
+8,000 ms coroutine timeout is consequently not a proven physical upper bound
+if native cancellation does not yield. QNN timeout publishes bounded maintained
+state rather than blocking the latest-only camera worker indefinitely.
 
 ## Windows execution path
 

@@ -43,9 +43,15 @@ Those timestamps let a receiver reject or down-weight stale component vectors.
 The Android period is a request rather than a delivery guarantee; the bounded
 device diagnostic measures observed rate and maximum gap.
 
-The current adapter labels the rigidly worn glasses orientation as HEAD, but a
-future calibration still must establish the fixed `HEAD <- SENSOR` mounting
-offset. It must not infer BODY or torso yaw from head rotation. Rendering in
+The current adapter labels the rigidly worn glasses orientation as HEAD, and a
+Camera2 pose record now establishes the camera rotation relative to those
+Android sensor axes on the physical target. The reported inverse identity is
+therefore a rotation-only `HEAD <- CAMERA` transform for this rigid proxy; its
+`PRIMARY_CAMERA` zero translation is not a camera-to-head measurement. See
+[Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md). A future
+guided calibration is still needed for anatomical alignment, numeric rotation
+uncertainty, and translation. The adapter must not infer BODY or torso yaw from
+head rotation. Rendering in
 Unity/FMOD requires a separate ordered low-latency IMU transport and receiver
 interpolation; the current unary frame request carries only its nearest HEAD
 pose and is deliberately not presented as a 100 Hz renderer feed.

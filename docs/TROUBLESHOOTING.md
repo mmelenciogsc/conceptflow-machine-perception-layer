@@ -129,15 +129,53 @@ that can conceal backpressure or cancellation defects.
 - `CAMERA_IN_USE` or `MAX_CAMERAS_IN_USE`: another YodaOS service owns the
   camera. Record the conflict; do not disable system security or services as an
   installation shortcut.
-- No phone/glasses exchange: expected in the public baseline. The glasses
-  service and phone activity use independent local/in-process flows; no real
-  inter-device transport exists yet.
+- No phone/glasses exchange: confirm both apps retain their app-private pairing
+  files, Android Node is in **Waiting for glasses** or **Capturing**, and the
+  already-provisioned private WLAN is enabled on both devices. The implemented
+  path is two-lane TLS 1.3 with mutual certificate pinning; ADB Wi-Fi is neither
+  required nor used for runtime messages. A paired Bluetooth state alone does
+  not establish this application channel, because a BLE wake/discovery adapter
+  is not implemented yet.
 - No Rokid client secret or SDK class is required. This project intentionally
   builds and sideloads a standalone standard-Android APK.
 - Right-arm touch input is wear-gated on the tested unit. An off-head gesture
   can correctly produce no event; repeat the diagnostic while worn and keep
   the magnetic cable slack. Verified raw mappings are in
   `ROKID_INTEGRATION.md`.
+- `idle-enable` briefly uses the nonvisual command Activity to establish a
+  camera-capable foreground service, then the Activity exits. Camera, IMU, and
+  microphone remain off while the client performs bounded mutual-TLS
+  rendezvous attempts. Cooldowns are scheduled with an elapsed-realtime wakeup
+  alarm, and each pre-authentication epoch has finite 17-second partial CPU and
+  Wi-Fi low-latency locks covering its 15-second handshake deadline; there is
+  no lock during cooldown and no `FLAG_KEEP_SCREEN_ON`. A Wi-Fi lock does not
+  turn a disabled radio on. On API 31+, status reports
+  `wakeup_alarm=exact_allow_idle` only when exact-alarm special access is
+  available; `inexact_allow_idle` is a valid but more readily deferred fallback.
+  Doze and vendor policy can still delay either route, so the Poco's 90-second
+  listener is not a delivery guarantee. Reopen the listener after a missed
+  window rather than weakening authentication or starting sensors in standby. After
+  reboot, only inert service state is restored; run authorized `idle-enable`
+  again before the Poco can request a live session.
+- On the tested API-32 YodaOS build, both shell `am startservice` forms refuse
+  even a resolvable exported debug service. `idle-enable` therefore launches
+  the authorized Activity, which requests lock-screen visibility and screen-on
+  state, waits for `onResume`, window focus, and a 150 ms settling interval,
+  then starts and binds the private service. If logs do not show
+  `source=authorized_visible_activity_started_foreground`, inspect the Activity
+  resume/focus and service-start logs. Do not replace this with a hidden API or
+  exported service. The service is private in every build variant.
+- The Rokid Node's explicitly provisioned AccessibilityService observes only
+  the validated PSOC key allowlist and always returns `false`; it does not
+  intercept events. Worn long press remains the native YodaOS Talk-to-AI
+  action. Do not add a raw input reader, hidden API, unbounded idle wake lock, or background Activity
+  launch to capture it. Use the accessible Poco Start/Stop controls; retain ADB
+  only as a development and recovery control.
+- `idle-disable` and `stop` both mean full service shutdown and persisted idle
+  disable. When a live link is active, foreground removal waits for its bounded
+  authenticated close or, if its terminal callback is lost, the documented
+  12-second watchdog. A persistence-write failure is logged and may allow a
+  later reboot restore, but it never leaves the current capture sources running.
 
 See [ROKID_INTEGRATION.md](ROKID_INTEGRATION.md) for the verified device and SDK
 boundaries.

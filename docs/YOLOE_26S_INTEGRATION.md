@@ -19,15 +19,14 @@ separately governed terms. The public vertical slice uses deterministic
 permissive fixtures.
 
 The Android Node uses the closed `BviClassCatalog` vocabulary. The implemented
-export calls `set_classes` with the exact ordered 40 prompts before producing a
+export calls `set_classes` with the exact ordered 330 prompts before producing a
 static `1×3×640×640` ONNX graph, then verifies ONNX metadata against vocabulary
-SHA-256 `2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44`.
+SHA-256 `f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6`.
 The accepted baseline QNN library uses FP16 on HTP; quantization is not treated
 as a prerequisite. Runtime prompts and YOLOE's
-prompt-free/open-knowledge class set are out of scope. A locally available
-legacy ONNX export was inspected as static `1x3x640x640`, but its embedded
-330-class custom vocabulary does not match the Android Node list and the app
-therefore rejects it rather than silently using broader knowledge.
+prompt-free/open-knowledge class set are out of scope. The current export is
+static `1×3×640×640`; its 330-class ordered custom vocabulary matches the
+Android Node catalog and remains closed at runtime.
 
 On the attached Poco F7 Ultra, QAIRT 2.48.40/QNN HTP V79 executed the FP16
 graph 25 times with an 80.065 ms median client inference time. A higher-signal

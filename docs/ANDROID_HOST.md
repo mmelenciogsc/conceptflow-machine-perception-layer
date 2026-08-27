@@ -5,17 +5,20 @@ The Android Node is the phone-side policy and cue-dispatch reference. It detects
 available platform capabilities, validates and queues frames, chooses a local
 or remote route, tracks session and result state, schedules cues, and exposes
 accessible feedback. Its current activity runs an in-process synthetic
-vertical slice and an explicit, debuggable bounded live test. The live path
-uses the project-owned mutual-TLS Android transport to ingest leased camera and
-IMU envelopes directly from the Rokid app. Two physical 2026-08-23 runs
-exercised this path and authenticated close; production deployment, forced
-reconnect, and adverse-network behavior remain validation gates. A separate
+vertical slice and controls an explicit persistent foreground node. The live path
+uses the project-owned binary mutual-TLS Android transport to ingest bounded
+in-memory camera, IMU, microphone, and touch messages. The old app-private
+JSON/artifact route is disabled by default and retained only for diagnostics.
+Physical 2026-08-23 through 2026-08-27
+runs exercised this path, including sequential leases, an in-place-upgrade
+network interruption, reconnection, and Poco display-off operation. Production
+deployment and broad adverse-network behavior remain validation gates. A separate
 direct Rokid-to-Ubuntu development trace also exercises the shared protobuf
 contract.
 
 Its first product sublayer is Machine Vision. The implemented pure-Kotlin core
-has a fixed 40-class BVI vocabulary, dual indoor/outdoor Depth Anything profile
-selection, segmentation-first timestamped environment routing, an 80-record
+has a fixed 330-class BVI vocabulary, dual indoor/outdoor Depth Anything profile
+selection, segmentation-first timestamped environment routing, a 660-record
 two-distance dimension-vector table, bounded relative-to-metric calibration,
 fixed-vocabulary artifact verification, and truthful QNN HTP capability
 planning for the Poco F7 Ultra. See
@@ -64,12 +67,60 @@ The debug APK is produced at
 | `CueScheduler.submit` | Confidence, freshness, modality, verbosity, cooldown, capacity, priority, cancellation, and supersession. |
 | `GrpcPerceptionTransport.secure` | TLS gRPC unary negotiation and frame processing with deadlines and caller cancellation. |
 | `GlassesStreamIngress.accept` | Lease/session validation, ordered camera chunk assembly with SHA-256, absolute IMU batch validation, explicit microphone authorization, and latest-unread camera retention. |
+| `SensorTimeline` | Bounded normalized camera/IMU/audio/touch ownership, modality-specific freshness, overflow counters, and timestamp-window association. |
+| `PerceptionBus` / `AndroidPerceptionBridge` | Compact latest world state and ordered touch delivery to Unity without exposing raw camera/audio buffers or blocking Unity's main thread. |
+| `DeterministicSensorReplay` | Bounded original/slowed/accelerated/stepwise delivery through the same transport-observer seam for sanitized offline fixtures. |
+| `HostSpoolPullCoordinator` | Disabled-by-default diagnostic-only manifest/artifact reader retained for A/B regression; not the production hot path. |
+| `Request 10-second glasses microphone` | Separate TalkBack- and keyboard-accessible control that is enabled by behavior only during an authenticated camera/IMU session; sends an exact-binding mic-only lease and retains no audio. |
+| `Play glasses brand sequence` | Sends a two-second-TTL command over the authenticated private-WLAN control lane and retains its correlated Rokid acknowledgement in TalkBack-readable status. |
 | `AccessibilityAwareSpeechFeedback.speak` | Text-to-speech when available, suppressed when an accessibility service is enabled. |
 | `MachineVisionPipeline.process` | Correlated, freshness-bounded, fixed-vocabulary semantic-mask/depth fusion using the selected environment profile. |
 | `EnvironmentAwareMachineVisionPipeline.process` | Fixed-vocabulary segmentation, frame-correlated environment fusion, selected depth graph, and metric track fusion in enforced order. |
+| `LiveSemanticDepthAdmissionPolicy` | Independent phone-side model admission: 1 FPS stable, 3 FPS for material motion, track staleness, or uncertainty, and 5 FPS only for urgent low-confidence, stale-depth, occlusion, or rapid-approach correction. |
+| `LightweightTrackMaintainer` | Bounded class/mask-box/depth association, short-lived prediction, confidence decay, coordinate validity, and deterministic eviction between model keyframes. It has no live appearance encoder or optical-flow measurement and is not classic DeepSORT. |
 | `AndroidGnssEnvironmentSource.startBurst` | Optional foreground-only, power-bounded reception-quality evidence without reading or retaining coordinates. |
 | `TwoAnchorMetricDepthCalibrator.calibrate` | Robust 0.6096 m / 2.4384 m relative-depth calibration with uncertainty and extrapolation reporting. |
+| `HtpExecutionLease.tryAcquire` | Deadline-bounded cross-process exclusion and QNN-demand signaling between QNN graphs and the isolated local VLM. New VLM work defers for QNN; admitted VLM work is asked to stop cooperatively. Proprietary native execution is not forcibly preempted. |
 | `QualcommAcceleratorPlanner.select` | HTP only after QNN and HTP initialization; otherwise explicit reference/unavailable state. |
+
+The current microphone control is separate from Start but not a standalone
+transport session. It is disabled until v1 has an active authenticated
+camera/IMU session and the live Machine Vision runtime is initialized, and it
+remains disabled while a microphone request or window is active. A rejected
+microphone request does not stop the existing camera or IMU streams.
+An authenticated glasses gesture can send the same intent in the reverse
+direction. The host validates exact binding, explicit user origin, monotonic
+intent ordering, and clock-normalized freshness before issuing the correlated
+sublease. STOP immediately clears host microphone authorization, and late
+in-flight audio is dropped without interrupting camera or IMU. This does not
+remove or weaken the accessible phone control.
+
+The live QNN lease acquisition deadline is 250 ms and isolated-VLM admission
+is limited to 25 ms. An admitted prewarm or classification receives an
+8.5-second cooperative completion window: ordinary depth/track aging,
+uncertainty, and low-confidence refreshes defer, while direct motion,
+occlusion, or rapid-approach evidence requests VLM cancellation and admits the
+newest QNN frame. Direct motion has precedence when it occurs at the same time
+as routine staleness. Session replacement, reconnect, and stop synchronously
+invalidate generation-scoped VLM work, clear cached scene evidence, and cancel
+queued jobs without allowing a stale lazy job to clear a replacement owner.
+Kernel file locks are process-death safe, while in-process handles are
+idempotently released. Wait/hold telemetry contains no frame or scene content.
+The VLM checks QNN demand every 20 ms and requests the supported GenieX stream
+stop, but a proprietary native call may not yield promptly. Therefore neither
+the 8,000 ms coroutine timeout nor the 8.5-second admission window is claimed
+as a hard maximum HTP hold; the remaining worst case is the duration of one
+already admitted native call.
+
+Rokid activation and sleep gestures are separate from microphone control. The
+host validates each typed `RokidGestureIntent`, maps it to an ACTIVATE or SLEEP
+command, sends that command back over the same authenticated control lane, and
+requires an exact result correlation. Live status retains the latest
+requested, accepted, or rejected operation and whether its source was a glasses
+gesture or Android control, so frequent frame-status refreshes do not erase the
+acknowledgement. Keyboard `B` invokes the same phone-originated brand-sequence
+request as the accessible button. ADB Wi-Fi is not used by this operational
+path.
 
 `apps/android-host/src/main/res/xml/network_security_config.xml` disables
 cleartext traffic. The secure transport accepts a host and port through
@@ -77,19 +128,43 @@ cleartext traffic. The secure transport accepts a host and port through
 
 ## Current sample activity
 
-`MainActivity` intentionally constructs `InProcessHostTransport`. Connect
+The synthetic Connect/Process controls intentionally construct
+`InProcessHostTransport`. Connect
 negotiates a synthetic session, Process generates a real decodable one-pixel
 JPEG fixture, and the synthetic result contains one directional obstacle cue.
 `InProcessCueDispatchTransport` sends that cue to Android audio/haptic feedback
-within the same app. The UI does not instantiate `GrpcPerceptionTransport`,
-does not receive a physical glasses frame, and does not send a cue to the Rokid
-APK.
+within the same app. The separate **Start persistent Android Node listener**
+control starts a connected-device foreground service that owns the direct
+two-lane private-WLAN mutual-TLS listener independently of the Activity,
+receives sequential bounded glasses frame/IMU leases, and runs the privately
+provisioned QNN adapter when its profile-selection prerequisites are satisfied.
+It enables microphone and Rokid command operations only after authentication.
+The live path does not instantiate `GrpcPerceptionTransport` and does not yet
+return perception cues to the Rokid APK.
 
-This separation allows policy tests and APK inspection without pretending the
-device bridge is complete. A production integration must wire an authenticated
-WebRTC or equivalently bounded media adapter to `GlassesStreamIngress`, then wire concrete capture
-and cue transports, preserve cancellation, and display whether work is local,
-remote, degraded, or disconnected.
+Rokid capture cadence and Poco model cadence are deliberately separate. The
+glasses may send approximately 3 FPS while relaxed and up to 5 FPS after
+meaningful change. Android ingress and the inference queue retain only the
+latest complete frame. The phone admits segmentation plus the selected metric
+depth graph at 1 FPS while state is stable, 3 FPS for material motion,
+staleness, or uncertainty, and at most 5 FPS for urgent correction. Between
+admitted keyframes, the host emits explicitly labeled bounded prediction and
+orientation-propagated state from prior measurements; it does not claim a new
+visual measurement.
+
+The live path has no optical flow or wired appearance encoder and must not be
+described as classic DeepSORT. Rokid IMU contributes orientation only: it does
+not supply translation or absolute scale. WORLD output therefore requires
+separate, matching position evidence; otherwise a track remains HEAD, CAMERA,
+or 2D/scalar-depth state according to available evidence. Controller start
+resets scheduling, tracking, pose/extrinsic, and depth-profile state.
+Authenticated session replacement, reconnect, and stop repeat those resets;
+session begin or invalidation also clears previously published head state.
+
+This separation allows policy tests and APK inspection without forcing network,
+QNN or sensor work onto Unity's main thread. The implemented private-WLAN data
+plane is mutually authenticated TLS with explicit bounded framing; it is not a
+WebRTC implementation and makes no physical-network zero-copy claim.
 
 When app TTS is suppressed because an accessibility service is active, or is
 unavailable/not ready, the bounded cue speech (falling back to its description)
@@ -124,9 +199,15 @@ Expected current behavior:
    manual classification.
 6. Run synthetic environment diagnostic (or press `E`) exercises timestamped
    camera/GNSS evidence fusion and outdoor-profile routing with test data.
-7. Cancel or Disconnect closes the current sample session.
+7. Start persistent Android Node listener (or press `L`) starts the foreground
+   listener; individual glasses capture leases remain bounded;
+   while authenticated, `M` requests microphone and `B` requests the on-glasses
+   brand sequence.
+8. Stop Android Node closes the listener and its current session.
 
-This does not validate phone-to-glasses transport or the Python service.
+The synthetic controls do not validate phone-to-glasses transport or the Python
+service. The live control exercises the physical private-WLAN path when the
+paired devices and private QNN artifacts are present.
 
 On 2026-08-22 the current debug APK was installed and launched on the attached
 Poco F7 Ultra after the user approved Xiaomi's **Install via USB** prompt. The
@@ -159,17 +240,25 @@ cleartext globally.
 
 ## Verified status
 
-The current validation record reports 194 JVM tests across the Android apps and
-shared protocol module: 98 Android Node tests, 95 Rokid Node tests, and one
-byte-exact Python/Java protocol vector. Both debug APK builds succeeded using
-JDK 17 and an installed Android SDK. The host source includes the capability,
-preprocessing, routing, session, correlation, scheduler, Machine Vision, gRPC,
-and TalkBack-aware semantics described above.
+On 2026-08-25, the focused Android transport, Android Node, and Rokid Node JVM
+test tasks, both debug APK assemblies, both Android lint tasks, and
+`git diff --check` passed. The current APKs were then replacement-installed on
+the attached devices without clearing app-private state. TalkBack remained
+enabled and all three private QNN artifact slots remained present.
 
-Not verified: real phone-to-glasses transport, real Python-service transport
-from the app activity, instrumentation tests, Android hardware cue quality, or
-TalkBack acceptance. See [`VALIDATION.md`](../VALIDATION.md) and
-[ACCESSIBILITY.md](ACCESSIBILITY.md).
+With the Poco display awake, one physical lease delivered 82 frames, 780 IMU
+batches, and 1,552 accepted pose samples to Android Node. Across three leases,
+its accessible foreground-notification status reached 252 frames, 2,362 IMU
+batches, and 4,749 accepted pose samples with zero rejected poses. With the Poco
+display in Doze, the foreground service stayed active and the Rokid completed
+another 88-frame lease, then authenticated the next lease. This validates the
+current physical glasses-to-phone transport and one screen-off reconnect path;
+it does not validate long-duration roaming, hostile networks, inference
+accuracy, thermal endurance, audio localization, or BVI usability.
+
+Real Python-service transport from the app, instrumentation tests, Android
+hardware cue quality, and manual TalkBack task acceptance remain unverified.
+See [`VALIDATION.md`](../VALIDATION.md) and [ACCESSIBILITY.md](ACCESSIBILITY.md).
 
 ## Troubleshooting
 

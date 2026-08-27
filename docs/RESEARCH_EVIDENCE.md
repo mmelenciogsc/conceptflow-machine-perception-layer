@@ -1,6 +1,46 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # Research evidence ledger
 
+## Android Wi-Fi Direct — 2026-08-26
+
+- Android Wi-Fi Direct overview: <https://developer.android.com/develop/connectivity/wifi/wifip2p>
+- `WifiP2pManager` API reference: <https://developer.android.com/reference/android/net/wifi/p2p/WifiP2pManager>
+- Android `Network` API reference: <https://developer.android.com/reference/android/net/Network>
+
+Engineering consequence: the connection manager uses framework group creation,
+DNS-SD discovery, connection-info callbacks, and version-appropriate nearby or
+location permission checks. Discovery identity is not an authentication
+boundary; the existing exact public-key pins and mutual TLS remain mandatory.
+The target firmware behavior is validated separately from API availability.
+
+## Android/YodaOS process and radio resilience — 2026-08-27
+
+- Android [process lifecycle](https://developer.android.com/guide/components/activities/process-lifecycle)
+  documents process importance and makes no guarantee that an application
+  process remains resident.
+- Android [foreground service guidance](https://developer.android.com/develop/background-work/services/fgs)
+  defines the user-visible service mechanism used for active capture and
+  transport.
+- Android's [memory-management overview](https://developer.android.com/topic/performance/memory-overview)
+  documents reclaim and low-memory process termination.
+- Android [Wi-Fi Direct guidance](https://developer.android.com/develop/connectivity/wifi/wifip2p)
+  defines the framework state broadcasts and group/discovery APIs used here.
+
+Engineering consequence: durability is implemented with a foreground service,
+bounded/latest-wins buffers, low-allocation post-gate processing, sticky
+recovery, and explicit wait/resume behavior around platform radio state. The
+application does not claim or attempt privileged control of YodaOS, the
+low-memory killer, or the vendor's private Wi-Fi preference. See
+[YodaOS runtime resilience](YODAOS_RUNTIME_RESILIENCE.md) for the sanitized
+device evidence and measured limits.
+
+Device evidence further distinguishes command lifecycle from transport
+reconnect. A bounded `live-link-start` diagnostic is nonpersistent and is not
+reconstructed after LMKD terminates its process. Explicit `idle-enable`
+persists a same-boot capability; on the attached glasses the system-bound
+accessibility service and nonvisual Activity broker recreated the runtime and
+restored the authenticated stream after deliberate app-process termination.
+
 Access date for the main evidence table below: **2026-08-22**. Later focused
 sections state their own access dates. HTTP availability and the cited content
 were checked during implementation. A reachable page is not proof of
@@ -23,7 +63,8 @@ perceptual effectiveness, licensing permission, or device support.
 | [Depth Anything V2 VKITTI metric Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-VKITTI-Small/tree/c725b8589bdf6ab04072cab74c0467830db80d6d) | Official outdoor checkpoint revision `c725b8589bdf6ab04072cab74c0467830db80d6d`; card declares Apache-2.0; inspected 2026-08-23 | Pin revision/checksum and use the 80 m output contract; record model error as unquantified until representative validation |
 | [Qualcomm AI Hub Depth Anything V2](https://aihub.qualcomm.com/models/depth_anything_v2) and [release package](https://huggingface.co/qualcomm/Depth-Anything-V2) | Release 0.60.0 provides a 518×518 generic relative-depth Small wrapper and device-profiled ONNX/QNN assets; custom weights/shapes require a separately authenticated compilation path | Evaluate externally without committing artifacts; do not substitute its relative output for the metric indoor/outdoor heads without guided calibration |
 | [Rokid AI Glasses Style](https://global.rokid.com/products/rokid-ai-glasses-style) | Product is explicitly non-display | No visual wearer UI; direct Android/ADB path stays canonical |
-| [Camera2 capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests) | A configured session submits capture requests to target surfaces | Keep the JPEG `ImageReader` bounded and schedule capture requests independently of inference |
+| [Official Rokid Bare Metal input guide](https://custom.rokid.com/prod/rokid_web/ff28c865a9634876be98cbc293588460/pc/us/index.html?documentId=ca8fedf26d534e1fabb8a34d1fa24e98) and [official sample](https://rokid-ota.oss-cn-hangzhou.aliyuncs.com/toB/Document/CXR_Bare/GlassesBareDevSample.zip), inspected 2026-08-26 | The sample dynamically registers a system-high-priority receiver for Rokid touch actions and aborts only ordered broadcasts. Its documented target has a 480×640 display and is not the non-display RV203. | Treat the action names as discovery evidence only; verify ordering and delivery on the physical Style hardware before any interception. |
+| [Camera2 capture sessions and requests](https://developer.android.com/media/camera/camera2/capture-sessions-requests) | A configured session submits capture requests to target surfaces | Keep the two YUV `ImageReader` instances bounded, drain the preview keepalive independently, and schedule exact 648×648 YUV captures independently of inference before the protected gate and 640×640 RGB8 conversion |
 | [`Bitmap.createScaledBitmap`](https://developer.android.com/reference/android/graphics/Bitmap#createScaledBitmap(android.graphics.Bitmap,int,int,boolean)) | Android exposes an explicit width/height scaling operation | Compute one aspect-fit scale first; never force a source into 16:9 |
 | [Android motion sensors](https://developer.android.com/develop/sensors-and-location/sensors/sensors_motion) | Game rotation excludes geomagnetic north; rotation vectors and gyroscope/linear acceleration have distinct semantics | Prefer game rotation for relative head orientation and carry angular velocity/linear acceleration separately |
 | [`SensorManager.registerListener`](https://developer.android.com/reference/android/hardware/SensorManager#registerListener(android.hardware.SensorEventListener,android.hardware.Sensor,int,int)) | Sampling period and report latency are requested parameters rather than guaranteed delivery | Request unbatched 10 ms samples and measure observed rate/gaps |
@@ -37,7 +78,8 @@ perceptual effectiveness, licensing permission, or device support.
 
 ## Rokid camera geometry evidence
 
-Sources in this section were accessed **2026-08-23**.
+Sources in this section were accessed **2026-08-23** unless a row states a
+later date.
 
 | Evidence | Verified point | Engineering consequence |
 | --- | --- | --- |
@@ -47,10 +89,22 @@ Sources in this section were accessed **2026-08-23**.
 | [Android `SCALER_CROP_REGION`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest#SCALER_CROP_REGION) and [`CONTROL_ZOOM_RATIO`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest#CONTROL_ZOOM_RATIO) | Each non-RAW stream is additionally center-cropped to its aspect ratio and scaled. The HAL may adjust the crop, reports the final crop in the capture result, and treats crop coordinates as post-zoom when zoom-ratio control is used. | Derive output intrinsics from the capture result, not static characteristics alone. Pin zoom to 1.0 and request the full array for the simple mapping, or model the reported zoom and crop explicitly. |
 | [Android `DISTORTION_CORRECTION_MODE`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest#DISTORTION_CORRECTION_MODE), [`SENSOR_INFO_ACTIVE_ARRAY_SIZE`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_ACTIVE_ARRAY_SIZE), and [`SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE) | With correction off, crop metadata uses the pre-correction array; with correction on, it uses the post-correction active array. Processed JPEG/YUV buffers receive the selected correction. | Prefer a supported OFF mode when forwarding the vendor distortion model. FAST/HIGH_QUALITY output needs the post-correction mapping and cannot be represented by merely scaling the pre-correction matrix. |
 | [Android `SENSOR_ORIENTATION`](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#SENSOR_ORIENTATION) and [`SCALER_ROTATE_AND_CROP`](https://developer.android.com/reference/android/hardware/camera2/CaptureRequest#SCALER_ROTATE_AND_CROP) | Sensor orientation is the rotation needed for upright display; it does not itself rotate the camera matrix. Rotate-and-crop occurs after digital zoom and before per-stream cropping, and the capture result reports the concrete applied mode. | Keep processed frames in sensor orientation or rotate their intrinsics with their pixels. Pin rotate-and-crop to NONE where supported, or consume its capture result before publishing intrinsics. |
-| [OpenCV camera-calibration tutorial](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html) | Intrinsics and distortion are recovered from corresponding known 3D target points and observed 2D image points across multiple views. | Calibrate the actual 1920×1080 capture path and retain residual/error evidence before claiming calibrated intrinsics or quantified spatial/angular accuracy. |
+| [AOSP `LENS_POSE_ROTATION`, `LENS_POSE_TRANSLATION`, and `LENS_POSE_REFERENCE`](https://android.googlesource.com/platform/system/media/+/refs/heads/main/camera/docs/metadata_definitions.xml), inspected 2026-08-27 | Rotation maps Android sensor coordinates to camera-aligned coordinates. `PRIMARY_CAMERA` translation is relative to the main camera optical centre, so a sole camera reports zero; only `GYROSCOPE` establishes a camera-to-gyro origin. The target reports `PRIMARY_CAMERA`, quaternion `[0,0,0,1]`, and translation `[0,0,0]`. | Invert the quaternion to obtain the rotation from camera axes to the rigid glasses/head sensor proxy. Publish translation as unavailable; do not reinterpret the zero as a camera-to-head offset. This enables rotation-only world propagation, not full 6-DoF anchoring. |
+| [OpenCV camera-calibration tutorial](https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html) | Intrinsics and distortion are recovered from corresponding known 3D target points and observed 2D image points across multiple views. | Calibrate the actual exact-648×648 YUV acquisition and emitted 640×640 RGB8 geometry, and retain residual/error evidence before claiming calibrated intrinsics or quantified spatial/angular accuracy. |
 
 The Android reference semantics above were cross-checked against the current
 [AOSP camera metadata definitions](https://android.googlesource.com/platform/system/media/+/refs/heads/main/camera/docs/metadata_definitions.xml).
+
+## Rokid wear signal evidence
+
+Public sources in this section were inspected **2026-08-24**. The device sensor
+inventory was supplied separately from the bounded physical inspection; this
+implementation did not issue device commands.
+
+| Evidence | Verified point | Engineering consequence |
+| --- | --- | --- |
+| [Official Rokid Glasses SDK demo phone notification sample](https://github.com/RokidSuuport/glass3_sdk_demo/blob/16380658cbf265af069895648119106bab3e5b04/glass3sdkphonedemo/app/src/main/java/com/rokid/phone/notification/service/MessageNotificationListenerService.kt#L58) and [pinned public tree](https://github.com/RokidSuuport/glass3_sdk_demo/tree/16380658cbf265af069895648119106bab3e5b04) | The sole Rokid-specific wear-status reference found in the public tree is a commented `DeviceInfoManager.getWearingStatus()` line in the phone demo. The tree does not publish that manager, an import, or a wear callback usable by the sideloaded Node. | Do not fabricate a vendor wear API and do not reinterpret touch keys as wear events. |
+| Target Android sensor inventory, API 32 | Two public `TYPE_PROXIMITY` sensors named `ucs_ucs146e0` are visible without an extra permission: wake-up and non-wake-up variants. This proves API availability, not that near/far reliably means worn/off-head. | Prefer the wake-up sensor, fall back to non-wake-up, debounce and latch near/far transitions, and keep the signal labeled as a proximity candidate until physical put-on/removal/occlusion calibration passes. Use explicit visible enable only when lookup or registration fails. |
 
 The sanitized target observation was equal 4032×3024 pixel, active, and
 pre-correction active arrays; 4.032×3.024 mm physical size; one 1.9 mm focal
@@ -119,12 +173,18 @@ derived-intrinsics path reached the host; their aggregate evidence does not
 turn the provisional matrix into measured factory calibration or quantify its
 error.
 
-Empirically calibrate the emitted 1920×1080 JPEG path with a checkerboard or
-ChArUco target and bind the measured matrix, distortion, resolution, modes, and
-residual uncertainty together before claiming calibrated 3D spatial accuracy.
-Separately measure the physical `HEAD <- CAMERA` rotation and translation.
-Native scalar metric depth remains available with unquantified model error;
-that is narrower than a calibrated pixel-to-ray or spatial/angular claim.
+Empirically calibrate the exact 648×648 YUV acquisition and emitted 640×640
+RGB8 path with a checkerboard or ChArUco target, then bind the measured matrix,
+distortion, resolution, modes, and residual uncertainty together before
+claiming calibrated 3D spatial accuracy.
+The target's non-`UNDEFINED` Camera2 pose now supplies a source-backed
+`HEAD <- CAMERA` rotation relative to the rigid Android sensor/head proxy; see
+[Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md). Camera2
+`PRIMARY_CAMERA` still does not supply physical camera-to-head translation or
+numeric alignment uncertainty. Separately measure those quantities for full
+6-DoF anchoring. Native scalar metric depth remains available with unquantified
+model error; that is narrower than a calibrated pixel-to-ray or spatial/angular
+claim.
 
 ## Local evidence
 
@@ -175,6 +235,18 @@ that is narrower than a calibrated pixel-to-ray or spatial/angular claim.
   HAL's minimum-exposure still-capture behavior; a lit-scene run analyzed 28
   exact-size frames and emitted 18 after gating. Sustained throughput and
   perceptual threshold calibration remain empirical.
+- On 2026-08-24 both attached devices reported the Android classic-Bluetooth
+  and Bluetooth LE feature flags with Bluetooth enabled. This establishes only
+  platform capability. It does not establish a project-owned GATT/RFCOMM
+  service, mutually authenticated application protocol, background wake
+  behavior, or acceptable energy use. The implemented operational control path
+  therefore remains the existing private-WLAN TLS 1.3 channel; BLE wake and
+  discovery stay unclaimed until an explicit protocol and physical test exist.
+- The same physical run observed the Rokid's bounded pre-authentication lease
+  holding both its partial CPU lock and Wi-Fi low-latency lock. The locks are
+  capped at 17 seconds and released on authentication or terminal paths. The
+  Wi-Fi lock preserves an already-enabled associated radio only; it cannot
+  silently enable Wi-Fi on this ordinary Android application.
 
 ## Unresolved hypotheses
 

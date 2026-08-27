@@ -24,7 +24,8 @@ cues. It does not define autonomous control or safety decisions.
 standard `grpc.health.v1` service is registered.
 
 The schema includes transport-neutral lease and sensor-stream messages plus an
-implemented direct Android live-link envelope. The Rokid and Poco endpoints use
+implemented direct Android live-link envelope and acknowledged pull-spool
+controls. The Rokid and Poco endpoints use
 two private-WLAN TLS 1.3 mutual-TLS sockets: one realtime/control lane and one
 camera lane. This transport, its pairing/configuration boundary, and its state
 machines are locally tested. Two bounded physical Rokid-to-Poco runs completed
@@ -45,10 +46,53 @@ current direct Android transport.
 camera, IMU, and microphone streams. A microphone request is separately
 explicit. `StreamLeaseGrant` returns bounded parameters; duration is expressed
 as a relative interval so a receiver never compares unrelated device monotonic
-clock epochs. The general schema can represent microphone data, but the current
-direct Rokid-to-Poco lease accepts exactly camera and IMU, sets
-`user_requested_microphone=false`, and rejects microphone payloads on both
-send and receive.
+clock epochs. The ordinary direct Rokid-to-Poco lease accepts exactly camera
+and IMU and sets `user_requested_microphone=false`. During an active
+authenticated session, a separate Android control may send a mic-only request
+with the exact active binding, a maximum ten-second duration, and
+`user_requested_microphone=true`. The Rokid checks permission and current
+binding before granting, starts capture only after the grant is written, and
+stops at the earlier of the microphone or parent-session deadline. Microphone
+chunks share the realtime/control lane through a one-record latest-wins queue;
+fair dequeue prevents a continuous microphone source from starving bounded IMU
+batches. Unauthorized or late chunks are discarded without terminating camera
+or IMU. This v1 microphone lease is
+a sublease: camera-lane admission and the parent camera/IMU session must already
+exist. A standalone microphone session requires a future transport revision.
+
+A glasses-side user action uses the backward-compatible
+`MicrophoneControlIntent` control variant. It carries the exact session and
+lease, a strictly increasing connection-local intent ID, its glasses monotonic
+creation time, `user_requested=true`, and START or STOP. The host rejects a
+nested binding mismatch, malformed duration or operation, replayed ID, or an
+intent older than one second after clock normalization. An accepted START
+issues or reuses the existing maximum-ten-second microphone sublease;
+`originating_microphone_intent_id` correlates its request and grant. STOP
+revokes host authorization immediately. The glasses stop `AudioRecord` before
+waiting for the authenticated `MicrophoneControlResult`, and the host consumes
+any already-written correlated grant without reauthorizing capture. A phone-side
+accessible microphone request remains available and uses correlation ID zero.
+
+Rokid Node activation and sleep use a separate typed round trip on the same
+authenticated realtime/control lane. `RokidGestureIntent` carries an exact
+session/lease binding, a connection-local increasing gesture ID, the observed
+glasses monotonic timestamp, an allowlisted ENABLE or DISABLE operation, and an
+explicit physical-user-origin flag. Android Node normalizes its timestamp,
+rejects stale, replayed, malformed, or misbound intents, and maps it to a new
+`RokidNodeCommand`. That command has its own increasing ID, a maximum two-second
+TTL, the originating gesture ID, and an allowlisted ACTIVATE or SLEEP operation.
+Rokid Node validates the binding, authorization flag, TTL bound, operation, and
+replay order before queueing it, then returns an exactly correlated
+`RokidNodeCommandResult`. A phone-originated accessible control may use the
+same command/result pair with originating gesture ID zero to request the brand
+sequence. These controls do not grant sensor or microphone permission and do
+not broaden the active stream lease.
+
+This application control plane uses the direct private-WLAN mutual-TLS link;
+ADB is only a development install, provisioning, and diagnostic facility. A
+Bluetooth/BLE discovery or wake adapter is not implemented yet and must not be
+treated as authenticated merely because the operating systems report the
+devices as paired.
 
 `SensorStreamEnvelope` carries exactly one of:
 
@@ -56,23 +100,46 @@ send and receive.
   metadata-only `FramePayload` on chunk zero;
 - an `ImuBatch` of absolute pose, angular velocity, and linear acceleration
   readings rather than loss-sensitive deltas;
-- a bounded PCM `MicrophoneChunk` for other explicitly authorized transport
-  profiles; the direct Android live link never admits one;
+- a bounded PCM `MicrophoneChunk`, admitted by the direct Android live link only
+  during the exact active, explicit, time-bounded microphone sublease;
 - a lease grant or a typed error.
+
+Camera metadata may include `CameraHeadExtrinsic`. Its quaternion maps
+camera-optical vectors into the rigid glasses/head sensor proxy and carries an
+explicit provenance plus evidence digest. Translation has an independent
+availability flag: consumers must not treat an absent translation, or a
+Camera2 `PRIMARY_CAMERA` zero, as a measured physical offset. Unknown
+provenance, malformed quaternions, or an in-session digest change fail closed.
+See [Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md).
 
 On the implemented direct link, lease requests, grants, and typed control
 errors use `LiveLinkControl`; the corresponding `SensorStreamEnvelope`
 alternatives remain transport-neutral schema options and are not its wire
 control path.
 
+The production Rokid Machine Vision path is in memory: exact 648×648 YUV
+acquisition, protected gate, then 640×640 RGB8 publication over the
+authenticated live link. The app-private bounded spool is an optional,
+disabled-by-default diagnostic A/B mode. When explicitly enabled, it encodes
+gate-admitted RGB8 frames to bounded JPEG, and Android Node uses
+`SpoolManifestPoll`, verifies the canonical JSON and its SHA-256 from
+`SpoolManifestSnapshot`, fetches file-backed camera/WAV records through bounded
+`SpoolArtifactRequest` / `SpoolArtifactChunk` messages, and sends
+`SpoolRecordsAck` only after complete artifact verification and typed delivery.
+IMU batches remain inline in each manifest record. This is a diagnostic pull
+protocol, not the production synchronization path. See
+[Rokid pull spool](ROKID_PULL_SPOOL.md).
+
 `LiveLinkEnvelope` is the canonical record on the implemented TLS framing
 layer. It wraps either `LiveLinkControl` or `SensorStreamEnvelope` and binds the
 record to the active session, lease, lane, strictly increasing per-lane
 sequence, and sender monotonic timestamp. The realtime/control lane performs
 hello, lease negotiation, clock probes, periodic clock resynchronization,
-keepalive, and IMU delivery. It issues a short-lived, single-use camera-lane
-ticket bound to the fresh 32-byte connection nonce, session, and lease. The
-camera lane must redeem that ticket before carrying camera chunks.
+keepalive, microphone control intents/results, Rokid gesture intents, correlated
+Rokid Node commands/results, and IMU delivery. It issues a short-lived,
+single-use camera-lane ticket bound to the fresh 32-byte connection nonce,
+session, and lease. The camera lane must redeem that ticket before carrying
+camera chunks.
 
 Both lanes are reliable and ordered TCP/TLS streams. The host enforces lane,
 envelope, frame, batch, and sample order; bounds allocation before assembly;
@@ -122,12 +189,14 @@ before `WorkerPool.submit`. `FrameSequenceValidator.validate` enforces
 increasing frame IDs and capture timestamps independently for each
 session/stream.
 
-Android producers intentionally narrow this further. `Camera2FrameSource`
-produces bounded JPEG frames, while `FrameValidator` and
-`BoundedFramePreprocessor` require JPEG metadata and size consistency. These
-Android checks are structural preflight, not a decodability guarantee; the
-authoritative service decode remains mandatory. A future adapter must negotiate
-or translate formats; it must not silently relabel encoded content.
+Android producers intentionally narrow this further. Production
+`Camera2FrameSource` acquires exact 648×648 YUV, applies the protected gate, and
+publishes accepted frames as 640×640 packed RGB8 in RAM.
+`BoundedFramePreprocessor` validates the negotiated raw-image stride, byte
+count, bounds, and digest; the JPEG-only `FrameValidator` remains a legacy
+synthetic/diagnostic boundary. Compressed formats still require authoritative
+bounded decode before worker submission. An adapter must negotiate or translate
+formats; it must not silently relabel encoded content.
 
 ## Result and correlation contract
 
