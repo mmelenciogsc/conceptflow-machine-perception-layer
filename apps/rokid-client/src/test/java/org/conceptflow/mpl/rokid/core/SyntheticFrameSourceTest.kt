@@ -105,6 +105,27 @@ class SyntheticFrameSourceTest {
         assertTrue(!uncalibrated.hasIntrinsics())
     }
 
+    @Test
+    fun jpegFrameCopiesCallerOwnedBytesByDefault() {
+        val source = byteArrayOf(1, 2, 3)
+        val frame = buildJpegFrame(
+            requestId = "ownership",
+            sessionId = "session",
+            streamId = "camera",
+            frameId = 1L,
+            timestampNanos = 1L,
+            wallTimeMillis = 1L,
+            width = 1,
+            height = 1,
+            bytes = source,
+            synthetic = true,
+        )
+
+        source[0] = 9
+
+        assertEquals(1, frame.frameData.byteAt(0).toInt())
+    }
+
     private fun frame(
         frameId: Long,
         timestamp: Long,

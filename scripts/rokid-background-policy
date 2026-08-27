@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
+cd "$REPOSITORY_ROOT"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
+readonly RUN_IN_BACKGROUND="RUN_IN_BACKGROUND"
+readonly RUN_ANY_IN_BACKGROUND="RUN_ANY_IN_BACKGROUND"
+
+serial=""
+command_name=""
+run_in_background_mode=""
+run_any_in_background_mode=""
+device_idle_whitelist_state=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/rokid-background-policy [--serial SERIAL] COMMAND
+
+Inspect or explicitly provision the narrow background policy required by the
+directly sideloaded Rokid Node on the observed API 32 YodaOS build.
+
+Commands:
+  status   Read the two package app-ops and device-idle whitelist state.
+  enable   Set RUN_IN_BACKGROUND=allow, RUN_ANY_IN_BACKGROUND=default, and add
+           only the Rokid Node package to the device-idle whitelist.
+  disable  Reset both app-ops to default and remove only the Rokid Node package
+           from the device-idle whitelist.
+
+This helper does not launch the app or trigger playback, sensors, or network.
+It changes device policy only for org.conceptflow.mpl.rokidclient.
+
+Options:
+  --serial SERIAL  Explicit ADB serial. Required when multiple devices are attached.
+  -h, --help       Show this help.
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --serial)
+            (($# >= 2)) || fail "--serial requires a value"
+            serial="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        status|enable|disable)
+            [[ -z "$command_name" ]] || fail "only one command may be supplied"
+            command_name="$1"
+            shift
+            ;;
+        *)
+            fail "unknown argument '$1'; use --help"
+            ;;
+    esac
+done
+
+[[ -n "$command_name" ]] || fail "a command is required; use --help"
+select_rokid_target "$serial"
+verify_rokid_target
+adb -s "$ROKID_SERIAL" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1 || \
+    fail "install the directly sideloaded Rokid Node APK first"
+
+read_appop_mode() {
+    local operation="$1"
+    local response mode
+    response="$(adb -s "$ROKID_SERIAL" shell cmd appops get \
+        "$PACKAGE_NAME" "$operation" 2>/dev/null | tr -d '\r')" || \
+        fail "could not read $operation"
+    mode="$(printf '%s\n' "$response" | awk -v operation="$operation" '
+        $1 == operation ":" {
+            value = tolower($2)
+            sub(/;.*/, "", value)
+            print value
+            found = 1
+            exit
+        }
+        tolower($1) == "default" && tolower($2) == "mode:" {
+            value = tolower($3)
+            sub(/;.*/, "", value)
+            default_value = value
+        }
+        END {
+            if (!found) print default_value == "" ? "default" : default_value
+        }
+    ')"
+    [[ "$mode" =~ ^[a-z_]+$ ]] || fail "could not parse $operation"
+    printf '%s\n' "$mode"
+}
+
+is_device_idle_whitelisted() {
+    local response
+    response="$(adb -s "$ROKID_SERIAL" shell dumpsys deviceidle whitelist \
+        2>/dev/null | tr -d '\r')" || \
+        fail "could not read the device-idle whitelist"
+    printf '%s\n' "$response" | awk -F, -v package_name="$PACKAGE_NAME" '
+        {
+            for (field = 1; field <= NF; field += 1) {
+                candidate = $field
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", candidate)
+                if (candidate == package_name) found = 1
+            }
+        }
+        END { exit !found }
+    '
+}
+
+read_policy_state() {
+    run_in_background_mode="$(read_appop_mode "$RUN_IN_BACKGROUND")"
+    run_any_in_background_mode="$(read_appop_mode "$RUN_ANY_IN_BACKGROUND")"
+    if is_device_idle_whitelisted; then
+        device_idle_whitelist_state="present"
+    else
+        device_idle_whitelist_state="absent"
+    fi
+}
+
+print_policy_state() {
+    printf 'RUN_IN_BACKGROUND: %s\n' "$run_in_background_mode"
+    printf 'RUN_ANY_IN_BACKGROUND: %s\n' "$run_any_in_background_mode"
+    printf 'device-idle whitelist: %s\n' "$device_idle_whitelist_state"
+    if [[ "$run_in_background_mode" == "allow" && \
+        "$run_any_in_background_mode" == "default" && \
+        "$device_idle_whitelist_state" == "present" ]]; then
+        printf 'background policy: enabled\n'
+    elif [[ "$run_in_background_mode" == "default" && \
+        "$run_any_in_background_mode" == "default" && \
+        "$device_idle_whitelist_state" == "absent" ]]; then
+        printf 'background policy: disabled\n'
+    else
+        printf 'background policy: partial or custom\n'
+    fi
+}
+
+reset_policy_best_effort() {
+    adb -s "$ROKID_SERIAL" shell cmd appops set \
+        "$PACKAGE_NAME" "$RUN_IN_BACKGROUND" default >/dev/null 2>&1 || true
+    adb -s "$ROKID_SERIAL" shell cmd appops set \
+        "$PACKAGE_NAME" "$RUN_ANY_IN_BACKGROUND" default >/dev/null 2>&1 || true
+    adb -s "$ROKID_SERIAL" shell dumpsys deviceidle whitelist \
+        -"$PACKAGE_NAME" >/dev/null 2>&1 || true
+}
+
+case "$command_name" in
+    status)
+        read_policy_state
+        print_policy_state
+        ;;
+    enable)
+        if ! adb -s "$ROKID_SERIAL" shell cmd appops set \
+            "$PACKAGE_NAME" "$RUN_IN_BACKGROUND" allow >/dev/null 2>&1 || \
+            ! adb -s "$ROKID_SERIAL" shell cmd appops set \
+                "$PACKAGE_NAME" "$RUN_ANY_IN_BACKGROUND" default >/dev/null 2>&1 || \
+            ! adb -s "$ROKID_SERIAL" shell dumpsys deviceidle whitelist \
+                +"$PACKAGE_NAME" >/dev/null 2>&1; then
+            reset_policy_best_effort
+            fail "background-policy enable failed and was reset to the disabled state"
+        fi
+        read_policy_state
+        if [[ "$run_in_background_mode" != "allow" || \
+            "$run_any_in_background_mode" != "default" || \
+            "$device_idle_whitelist_state" != "present" ]]; then
+            reset_policy_best_effort
+            fail "background-policy verification failed and was reset to the disabled state"
+        fi
+        print_policy_state
+        printf 'Policy enabled; the Rokid Node was not launched.\n'
+        ;;
+    disable)
+        disable_failed=false
+        adb -s "$ROKID_SERIAL" shell cmd appops set \
+            "$PACKAGE_NAME" "$RUN_IN_BACKGROUND" default >/dev/null 2>&1 || disable_failed=true
+        adb -s "$ROKID_SERIAL" shell cmd appops set \
+            "$PACKAGE_NAME" "$RUN_ANY_IN_BACKGROUND" default >/dev/null 2>&1 || disable_failed=true
+        adb -s "$ROKID_SERIAL" shell dumpsys deviceidle whitelist \
+            -"$PACKAGE_NAME" >/dev/null 2>&1 || disable_failed=true
+        [[ "$disable_failed" == false ]] || fail "background-policy disable was not fully applied"
+        read_policy_state
+        if [[ "$run_in_background_mode" != "default" || \
+            "$run_any_in_background_mode" != "default" || \
+            "$device_idle_whitelist_state" != "absent" ]]; then
+            fail "background-policy disable verification failed"
+        fi
+        print_policy_state
+        printf 'Policy disabled; the Rokid Node was not launched.\n'
+        ;;
+esac

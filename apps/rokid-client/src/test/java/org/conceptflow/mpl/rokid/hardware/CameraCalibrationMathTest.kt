@@ -2,12 +2,42 @@
 package org.conceptflow.mpl.rokid.hardware
 
 import org.conceptflow.mpl.rokid.core.PixelDimensions
+import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
 import org.conceptflow.mpl.v1.CameraIntrinsicsProvenance
+import org.conceptflow.mpl.v1.CameraExtrinsicProvenance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CameraCalibrationMathTest {
+    @Test
+    fun nativeSquareIntrinsicsMapTruthfullyToRgbTransportMetadata() {
+        val captured = rokidMetadata().toProtocolCameraIntrinsics(PixelDimensions(648, 648))!!
+        val transported = transformCameraIntrinsicsForSquareOutput(
+            captured,
+            SquareAspectFillTransform.centered(648, 648),
+        )
+
+        assertEquals(407.1428571429, captured.focalXPixels, EPSILON)
+        assertEquals(324.0, captured.principalXPixels, EPSILON)
+        assertEquals(648, captured.calibratedWidth)
+        assertEquals(648, captured.calibratedHeight)
+        assertEquals(402.1164021164, transported.focalXPixels, EPSILON)
+        assertEquals(402.1164021164, transported.focalYPixels, EPSILON)
+        assertEquals(320.0, transported.principalXPixels, EPSILON)
+        assertEquals(320.0, transported.principalYPixels, EPSILON)
+        assertEquals(640, transported.calibratedWidth)
+        assertEquals(640, transported.calibratedHeight)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rgbTransportRejectsIntrinsicsCalibratedForAStaleSourceSize() {
+        transformCameraIntrinsicsForSquareOutput(
+            rokidMetadata().toProtocolCameraIntrinsics(PixelDimensions(1_920, 1_080))!!,
+            SquareAspectFillTransform.centered(648, 648),
+        )
+    }
+
     @Test
     fun centeredVerticalCropMapsFourByThreeCalibrationToSixteenByNineOutput() {
         val scaled = accepted(
@@ -223,13 +253,61 @@ class CameraCalibrationMathTest {
 
     @Test
     fun derivedProtocolPacketIsExplicitlyDerivedAndDoesNotInventStandardDeviation() {
-        val packet = rokidMetadata().toProtocolCameraIntrinsics(PixelDimensions(1_920, 1_080))!!
+        val packet = rokidMetadata().copy(
+            pose = Camera2PoseMetadata(
+                cameraFromSensorQuaternionXyzw = listOf(0.0, 0.0, 0.0, 1.0),
+                cameraOpticalCenterInSensorMeters = listOf(0.0, 0.0, 0.0),
+                reference = Camera2PoseReference.PRIMARY_CAMERA,
+            ),
+        ).toProtocolCameraIntrinsics(PixelDimensions(1_920, 1_080))!!
 
         assertEquals(
             CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED,
             packet.provenance,
         )
         assertTrue(!packet.hasUncertainty())
+        assertTrue(packet.hasHeadFromCameraExtrinsic())
+        assertEquals(
+            CameraExtrinsicProvenance.CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES,
+            packet.headFromCameraExtrinsic.provenance,
+        )
+        assertEquals(1.0, packet.headFromCameraExtrinsic.headFromCameraRotation.w, EPSILON)
+        assertTrue(!packet.headFromCameraExtrinsic.translationAvailable)
+        assertEquals(32, packet.headFromCameraExtrinsic.verificationSha256.size())
+    }
+
+    @Test
+    fun camera2PoseIsInvertedAndGyroscopeTranslationIsPreserved() {
+        val rootHalf = kotlin.math.sqrt(0.5)
+        val extrinsic = resolveHeadFromCameraExtrinsic(
+            Camera2PoseMetadata(
+                cameraFromSensorQuaternionXyzw = listOf(0.0, rootHalf, 0.0, rootHalf),
+                cameraOpticalCenterInSensorMeters = listOf(0.01, -0.02, 0.03),
+                reference = Camera2PoseReference.GYROSCOPE,
+            ),
+        )!!
+
+        assertEquals(0.0, extrinsic.headFromCameraRotation.x, EPSILON)
+        assertEquals(-rootHalf, extrinsic.headFromCameraRotation.y, EPSILON)
+        assertEquals(rootHalf, extrinsic.headFromCameraRotation.w, EPSILON)
+        assertTrue(extrinsic.translationAvailable)
+        assertEquals(0.01, extrinsic.headFromCameraTranslationMeters.x, EPSILON)
+        assertEquals(-0.02, extrinsic.headFromCameraTranslationMeters.y, EPSILON)
+        assertEquals(0.03, extrinsic.headFromCameraTranslationMeters.z, EPSILON)
+    }
+
+    @Test
+    fun undefinedCamera2PoseAndMalformedQuaternionFailClosed() {
+        assertTrue(
+            resolveHeadFromCameraExtrinsic(
+                Camera2PoseMetadata(listOf(0.0, 0.0, 0.0, 1.0), emptyList(), Camera2PoseReference.UNDEFINED),
+            ) == null,
+        )
+        assertTrue(
+            resolveHeadFromCameraExtrinsic(
+                Camera2PoseMetadata(listOf(0.0, 0.0, 0.0, 0.0), emptyList(), Camera2PoseReference.PRIMARY_CAMERA),
+            ) == null,
+        )
     }
 
     @Test

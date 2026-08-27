@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.rokid.hardware
 
+import com.google.protobuf.ByteString
+import java.security.MessageDigest
 import org.conceptflow.mpl.rokid.core.PixelDimensions
+import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
+import org.conceptflow.mpl.v1.CameraExtrinsicProvenance
+import org.conceptflow.mpl.v1.CameraHeadExtrinsic
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import org.conceptflow.mpl.v1.CameraIntrinsicsProvenance
+import org.conceptflow.mpl.v1.Quaternion
+import org.conceptflow.mpl.v1.Vector3
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 internal data class CameraCalibrationCoordinateSpace(
     val width: Double,
@@ -37,6 +45,20 @@ internal enum class CameraPhysicalIntrinsicsEvidence {
     ROKID_CAMERA2_METADATA_FINGERPRINT,
 }
 
+internal enum class Camera2PoseReference {
+    PRIMARY_CAMERA,
+    GYROSCOPE,
+    UNDEFINED,
+    AUTOMOTIVE,
+}
+
+/** Camera2 pose fields retain their documented camera-from-Android-sensor direction. */
+internal data class Camera2PoseMetadata(
+    val cameraFromSensorQuaternionXyzw: List<Double>,
+    val cameraOpticalCenterInSensorMeters: List<Double>,
+    val reference: Camera2PoseReference,
+)
+
 /**
  * Camera2 calibration metadata in pre-correction active-array coordinates.
  * Android defines that rectangle's own top-left as (0,0), independently of
@@ -50,6 +72,7 @@ internal data class Camera2CalibrationMetadata(
     val coordinateSpaceTopInPixelArray: Double = 0.0,
     val physicalFallback: CameraPhysicalIntrinsicsMetadata? = null,
     val captureContract: CameraCalibrationCaptureContract? = null,
+    val pose: Camera2PoseMetadata? = null,
 )
 
 internal data class CameraCalibrationCaptureContract(
@@ -234,9 +257,87 @@ internal fun Camera2CalibrationMetadata.toProtocolCameraIntrinsics(
         .setCalibratedWidth(scaled.dimensions.width)
         .setCalibratedHeight(scaled.dimensions.height)
         .setProvenance(scaled.provenance)
+    resolveHeadFromCameraExtrinsic(pose)?.let(builder::setHeadFromCameraExtrinsic)
     // DERIVED has no statistically measured residual distribution yet. Leave
     // the stddev message absent instead of encoding a heuristic percentage.
     return builder.build()
+}
+
+internal fun transformCameraIntrinsicsForSquareOutput(
+    source: CameraIntrinsics,
+    transform: SquareAspectFillTransform,
+): CameraIntrinsics {
+    require(
+        source.calibratedWidth == transform.sourceWidth &&
+            source.calibratedHeight == transform.sourceHeight,
+    ) { "camera intrinsics dimensions must match the captured image" }
+    return source.toBuilder()
+        .setFocalXPixels(source.focalXPixels * transform.scaleX)
+        .setFocalYPixels(source.focalYPixels * transform.scaleY)
+        .setPrincipalXPixels(source.principalXPixels * transform.scaleX - transform.cropLeft)
+        .setPrincipalYPixels(source.principalYPixels * transform.scaleY - transform.cropTop)
+        .setCalibratedWidth(transform.outputSize)
+        .setCalibratedHeight(transform.outputSize)
+        .build()
+}
+
+/**
+ * Converts Camera2's CAMERA <- ANDROID_SENSOR quaternion into HEAD <- CAMERA.
+ *
+ * The Rokid pose producer deliberately uses the Android sensor coordinate axes as its rigid
+ * glasses/head proxy. Camera2 PRIMARY_CAMERA supplies a usable orientation in those axes, but its
+ * zero translation is camera-relative and therefore remains unavailable. GYROSCOPE is the only
+ * Camera2 origin for which this adapter may publish translation.
+ */
+internal fun resolveHeadFromCameraExtrinsic(pose: Camera2PoseMetadata?): CameraHeadExtrinsic? {
+    pose ?: return null
+    if (pose.reference == Camera2PoseReference.UNDEFINED || pose.reference == Camera2PoseReference.AUTOMOTIVE) {
+        return null
+    }
+    val source = pose.cameraFromSensorQuaternionXyzw
+    if (source.size != 4 || source.any { !it.isFinite() }) return null
+    val norm = sqrt(source.sumOf { it * it })
+    if (!norm.isFinite() || norm <= 0.0 || abs(norm - 1.0) > MAXIMUM_POSE_QUATERNION_NORM_ERROR) return null
+    val x = source[0] / norm
+    val y = source[1] / norm
+    val z = source[2] / norm
+    val w = source[3] / norm
+    val translationAvailable = pose.reference == Camera2PoseReference.GYROSCOPE &&
+        pose.cameraOpticalCenterInSensorMeters.size == 3 &&
+        pose.cameraOpticalCenterInSensorMeters.all(Double::isFinite)
+    val canonicalEvidence = buildString {
+        append("camera2-head-extrinsic-v1|")
+        append(pose.reference.name)
+        append('|')
+        source.forEach { append(java.lang.Double.toHexString(it)).append(',') }
+        append('|')
+        append(translationAvailable)
+        if (translationAvailable) {
+            append('|')
+            pose.cameraOpticalCenterInSensorMeters.forEach {
+                append(java.lang.Double.toHexString(it)).append(',')
+            }
+        }
+    }.encodeToByteArray()
+    return CameraHeadExtrinsic.newBuilder()
+        // Inverse of CAMERA <- SENSOR; the current rigid HEAD proxy uses SENSOR axes.
+        .setHeadFromCameraRotation(
+            Quaternion.newBuilder().setX(-x).setY(-y).setZ(-z).setW(w),
+        )
+        .setTranslationAvailable(translationAvailable)
+        .setProvenance(CameraExtrinsicProvenance.CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES)
+        .setVerificationSha256(ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(canonicalEvidence)))
+        .apply {
+            if (translationAvailable) {
+                setHeadFromCameraTranslationMeters(
+                    Vector3.newBuilder()
+                        .setX(pose.cameraOpticalCenterInSensorMeters[0])
+                        .setY(pose.cameraOpticalCenterInSensorMeters[1])
+                        .setZ(pose.cameraOpticalCenterInSensorMeters[2]),
+                )
+            }
+        }
+        .build()
 }
 
 /**
@@ -358,3 +459,4 @@ private const val CAMERA2_DISTORTION_PARAMETER_COUNT = 5
 private const val PHYSICAL_SIZE_TOLERANCE_MM = 0.001
 private const val FOCAL_LENGTH_TOLERANCE_MM = 0.001
 private const val INTRINSIC_FOCAL_TOLERANCE_PIXELS = 5.0
+private const val MAXIMUM_POSE_QUATERNION_NORM_ERROR = 0.02

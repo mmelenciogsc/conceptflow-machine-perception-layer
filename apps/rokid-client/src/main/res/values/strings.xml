@@ -2,4 +2,14 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 <resources>
     <string name="app_name">Machine Perception Layer, Rokid Node</string>
+    <string name="input_accessibility_service_label">Rokid Node gesture observer</string>
+    <string name="input_accessibility_service_description">Observes documented Rokid arm key sequences without consuming keys, reading screen content, or enabling touch exploration.</string>
+    <string name="idle_notification_channel">Rokid Node control</string>
+    <string name="idle_notification_title">Machine Perception Layer, Rokid Node</string>
+    <string name="idle_notification_text">Sensors and private network are off; visible re-arm is required.</string>
+    <string name="standby_notification_text">Sensors off; authenticated private-network standby active; microphone off.</string>
+    <string name="starting_notification_text">Authenticated session accepted; camera and motion streams are starting; microphone is off.</string>
+    <string name="active_notification_text">Bounded camera, motion, and private network stream active; microphone is off.</string>
+    <string name="microphone_active_notification_text">Bounded camera, motion, microphone, and private network streams active.</string>
+    <string name="stopping_notification_text">Private session and sensor streams stopping; microphone is off.</string>
 </resources>

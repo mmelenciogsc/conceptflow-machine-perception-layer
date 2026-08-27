@@ -39,6 +39,7 @@ data class StreamLeaseSpec(
             SensorStreamKind.SENSOR_STREAM_KIND_CAMERA,
             SensorStreamKind.SENSOR_STREAM_KIND_IMU,
             SensorStreamKind.SENSOR_STREAM_KIND_MICROPHONE,
+            SensorStreamKind.SENSOR_STREAM_KIND_TOUCH,
         )
     }
 }

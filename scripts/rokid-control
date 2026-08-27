@@ -20,7 +20,7 @@ usage() {
 Usage: ./scripts/rokid-control [--serial SERIAL] COMMAND
 
 Control the directly sideloaded, screenless Rokid runtime over authorized ADB.
-The live-link identity/start/stop commands require a debuggable APK. Run
+The live-link and idle-control commands require a debuggable APK. Run
 android-live-link-pair first, then start the Poco listener before live-link-start.
 
 Commands:
@@ -28,11 +28,17 @@ Commands:
   stream-test    Run an eight-second leased gate test; microphone stops after two seconds.
   live-link-init Create/reuse only the Rokid live identity and public-certificate export.
   live-link-start Run a bounded 30-second authenticated camera+IMU live-link test.
+  live-link-soak  Run a debug-only bounded 10-minute camera+IMU soak test.
   live-link-stop Stop only the active live-link test and its sensor producers.
+  idle-enable    Persist and start sensor-off private-network rendezvous standby.
+  idle-disable   Disable persisted idle control and stop its foreground service.
   physical-trace Capture once and use the ADB-reverse loopback gRPC development path.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
-  stop           Stop capture, cue output, and the runtime service.
+  brand-audio-test  Play the complete brand narration without changing its 72-hour timestamp.
+  legacy-spool-enable  Enable diagnostic disk/JSON handoff for the next session.
+  legacy-spool-disable Disable diagnostic disk/JSON handoff for the next session (production default).
+  stop           Stop all inputs/service state and disable persisted idle control.
   status         Report package, permission, process, and service state.
 
 Options:
@@ -52,7 +58,7 @@ while (($# > 0)); do
             usage
             exit 0
             ;;
-        capture-start|stream-test|live-link-init|live-link-start|live-link-stop|physical-trace|cue-left|cue-right|stop|status)
+        capture-start|stream-test|live-link-init|live-link-start|live-link-soak|live-link-stop|idle-enable|idle-disable|physical-trace|cue-left|cue-right|brand-audio-test|legacy-spool-enable|legacy-spool-disable|stop|status)
             [[ -z "$command_name" ]] || fail "only one command may be supplied"
             command_name="$1"
             shift
@@ -89,10 +95,26 @@ case "$command_name" in
             -n "$component" -a "$ACTION_PREFIX.START_LIVE_LINK_TEST"
         printf 'Requested bounded authenticated camera+IMU live-link test; microphone remains disabled.\n'
         ;;
+    live-link-soak)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.START_LIVE_LINK_SOAK_TEST"
+        printf 'Requested debug-only bounded 10-minute live-link soak; microphone remains disabled.\n'
+        ;;
     live-link-stop)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.STOP_LIVE_LINK_TEST"
         printf 'Requested live-link test stop.\n'
+        ;;
+    idle-enable)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.ENABLE_IDLE_CONTROL"
+        printf 'Requested visible arming of sensor-off authenticated private-network standby.\n'
+        printf 'The Activity exits after arming; capture remains authorized only by Poco Start.\n'
+        ;;
+    idle-disable)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.DISABLE_IDLE_CONTROL"
+        printf 'Requested idle-control disable and foreground-service stop.\n'
         ;;
     physical-trace)
         require_command ss "iproute2 is required to verify the loopback backend"
@@ -122,10 +144,25 @@ case "$command_name" in
             -n "$component" -a "$ACTION_PREFIX.PLAY_RIGHT_CUE"
         printf 'Requested one right development cue.\n'
         ;;
+    brand-audio-test)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.PLAY_FULL_BRAND_TEST"
+        printf 'Requested debug-only full branded-audio sequence; production cadence is unchanged.\n'
+        ;;
+    legacy-spool-enable)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.ENABLE_LEGACY_SENSOR_SPOOL"
+        printf 'Enabled diagnostic legacy spool for the next sensor session.\n'
+        ;;
+    legacy-spool-disable)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.DISABLE_LEGACY_SENSOR_SPOOL"
+        printf 'Disabled legacy spool; the next sensor session uses in-memory transport.\n'
+        ;;
     stop)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.STOP"
-        printf 'Requested runtime stop.\n'
+        printf 'Requested full runtime stop and persisted idle-control disable.\n'
         ;;
     status)
         if adb -s "$ROKID_SERIAL" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1; then
@@ -148,11 +185,42 @@ case "$command_name" in
         else
             printf 'process: stopped\n'
         fi
-        if [[ "$process_running" == true ]] && \
-            adb -s "$ROKID_SERIAL" shell dumpsys activity services "$PACKAGE_NAME" | grep -F "RokidRuntimeService" >/dev/null; then
+        service_dump="$(adb -s "$ROKID_SERIAL" shell dumpsys activity services "$PACKAGE_NAME")"
+        if [[ "$process_running" == true ]] && grep -F "RokidRuntimeService" <<<"$service_dump" >/dev/null; then
             printf 'runtime service: running\n'
         else
             printf 'runtime service: stopped\n'
+        fi
+        if grep -F "isForeground=true" <<<"$service_dump" >/dev/null; then
+            printf 'idle foreground service: active\n'
+        elif grep -F "startRequested=true" <<<"$service_dump" >/dev/null &&
+            grep -F "foregroundNoti=Notification(channel=rokid_idle_control" \
+                <<<"$service_dump" >/dev/null &&
+            adb -s "$ROKID_SERIAL" shell dumpsys activity lru 2>/dev/null | \
+                grep -E "vis[[:space:]]+BFGS.*${PACKAGE_NAME}" >/dev/null; then
+            # This API-32 YodaOS build can expose an accepted foreground
+            # runtime as BFGS with an attached service notification while the
+            # ServiceRecord's generic isForeground field remains false.
+            printf 'idle foreground service: active (YodaOS BFGS/notification evidence)\n'
+        else
+            printf 'idle foreground service: inactive or unavailable\n'
+        fi
+        printf 'Rokid gesture observer: never consumes key events; enable separately if trusted\n'
+        idle_preferences="$(adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+            cat "shared_prefs/rokid_idle_control.xml" 2>/dev/null || true)"
+        if grep -E 'name="enabled" value="true"' <<<"$idle_preferences" >/dev/null; then
+            printf 'persisted idle control: enabled\n'
+        elif [[ -n "$idle_preferences" ]]; then
+            printf 'persisted idle control: disabled\n'
+        else
+            printf 'persisted idle control: unknown (run-as unavailable or no stored choice)\n'
+        fi
+        spool_preferences="$(adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+            cat "shared_prefs/legacy_sensor_spool.xml" 2>/dev/null || true)"
+        if grep -E 'name="enabled" value="true"' <<<"$spool_preferences" >/dev/null; then
+            printf 'sensor handoff: diagnostic legacy spool (next session)\n'
+        else
+            printf 'sensor handoff: in-memory streaming (production default)\n'
         fi
         ;;
 esac

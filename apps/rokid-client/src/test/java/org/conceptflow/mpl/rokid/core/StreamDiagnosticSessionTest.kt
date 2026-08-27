@@ -76,7 +76,7 @@ class StreamDiagnosticSessionTest {
     @Test
     fun cameraRatesUseFirstToLastTimingRatherThanColdStartDuration() {
         val session = StreamDiagnosticSession(1_000_000_000L)
-        assertTrue(session.recordCameraJpegSessionReady(1_500_000_000L))
+        assertTrue(session.recordCameraCaptureSessionReady(1_500_000_000L))
         assertTrue(
             session.recordCaptureTiming(
                 timingEvent(
@@ -84,6 +84,7 @@ class StreamDiagnosticSessionTest {
                     emittedNanos = 2_050_000_000L,
                     requestToImageNanos = 100_000_000L,
                     processorNanos = 10_000_000L,
+                    nativeRgbConversion = true,
                 ),
             ),
         )
@@ -104,6 +105,7 @@ class StreamDiagnosticSessionTest {
                     emittedNanos = 2_850_000_000L,
                     requestToImageNanos = 300_000_000L,
                     processorNanos = 30_000_000L,
+                    nativeRgbConversion = false,
                 ),
             ),
         )
@@ -111,8 +113,8 @@ class StreamDiagnosticSessionTest {
         val snapshot = session.finish(9_000_000_000L)
 
         assertEquals(8_000L, snapshot.durationMillis)
-        assertTrue(snapshot.cameraJpegSessionReady)
-        assertEquals(500.0, snapshot.cameraJpegSessionStartupMillis, 0.001)
+        assertTrue(snapshot.cameraCaptureSessionReady)
+        assertEquals(500.0, snapshot.cameraCaptureSessionStartupMillis, 0.001)
         assertEquals(3L, snapshot.cameraTimingSamples)
         assertEquals(3, snapshot.cameraTimingRetainedSamples)
         assertEquals(3L, snapshot.cameraRequestTimingSamples)
@@ -131,6 +133,8 @@ class StreamDiagnosticSessionTest {
         assertEquals(20.0, snapshot.cameraProcessorP50Millis, 0.001)
         assertEquals(30.0, snapshot.cameraProcessorP95Millis, 0.001)
         assertEquals(30.0, snapshot.cameraProcessorMaximumMillis, 0.001)
+        assertEquals(2L, snapshot.cameraRgbConversions)
+        assertEquals(1L, snapshot.cameraNativeRgbConversions)
         assertEquals(15.0, snapshot.cameraListenerPathP50Millis, 0.001)
         assertEquals(15.0, snapshot.cameraListenerPathP95Millis, 0.001)
         assertEquals(15.0, snapshot.cameraListenerPathMaximumMillis, 0.001)
@@ -139,14 +143,14 @@ class StreamDiagnosticSessionTest {
     @Test
     fun zeroAndOneCameraTimingSamplesHaveZeroActiveRate() {
         val empty = StreamDiagnosticSession(0L).finish(8_000_000_000L)
-        assertFalse(empty.cameraJpegSessionReady)
+        assertFalse(empty.cameraCaptureSessionReady)
         assertEquals(0L, empty.cameraTimingSamples)
         assertEquals(0.0, empty.cameraAnalyzedActiveMillis, 0.0)
         assertEquals(0.0, empty.cameraAnalyzedObservedFramesPerSecond, 0.0)
         assertEquals(0.0, empty.cameraRequestToImageP95Millis, 0.0)
 
         val oneSample = StreamDiagnosticSession(0L)
-        assertTrue(oneSample.recordCameraJpegSessionReady(100_000_000L))
+        assertTrue(oneSample.recordCameraCaptureSessionReady(100_000_000L))
         assertTrue(
             oneSample.recordCaptureTiming(
                 timingEvent(1_000_000_000L, 1_010_000_000L),
@@ -163,9 +167,9 @@ class StreamDiagnosticSessionTest {
     @Test
     fun cameraTimingRejectsNonMonotonicSamplesAndFreezesFinalSnapshot() {
         val session = StreamDiagnosticSession(1_000_000_000L)
-        assertFalse(session.recordCameraJpegSessionReady(999_999_999L))
-        assertTrue(session.recordCameraJpegSessionReady(1_100_000_000L))
-        assertFalse(session.recordCameraJpegSessionReady(1_200_000_000L))
+        assertFalse(session.recordCameraCaptureSessionReady(999_999_999L))
+        assertTrue(session.recordCameraCaptureSessionReady(1_100_000_000L))
+        assertFalse(session.recordCameraCaptureSessionReady(1_200_000_000L))
         assertTrue(session.recordCaptureTiming(timingEvent(2_000_000_000L, 2_010_000_000L)))
         assertFalse(session.recordCaptureTiming(timingEvent(2_000_000_000L, 2_020_000_000L)))
         assertFalse(session.recordCaptureTiming(timingEvent(1_900_000_000L, null)))
@@ -175,7 +179,7 @@ class StreamDiagnosticSessionTest {
         assertEquals(1L, snapshot.cameraTimingSamples)
         assertEquals(4L, snapshot.cameraTimingRejectedEvents)
         assertFalse(session.recordCaptureTiming(timingEvent(3_000_000_000L, 3_010_000_000L)))
-        assertFalse(session.recordCameraJpegSessionReady(3_000_000_000L))
+        assertFalse(session.recordCameraCaptureSessionReady(3_000_000_000L))
         assertEquals(snapshot, session.finish(4_000_000_000L))
     }
 
@@ -316,6 +320,7 @@ class StreamDiagnosticSessionTest {
         imageAcquisitionNanos: Long = 5_000_000L,
         processorNanos: Long = 10_000_000L,
         listenerPathNanos: Long = 15_000_000L,
+        nativeRgbConversion: Boolean? = null,
     ): CaptureTimingEvent = CaptureTimingEvent(
         analyzedMonotonicTimestampNanos = analyzedNanos,
         emittedMonotonicTimestampNanos = emittedNanos,
@@ -323,6 +328,7 @@ class StreamDiagnosticSessionTest {
         imageAcquisitionDurationNanos = imageAcquisitionNanos,
         processorDurationNanos = processorNanos,
         listenerPathDurationNanos = listenerPathNanos,
+        nativeRgbConversion = nativeRgbConversion,
     )
 
     private fun pipelineSnapshot(

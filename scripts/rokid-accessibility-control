@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
+cd "$REPOSITORY_ROOT"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
+readonly ACCESSIBILITY_COMPONENT="$PACKAGE_NAME/org.conceptflow.mpl.rokid.RokidInputAccessibilityService"
+readonly ACCESSIBILITY_COMPONENT_SHORT="$PACKAGE_NAME/.RokidInputAccessibilityService"
+readonly COMMAND_ACTIVITY="$PACKAGE_NAME/org.conceptflow.mpl.rokid.RokidCommandActivity"
+readonly COMMAND_ACTION_PREFIX="org.conceptflow.mpl.rokid.action"
+
+serial=""
+command_name=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/rokid-accessibility-control [--serial SERIAL] COMMAND
+
+Inspect or reversibly provision the Rokid Node key-observer AccessibilityService.
+The service has broad platform trust, observes only candidate PSOC keycodes, and
+never consumes key events. The Android mapping still requires physical validation.
+
+Commands:
+  status   Report master accessibility state and whether this exact component is enabled.
+  enable   Append only this component and enable the platform accessibility master switch.
+  disable  Remove only this component; preserve every other enabled service.
+  commands-enable  Opt in to gesture commands after physical callback/coexistence validation.
+  commands-disable Return to the default observe-only diagnostic mode.
+
+Options:
+  --serial SERIAL  Explicit ADB serial. Required when multiple devices are attached.
+  -h, --help       Show this help.
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --serial)
+            (($# >= 2)) || fail "--serial requires a value"
+            serial="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        status|enable|disable|commands-enable|commands-disable)
+            [[ -z "$command_name" ]] || fail "only one command may be supplied"
+            command_name="$1"
+            shift
+            ;;
+        *)
+            fail "unknown argument '$1'; use --help"
+            ;;
+    esac
+done
+
+[[ -n "$command_name" ]] || fail "a command is required; use --help"
+select_rokid_target "$serial"
+verify_rokid_target
+adb -s "$ROKID_SERIAL" shell pm path --user 0 "$PACKAGE_NAME" >/dev/null 2>&1 || \
+    fail "install the directly sideloaded Rokid Node APK first"
+
+verify_declared_accessibility_service() {
+    local package_dump
+    package_dump="$(adb -s "$ROKID_SERIAL" shell dumpsys package "$PACKAGE_NAME" 2>/dev/null)" || \
+        fail "could not inspect the Rokid Node package"
+    grep -F "RokidInputAccessibilityService" <<<"$package_dump" >/dev/null || \
+        fail "the installed APK does not declare RokidInputAccessibilityService"
+    grep -F "android.permission.BIND_ACCESSIBILITY_SERVICE" <<<"$package_dump" >/dev/null || \
+        fail "the installed service does not declare BIND_ACCESSIBILITY_SERVICE"
+}
+
+read_secure_setting() {
+    local key="$1"
+    local value
+    value="$(adb -s "$ROKID_SERIAL" shell settings --user 0 get secure "$key" 2>/dev/null | tr -d '\r')" || \
+        fail "could not read secure setting $key"
+    if [[ "$value" == "null" ]]; then
+        value=""
+    fi
+    [[ "$value" != *$'\n'* ]] || fail "secure setting $key returned multiple lines"
+    printf '%s' "$value"
+}
+
+is_rokid_component() {
+    [[ "$1" == "$ACCESSIBILITY_COMPONENT" || "$1" == "$ACCESSIBILITY_COMPONENT_SHORT" ]]
+}
+
+component_is_configured() {
+    local services="$1"
+    local service
+    local -a components=()
+    IFS=':' read -r -a components <<<"$services"
+    for service in "${components[@]}"; do
+        if is_rokid_component "$service"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+component_count() {
+    local services="$1"
+    local service count=0
+    local -a components=()
+    IFS=':' read -r -a components <<<"$services"
+    for service in "${components[@]}"; do
+        [[ -n "$service" ]] && ((count += 1))
+    done
+    printf '%s' "$count"
+}
+
+without_rokid_component() {
+    local services="$1"
+    local service result=""
+    local -a components=()
+    IFS=':' read -r -a components <<<"$services"
+    for service in "${components[@]}"; do
+        [[ -n "$service" ]] || continue
+        if is_rokid_component "$service"; then
+            continue
+        fi
+        if [[ -n "$result" ]]; then
+            result+=":"
+        fi
+        result+="$service"
+    done
+    printf '%s' "$result"
+}
+
+with_canonical_rokid_component() {
+    local services result
+    services="$(without_rokid_component "$1")"
+    result="$services"
+    if [[ -n "$result" ]]; then
+        result+=":"
+    fi
+    result+="$ACCESSIBILITY_COMPONENT"
+    printf '%s' "$result"
+}
+
+write_services() {
+    local services="$1"
+    if [[ -n "$services" ]]; then
+        adb -s "$ROKID_SERIAL" shell settings --user 0 put secure \
+            enabled_accessibility_services "$services" >/dev/null
+    else
+        adb -s "$ROKID_SERIAL" shell settings --user 0 delete secure \
+            enabled_accessibility_services >/dev/null
+    fi
+}
+
+restore_settings() {
+    local services="$1"
+    local master="$2"
+    write_services "$services" >/dev/null 2>&1 || true
+    if [[ -n "$master" ]]; then
+        adb -s "$ROKID_SERIAL" shell settings --user 0 put secure accessibility_enabled \
+            "$master" >/dev/null 2>&1 || true
+    else
+        adb -s "$ROKID_SERIAL" shell settings --user 0 delete secure accessibility_enabled \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+component_is_bound() {
+    local service_dump
+    service_dump="$(
+        adb -s "$ROKID_SERIAL" shell dumpsys activity services \
+            "$ACCESSIBILITY_COMPONENT" 2>/dev/null
+    )" || fail "could not inspect the accessibility service binding"
+    grep -F "$ACCESSIBILITY_COMPONENT" <<<"$service_dump" >/dev/null && \
+        grep -F "hasBound=true" <<<"$service_dump" >/dev/null
+}
+
+wait_for_bound_state() {
+    local expected="$1"
+    local bound="false"
+    for _ in {1..12}; do
+        if component_is_bound; then
+            bound="true"
+        else
+            bound="false"
+        fi
+        if [[ "$bound" == "$expected" ]]; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+read_command_gate() {
+    local preferences
+    preferences="$(
+        adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+            cat "shared_prefs/rokid_input_command_gate.xml" 2>/dev/null || true
+    )"
+    if grep -E 'name="enabled" value="true"' <<<"$preferences" >/dev/null; then
+        printf 'commands-enabled'
+    elif [[ -n "$preferences" ]]; then
+        printf 'observe-only'
+    else
+        printf 'observe-only-unverified'
+    fi
+}
+
+set_command_gate() {
+    local enabled="$1"
+    local action expected state
+    if [[ "$enabled" == "true" ]]; then
+        action="$COMMAND_ACTION_PREFIX.ENABLE_VALIDATED_GESTURE_COMMANDS"
+        expected="commands-enabled"
+    else
+        action="$COMMAND_ACTION_PREFIX.DISABLE_GESTURE_COMMANDS"
+        expected="observe-only"
+    fi
+    adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+        -n "$COMMAND_ACTIVITY" -a "$action" >/dev/null || return 1
+    for _ in {1..12}; do
+        state="$(read_command_gate)"
+        if [[ "$state" == "$expected" ]]; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+print_status() {
+    local services="$1"
+    local master="$2"
+    local bound="false"
+    if component_is_bound; then
+        bound="true"
+    fi
+    if component_is_configured "$services"; then
+        printf 'Rokid Node gesture observer configured: yes\n'
+    else
+        printf 'Rokid Node gesture observer configured: no\n'
+    fi
+    printf 'Rokid Node gesture observer bound: %s\n' "$bound"
+    printf 'accessibility master switch: %s\n' "${master:-unset}"
+    printf 'enabled accessibility service count: %s\n' "$(component_count "$services")"
+    printf 'key mapping: candidate; physical AccessibilityService trace required\n'
+    printf 'gesture command gate: %s\n' "$(read_command_gate)"
+    if component_is_configured "$services" && [[ "$bound" != "true" ]]; then
+        printf 'warning: configured service is not bound; gesture control is unavailable\n' >&2
+    fi
+}
+
+verify_declared_accessibility_service
+original_services="$(read_secure_setting enabled_accessibility_services)"
+original_master="$(read_secure_setting accessibility_enabled)"
+original_command_gate="$(read_command_gate)"
+
+case "$command_name" in
+    status)
+        print_status "$original_services" "$original_master"
+        ;;
+    enable)
+        if ! component_is_configured "$original_services" && ! set_command_gate false; then
+            fail "could not establish the default observe-only command gate"
+        fi
+        updated_services="$(with_canonical_rokid_component "$original_services")"
+        if [[ "$updated_services" != "$original_services" ]] && ! write_services "$updated_services"; then
+            restore_settings "$original_services" "$original_master"
+            [[ "$original_command_gate" != "commands-enabled" ]] || set_command_gate true >/dev/null 2>&1 || true
+            fail "accessibility enable failed; original settings were restored"
+        fi
+        if [[ "$original_master" != "1" ]] && \
+            ! adb -s "$ROKID_SERIAL" shell settings --user 0 put secure \
+                accessibility_enabled 1 >/dev/null; then
+            restore_settings "$original_services" "$original_master"
+            [[ "$original_command_gate" != "commands-enabled" ]] || set_command_gate true >/dev/null 2>&1 || true
+            fail "accessibility enable failed; original settings were restored"
+        fi
+        verified_services="$(read_secure_setting enabled_accessibility_services)"
+        verified_master="$(read_secure_setting accessibility_enabled)"
+        if ! component_is_configured "$verified_services" || \
+            [[ "$verified_services" != "$updated_services" || "$verified_master" != "1" ]]; then
+            restore_settings "$original_services" "$original_master"
+            [[ "$original_command_gate" != "commands-enabled" ]] || set_command_gate true >/dev/null 2>&1 || true
+            fail "accessibility enable verification failed; original settings were restored"
+        fi
+        if ! wait_for_bound_state true; then
+            restore_settings "$original_services" "$original_master"
+            [[ "$original_command_gate" != "commands-enabled" ]] || set_command_gate true >/dev/null 2>&1 || true
+            fail "accessibility service is configured but not bound; original settings were restored"
+        fi
+        print_status "$verified_services" "$verified_master"
+        ;;
+    disable)
+        if ! component_is_configured "$original_services"; then
+            print_status "$original_services" "$original_master"
+            exit 0
+        fi
+        updated_services="$(without_rokid_component "$original_services")"
+        if ! write_services "$updated_services"; then
+            restore_settings "$original_services" "$original_master"
+            fail "accessibility disable failed; original settings were restored"
+        fi
+        if [[ -z "$updated_services" ]] && \
+            ! adb -s "$ROKID_SERIAL" shell settings --user 0 put secure \
+                accessibility_enabled 0 >/dev/null; then
+            restore_settings "$original_services" "$original_master"
+            fail "accessibility master disable failed; original settings were restored"
+        fi
+        verified_services="$(read_secure_setting enabled_accessibility_services)"
+        verified_master="$(read_secure_setting accessibility_enabled)"
+        if component_is_configured "$verified_services" || \
+            [[ "$verified_services" != "$updated_services" ]]; then
+            restore_settings "$original_services" "$original_master"
+            fail "accessibility disable verification failed; original settings were restored"
+        fi
+        if [[ -z "$updated_services" && "$verified_master" != "0" ]]; then
+            restore_settings "$original_services" "$original_master"
+            fail "accessibility master disable verification failed; original settings were restored"
+        fi
+        if ! wait_for_bound_state false; then
+            restore_settings "$original_services" "$original_master"
+            fail "accessibility service remained bound; original settings were restored"
+        fi
+        print_status "$verified_services" "$verified_master"
+        ;;
+    commands-enable)
+        component_is_configured "$original_services" || \
+            fail "configure the Rokid Node accessibility service before enabling commands"
+        component_is_bound || \
+            fail "the configured accessibility service is not bound; commands remain observe-only"
+        if ! set_command_gate true; then
+            set_command_gate false >/dev/null 2>&1 || true
+            fail "could not verify the command opt-in; reset to observe-only was requested"
+        fi
+        print_status "$original_services" "$original_master"
+        printf 'Gesture commands enabled; physical callback and OEM-control validation is required.\n'
+        ;;
+    commands-disable)
+        set_command_gate false || fail "could not verify observe-only mode"
+        print_status "$original_services" "$original_master"
+        ;;
+esac

@@ -16,39 +16,43 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.Image
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.util.Size
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
 import org.conceptflow.mpl.rokid.core.CameraCalibrationCapabilityState
+import org.conceptflow.mpl.rokid.core.CameraSourceDiagnostic
+import org.conceptflow.mpl.rokid.core.CameraSourceDiagnosticDomain
 import org.conceptflow.mpl.rokid.core.CapturePipelineSnapshot
 import org.conceptflow.mpl.rokid.core.CaptureTimingEvent
 import org.conceptflow.mpl.rokid.core.FrameLimits
 import org.conceptflow.mpl.rokid.core.FrameSource
 import org.conceptflow.mpl.rokid.core.MonotonicFrameSequence
 import org.conceptflow.mpl.rokid.core.PixelDimensions
+import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
 import org.conceptflow.mpl.rokid.core.SystemWallClock
-import org.conceptflow.mpl.rokid.core.buildJpegFrame
-import org.conceptflow.mpl.rokid.core.selectClosestCaptureSize
+import org.conceptflow.mpl.rokid.core.buildRgbFrame
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import java.util.UUID
 import java.util.concurrent.Executor
 
 class Camera2FrameSource(
     context: Context,
-    private val limits: FrameLimits = FrameLimits(),
+    @Suppress("UNUSED_PARAMETER") limits: FrameLimits = FrameLimits(),
     relaxedFramesPerSecond: Double = 3.0,
     motionFramesPerSecond: Double = 5.0,
+    private val sequence: MonotonicFrameSequence = MonotonicFrameSequence(),
 ) : FrameSource {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
     private val stateLock = Any()
     private val lifecycle = CameraRunLifecycle()
-    private val sequence = MonotonicFrameSequence()
-    private val processor = AdaptiveJpegProcessor(limits)
+    private val processor = AdaptiveYuv420Processor()
     private val captureCadence = AdaptivePhysicalCaptureCadence(
         relaxedFramesPerSecond = relaxedFramesPerSecond,
         motionFramesPerSecond = motionFramesPerSecond,
@@ -58,8 +62,11 @@ class Camera2FrameSource(
     private var listener: FrameSource.Listener? = null
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
-    private var previewReader: ImageReader? = null
-    private var imageReader: ImageReader? = null
+    private var imageProcessingThread: HandlerThread? = null
+    private var imageProcessingHandler: Handler? = null
+    private var previewDrainThread: HandlerThread? = null
+    private var previewDrainHandler: Handler? = null
+    private var cameraReaders: CombinedCameraReaders<ImageReader>? = null
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var captureRequestBuilder: CaptureRequest.Builder? = null
@@ -83,14 +90,27 @@ class Camera2FrameSource(
             id
         }
         val thread = HandlerThread("bounded-camera-capture")
-        val handler = try {
+        val processingThread = HandlerThread("camera-yuv-processing")
+        val previewThread = HandlerThread("camera-preview-drain")
+        val handlers = try {
             thread.start()
-            Handler(thread.looper)
+            processingThread.start()
+            previewThread.start()
+            Triple(
+                Handler(thread.looper),
+                Handler(processingThread.looper),
+                Handler(previewThread.looper),
+            )
         } catch (_: RuntimeException) {
             closeUnownedThread(thread)
+            closeUnownedThread(processingThread)
+            closeUnownedThread(previewThread)
             failRun(runId, CAMERA_START_FAILURE_MESSAGE)
             return
         }
+        val handler = handlers.first
+        val processingHandler = handlers.second
+        val previewHandler = handlers.third
 
         val attached = synchronized(stateLock) {
             if (!lifecycle.isActive(runId)) {
@@ -98,18 +118,30 @@ class Camera2FrameSource(
             } else {
                 cameraThread = thread
                 cameraHandler = handler
+                imageProcessingThread = processingThread
+                imageProcessingHandler = processingHandler
+                previewDrainThread = previewThread
+                previewDrainHandler = previewHandler
                 true
             }
         }
         if (!attached) {
             closeUnownedThread(thread)
+            closeUnownedThread(processingThread)
+            closeUnownedThread(previewThread)
             return
         }
 
         try {
-            openCamera(runId, handler)
-        } catch (_: CameraAccessException) {
-            failRun(runId, CAMERA_OPEN_FAILURE_MESSAGE)
+            openCamera(runId, handler, processingHandler, previewHandler)
+        } catch (error: CameraAccessException) {
+            val diagnostic = cameraAccessErrorDiagnostic(error.reason)
+            failRun(
+                runId,
+                CAMERA_OPEN_FAILURE_MESSAGE,
+                recoverable = diagnostic.recoverable,
+                diagnostic = diagnostic,
+            )
         } catch (error: SecurityException) {
             failRun(runId, cameraPermissionFailure(error).message ?: CAMERA_PERMISSION_UNAVAILABLE_MESSAGE)
         } catch (_: RuntimeException) {
@@ -118,11 +150,16 @@ class Camera2FrameSource(
     }
 
     @Throws(CameraAccessException::class)
-    private fun openCamera(runId: Long, handler: Handler) {
+    private fun openCamera(
+        runId: Long,
+        handler: Handler,
+        processingHandler: Handler,
+        previewHandler: Handler,
+    ) {
         if (!lifecycle.isActive(runId)) return
         val cameraId = selectCameraId()
         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val size = selectJpegSize(characteristics)
+        val size = selectContinuousYuvSize(characteristics)
         val calibration = prepareCameraCalibration(
             characteristics,
             PixelDimensions(size.width, size.height),
@@ -135,19 +172,32 @@ class Camera2FrameSource(
                 ?.map { PixelDimensions(it.width, it.height) }
                 .orEmpty(),
         ) ?: error("Camera has no bounded YUV preview output size")
-        val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
+        val reader = ImageReader.newInstance(
+            size.width,
+            size.height,
+            ImageFormat.YUV_420_888,
+            CONTINUOUS_IMAGE_READER_MAX_IMAGES,
+        )
         val preview = try {
-            ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 2)
+            ImageReader.newInstance(
+                previewSize.width,
+                previewSize.height,
+                ImageFormat.YUV_420_888,
+                WARMUP_IMAGE_READER_MAX_IMAGES,
+            )
         } catch (error: RuntimeException) {
             closeSafely { reader.close() }
             throw error
         }
-        if (!attachImageReaders(runId, reader, preview)) {
-            closeSafely { reader.close() }
-            closeSafely { preview.close() }
+        val readers = CombinedCameraReaders(
+            preview = preview,
+            scheduledCapture = reader,
+        )
+        if (!attachImageReaders(runId, readers)) {
+            readers.close(ImageReader::close)
             return
         }
-        reader.setOnImageAvailableListener(
+        readers.scheduledCapture.setOnImageAvailableListener(
             { source ->
                 try {
                     consumeLatestImage(
@@ -161,9 +211,9 @@ class Camera2FrameSource(
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
             },
-            handler,
+            processingHandler,
         )
-        preview.setOnImageAvailableListener(
+        readers.preview.setOnImageAvailableListener(
             { source ->
                 try {
                     source.acquireLatestImage()?.close()
@@ -171,7 +221,7 @@ class Camera2FrameSource(
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
             },
-            handler,
+            previewHandler,
         )
         synchronized(stateLock) {
             lifecycle.runIfActive(runId) {
@@ -184,8 +234,7 @@ class Camera2FrameSource(
                     cameraId,
                     cameraStateCallback(
                         runId,
-                        reader,
-                        preview,
+                        readers,
                         handler,
                         calibration.captureContract,
                     ),
@@ -197,8 +246,7 @@ class Camera2FrameSource(
 
     private fun cameraStateCallback(
         runId: Long,
-        reader: ImageReader,
-        preview: ImageReader,
+        readers: CombinedCameraReaders<ImageReader>,
         handler: Handler,
         captureContract: CameraCalibrationCaptureContract?,
     ): CameraDevice.StateCallback = object : CameraDevice.StateCallback() {
@@ -212,19 +260,25 @@ class Camera2FrameSource(
             try {
                 synchronized(stateLock) {
                     lifecycle.runIfActive(runId) {
-                        createWarmupSession(
+                        createCombinedCaptureSession(
                             runId,
                             camera,
-                            reader,
-                            preview,
+                            readers,
                             handler,
                             captureContract,
                         )
                     }
                 }
-            } catch (_: CameraAccessException) {
+            } catch (error: CameraAccessException) {
+                val diagnostic = cameraAccessErrorDiagnostic(error.reason)
                 completeTerminalCallback(camera, callbackCameraCloser) {
-                    failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE, camera)
+                    failRun(
+                        runId,
+                        CAMERA_CONFIGURATION_FAILURE_MESSAGE,
+                        camera,
+                        recoverable = diagnostic.recoverable,
+                        diagnostic = diagnostic,
+                    )
                 }
             } catch (_: RuntimeException) {
                 completeTerminalCallback(camera, callbackCameraCloser) {
@@ -235,13 +289,26 @@ class Camera2FrameSource(
 
         override fun onDisconnected(camera: CameraDevice) {
             completeTerminalCallback(camera, callbackCameraCloser) {
-                failRun(runId, CAMERA_DISCONNECTED_MESSAGE, camera)
+                failRun(
+                    runId,
+                    CAMERA_DISCONNECTED_MESSAGE,
+                    camera,
+                    recoverable = true,
+                    diagnostic = cameraDisconnectedDiagnostic(),
+                )
             }
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
+            val diagnostic = cameraDeviceErrorDiagnostic(error)
             completeTerminalCallback(camera, callbackCameraCloser) {
-                failRun(runId, CAMERA_DEVICE_FAILURE_MESSAGE, camera)
+                failRun(
+                    runId,
+                    CAMERA_DEVICE_FAILURE_MESSAGE,
+                    camera,
+                    recoverable = diagnostic.recoverable,
+                    diagnostic = diagnostic,
+                )
             }
         }
     }
@@ -257,42 +324,46 @@ class Camera2FrameSource(
     }
 
     @Throws(CameraAccessException::class)
-    private fun selectJpegSize(characteristics: CameraCharacteristics): Size {
+    private fun selectContinuousYuvSize(characteristics: CameraCharacteristics): Size {
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: error("Camera has no stream configuration map")
-        val candidates = map.getOutputSizes(ImageFormat.JPEG).map { PixelDimensions(it.width, it.height) }
-        val selected = selectClosestCaptureSize(candidates, PixelDimensions(limits.maxWidth, limits.maxHeight))
-            ?: error("Camera has no JPEG output sizes")
+        val candidates = map.getOutputSizes(ImageFormat.YUV_420_888).map { PixelDimensions(it.width, it.height) }
+        val selected = selectContinuousYuvSize(candidates)
+            ?: error("Camera has no exact 648x648 YUV_420_888 output size")
         return Size(selected.width, selected.height)
     }
 
     @Throws(CameraAccessException::class)
-    private fun createWarmupSession(
+    private fun createCombinedCaptureSession(
         runId: Long,
         camera: CameraDevice,
-        reader: ImageReader,
-        preview: ImageReader,
+        readers: CombinedCameraReaders<ImageReader>,
         handler: Handler,
         captureContract: CameraCalibrationCaptureContract?,
     ) {
         val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(preview.surface)
+            addTarget(readers.preview.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
         }.build()
+        val scheduledCaptureRequestBuilder = buildScheduledCaptureRequest(
+            camera,
+            readers.scheduledCapture,
+            captureContract,
+        )
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) {
                 if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
+                if (!attachCaptureRequestBuilder(runId, scheduledCaptureRequestBuilder)) return
                 try {
+                    // Keep a low-resolution repeating target active for the complete session so
+                    // the vendor HAL does not tear streaming down between scheduled captures.
                     session.setRepeatingRequest(previewRequest, null, handler)
                     if (!handler.postDelayed(
                             {
-                                finishWarmupAndCreateJpegSession(
+                                finishWarmupAndStartScheduledCaptures(
                                     runId,
-                                    camera,
-                                    reader,
                                     session,
                                     handler,
-                                    captureContract,
                                 )
                             },
                             THREE_A_WARMUP_MILLIS,
@@ -300,8 +371,14 @@ class Camera2FrameSource(
                     ) {
                         failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                     }
-                } catch (_: CameraAccessException) {
-                    failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                } catch (error: CameraAccessException) {
+                    val diagnostic = cameraAccessErrorDiagnostic(error.reason)
+                    failRun(
+                        runId,
+                        CAMERA_CAPTURE_FAILURE_MESSAGE,
+                        recoverable = diagnostic.recoverable,
+                        diagnostic = diagnostic,
+                    )
                 } catch (_: RuntimeException) {
                     failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
                 }
@@ -315,54 +392,33 @@ class Camera2FrameSource(
         camera.createCaptureSession(
             SessionConfiguration(
                 SessionConfiguration.SESSION_REGULAR,
-                listOf(OutputConfiguration(preview.surface)),
+                readers.sessionOutputs().map { OutputConfiguration(it.surface) },
                 Executor { command -> handler.post(command) },
                 callback,
             ),
         )
     }
 
-    private fun finishWarmupAndCreateJpegSession(
+    private fun finishWarmupAndStartScheduledCaptures(
         runId: Long,
-        camera: CameraDevice,
-        reader: ImageReader,
-        warmupSession: CameraCaptureSession,
+        session: CameraCaptureSession,
         handler: Handler,
-        captureContract: CameraCalibrationCaptureContract?,
     ) {
-        if (!detachCaptureSession(runId, warmupSession)) return
-        try {
-            warmupSession.stopRepeating()
-        } catch (_: CameraAccessException) {
-            closeSafely { warmupSession.close() }
-            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
-            return
-        } catch (_: RuntimeException) {
-            closeSafely { warmupSession.close() }
-            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
-            return
+        val ready = synchronized(stateLock) {
+            lifecycle.isActive(runId) && captureSession === session && captureRequestBuilder != null
         }
-        closeSafely { warmupSession.close() }
-        try {
-            if (lifecycle.isActive(runId)) {
-                createJpegCaptureSession(runId, camera, reader, handler, captureContract)
-            }
-        } catch (_: CameraAccessException) {
-            failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
-        } catch (_: RuntimeException) {
-            failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
-        }
+        if (!ready) return
+        if (!dispatchToListener(runId) { it.onCaptureSessionReady(ElapsedRealtimeClock.nowNanos()) }) return
+        runCaptureOpportunity(runId, handler)
     }
 
     @Throws(CameraAccessException::class)
-    private fun createJpegCaptureSession(
-        runId: Long,
+    private fun buildScheduledCaptureRequest(
         camera: CameraDevice,
         reader: ImageReader,
-        handler: Handler,
         captureContract: CameraCalibrationCaptureContract?,
-    ) {
-        val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+    ): CaptureRequest.Builder =
+        camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(reader.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             if (captureContract?.requestDistortionCorrectionOff == true) {
@@ -405,30 +461,6 @@ class Camera2FrameSource(
                 )
             }
         }
-        if (!attachCaptureRequestBuilder(runId, requestBuilder)) return
-        val callback = object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
-                dispatchToListener(runId) {
-                    it.onCaptureSessionReady(ElapsedRealtimeClock.nowNanos())
-                }
-                runCaptureOpportunity(runId, handler)
-            }
-
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-                closeSafely { session.close() }
-                failRun(runId, CAMERA_CONFIGURATION_FAILURE_MESSAGE)
-            }
-        }
-        camera.createCaptureSession(
-            SessionConfiguration(
-                SessionConfiguration.SESSION_REGULAR,
-                listOf(OutputConfiguration(reader.surface)),
-                Executor { command -> handler.post(command) },
-                callback,
-            ),
-        )
-    }
 
     private fun runCaptureOpportunity(runId: Long, handler: Handler) {
         var ticket: CaptureRequestTicket? = null
@@ -442,15 +474,24 @@ class Camera2FrameSource(
                 ticket = capturePipeline.tryAcquire(runId, requestTimestampNanos)
                 ticket?.let {
                     val request = requestBuilder.apply { setTag(it) }.build()
+                    // Exactly one 648x648 request is submitted for this timer opportunity. The
+                    // preview keepalive is independent; a full scheduled pipeline is counted as
+                    // backpressure and is not replayed later.
                     session.capture(request, captureCallback(runId), handler)
                 }
             }
             publishCapturePipelineSnapshot(runId)
             scheduleNextCaptureOpportunity(runId, handler)
-        } catch (_: CameraAccessException) {
+        } catch (error: CameraAccessException) {
             ticket?.let(capturePipeline::recordCaptureFailed)
             publishCapturePipelineSnapshot(runId)
-            failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+            val diagnostic = cameraAccessErrorDiagnostic(error.reason)
+            failRun(
+                runId,
+                CAMERA_CAPTURE_FAILURE_MESSAGE,
+                recoverable = diagnostic.recoverable,
+                diagnostic = diagnostic,
+            )
         } catch (_: RuntimeException) {
             ticket?.let(capturePipeline::recordCaptureFailed)
             publishCapturePipelineSnapshot(runId)
@@ -539,7 +580,12 @@ class Camera2FrameSource(
                     (request.tag as? CaptureRequestTicket)?.let(capturePipeline::recordCaptureFailed)
                 }
                 publishCapturePipelineSnapshot(runId)
-                failRun(runId, CAMERA_CAPTURE_FAILURE_MESSAGE)
+                failRun(
+                    runId,
+                    CAMERA_CAPTURE_FAILURE_MESSAGE,
+                    recoverable = true,
+                    diagnostic = captureFailureDiagnostic(failure.reason),
+                )
             }
         }
 
@@ -603,98 +649,114 @@ class Camera2FrameSource(
         calibrationMetadata: Camera2CalibrationMetadata?,
     ) {
         val image = reader.acquireLatestImage() ?: return
-        image.use {
-            val sensorTimestamp = if (image.timestamp > 0L) image.timestamp else ElapsedRealtimeClock.nowNanos()
-            val (association, pipelineSnapshot) = synchronized(stateLock) {
-                if (!lifecycle.isActive(runId)) return
-                capturePipeline.associateLatestImage(runId, sensorTimestamp) to capturePipeline.snapshot()
-            }
-            val buffer = image.planes.singleOrNull()?.buffer ?: run {
-                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
-                return
-            }
-            val size = buffer.remaining()
-            if (size <= 0 || size > MAX_SOURCE_JPEG_BYTES) {
-                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
-                return
-            }
-            val bytes = ByteArray(size)
-            buffer.get(bytes)
-            val timestamp = sequence.normalizeTimestamp(sensorTimestamp)
-            if (listenerFor(runId) == null) return
-            val processorStartedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos()
-            val processed = processor.process(bytes, timestamp) ?: run {
-                dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
-                return
-            }
-            val processorFinishedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos()
-            val gateEvent = CaptureGateEvent(
-                inputDimensions = processed.inputDimensions,
-                outputDimensions = processed.dimensions,
-                emitted = processed.decision.emit,
-                dropReason = processed.decision.reason,
-                targetFramesPerSecond = processed.decision.targetFramesPerSecond,
-                meanLuma = processed.decision.analysis.meanLuma,
-                darkFraction = processed.decision.analysis.darkFraction,
-                laplacianVariance = processed.decision.analysis.laplacianVariance,
-                motionScore = processed.decision.analysis.motionScore,
-            )
-            if (!dispatchToListener(runId) { it.onCaptureGate(gateEvent) }) return
-            val cadenceChanged = synchronized(stateLock) {
-                if (!lifecycle.isActive(runId)) return
-                captureCadence.update(processed.decision.targetFramesPerSecond)
-            }
-            if (cadenceChanged) {
-                rescheduleNextCaptureOpportunity(runId, handler)
-            }
-            val output = processed.jpeg
-            val emittedMonotonicTimestampNanos = if (output == null) {
-                null
+        val acquired = processAndCloseCameraImage(image) { borrowedImage ->
+            val sensorTimestamp = if (borrowedImage.timestamp > 0L) {
+                borrowedImage.timestamp
             } else {
-                val frameId = sequence.nextId()
-                val frame = buildJpegFrame(
-                    requestId = "camera-$frameId",
-                    sessionId = sessionId,
-                    streamId = "camera2-jpeg",
-                    frameId = frameId,
-                    timestampNanos = timestamp,
-                    wallTimeMillis = SystemWallClock.nowMillis(),
-                    width = processed.dimensions.width,
-                    height = processed.dimensions.height,
-                    bytes = output,
-                    synthetic = false,
-                    intrinsics = calibrationMetadata?.let {
-                        resolveCameraIntrinsicsForCapture(
-                            it,
-                            association.calibrationMetadata,
-                            processed.dimensions,
-                        )
-                    },
-                )
-                if (!dispatchToListener(runId) { it.onFrame(frame) }) return
                 ElapsedRealtimeClock.nowNanos()
             }
-            val listenerFinishedMonotonicTimestampNanos =
-                emittedMonotonicTimestampNanos ?: ElapsedRealtimeClock.nowNanos()
-            val timingEvent = CaptureTimingEvent(
-                analyzedMonotonicTimestampNanos = processorFinishedMonotonicTimestampNanos,
-                emittedMonotonicTimestampNanos = emittedMonotonicTimestampNanos,
-                requestToImageLatencyNanos = association.requestedAtMonotonicTimestampNanos?.let {
-                    (imageAvailableMonotonicTimestampNanos - it).coerceAtLeast(0L)
-                },
-                imageAcquisitionDurationNanos =
-                    (processorStartedMonotonicTimestampNanos - imageAvailableMonotonicTimestampNanos)
-                        .coerceAtLeast(0L),
-                processorDurationNanos =
-                    (processorFinishedMonotonicTimestampNanos - processorStartedMonotonicTimestampNanos)
-                        .coerceAtLeast(0L),
-                listenerPathDurationNanos =
-                    (listenerFinishedMonotonicTimestampNanos - processorFinishedMonotonicTimestampNanos)
-                        .coerceAtLeast(0L),
+            val (association, pipelineSnapshot) = synchronized(stateLock) {
+                if (!lifecycle.isActive(runId)) return@processAndCloseCameraImage null
+                capturePipeline.associateLatestImage(runId, sensorTimestamp) to capturePipeline.snapshot()
+            }
+            val timestamp = sequence.normalizeTimestamp(sensorTimestamp)
+            if (listenerFor(runId) == null) return@processAndCloseCameraImage null
+            val processorStartedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos()
+            val processed = processor.process(borrowYuv420Frame(borrowedImage), timestamp)
+            ProcessedCameraImage(
+                timestamp = timestamp,
+                association = association,
+                pipelineSnapshot = pipelineSnapshot,
+                processorStartedMonotonicTimestampNanos = processorStartedMonotonicTimestampNanos,
+                processorFinishedMonotonicTimestampNanos = ElapsedRealtimeClock.nowNanos(),
+                processed = processed,
             )
-            if (!dispatchToListener(runId) { it.onCaptureTiming(timingEvent) }) return
-            dispatchToListener(runId) { it.onCapturePipelineSnapshot(pipelineSnapshot) }
+        } ?: return
+        val processed = acquired.processed
+        val gateEvent = CaptureGateEvent(
+            inputDimensions = processed.inputDimensions,
+            outputDimensions = processed.outputDimensions,
+            emitted = processed.decision.emit,
+            dropReason = processed.decision.reason,
+            targetFramesPerSecond = processed.decision.targetFramesPerSecond,
+            meanLuma = processed.decision.analysis.meanLuma,
+            darkFraction = processed.decision.analysis.darkFraction,
+            laplacianVariance = processed.decision.analysis.laplacianVariance,
+            motionScore = processed.decision.analysis.motionScore,
+        )
+        if (!dispatchToListener(runId) { it.onCaptureGate(gateEvent) }) return
+        val cadenceChanged = synchronized(stateLock) {
+            if (!lifecycle.isActive(runId)) return
+            captureCadence.update(processed.decision.targetFramesPerSecond)
         }
+        if (cadenceChanged) {
+            rescheduleNextCaptureOpportunity(runId, handler)
+        }
+        val output = processed.rgb8
+        val emittedMonotonicTimestampNanos = if (output == null) {
+            null
+        } else {
+            val transform = SquareAspectFillTransform.centered(
+                processed.inputDimensions.width,
+                processed.inputDimensions.height,
+                processed.outputDimensions.width,
+            )
+            val frameId = sequence.nextId()
+            val frame = buildRgbFrame(
+                requestId = "camera-$frameId",
+                sessionId = sessionId,
+                streamId = "camera2-yuv-rgb8",
+                frameId = frameId,
+                timestampNanos = acquired.timestamp,
+                wallTimeMillis = SystemWallClock.nowMillis(),
+                width = processed.outputDimensions.width,
+                height = processed.outputDimensions.height,
+                bytes = output,
+                synthetic = false,
+                takeOwnership = true,
+                intrinsics = calibrationMetadata?.let {
+                    resolveCameraIntrinsicsForCapture(
+                        it,
+                        acquired.association.calibrationMetadata,
+                        processed.inputDimensions,
+                    )?.let { captured -> transformCameraIntrinsicsForSquareOutput(captured, transform) }
+                },
+            )
+            if (!dispatchToListener(runId) { it.onFrame(frame) }) return
+            ElapsedRealtimeClock.nowNanos()
+        }
+        val listenerFinishedMonotonicTimestampNanos =
+            emittedMonotonicTimestampNanos ?: ElapsedRealtimeClock.nowNanos()
+        val timingEvent = CaptureTimingEvent(
+            analyzedMonotonicTimestampNanos = acquired.processorFinishedMonotonicTimestampNanos,
+            emittedMonotonicTimestampNanos = emittedMonotonicTimestampNanos,
+            requestToImageLatencyNanos = acquired.association.requestedAtMonotonicTimestampNanos?.let {
+                (imageAvailableMonotonicTimestampNanos - it).coerceAtLeast(0L)
+            },
+            imageAcquisitionDurationNanos =
+                (
+                    acquired.processorStartedMonotonicTimestampNanos -
+                        imageAvailableMonotonicTimestampNanos
+                    )
+                    .coerceAtLeast(0L),
+            processorDurationNanos =
+                (
+                    acquired.processorFinishedMonotonicTimestampNanos -
+                        acquired.processorStartedMonotonicTimestampNanos
+                    )
+                    .coerceAtLeast(0L),
+            nativeRgbConversion = processed.rgbConversionBackend?.let {
+                it == RgbConversionBackend.NATIVE_INTEGER
+            },
+            listenerPathDurationNanos =
+                (
+                    listenerFinishedMonotonicTimestampNanos -
+                        acquired.processorFinishedMonotonicTimestampNanos
+                    )
+                    .coerceAtLeast(0L),
+        )
+        if (!dispatchToListener(runId) { it.onCaptureTiming(timingEvent) }) return
+        dispatchToListener(runId) { it.onCapturePipelineSnapshot(acquired.pipelineSnapshot) }
     }
 
     override fun stop() {
@@ -710,7 +772,13 @@ class Camera2FrameSource(
         completeTeardown(resources)
     }
 
-    private fun failRun(runId: Long, message: String, callbackCamera: CameraDevice? = null): Boolean {
+    private fun failRun(
+        runId: Long,
+        message: String,
+        callbackCamera: CameraDevice? = null,
+        recoverable: Boolean = false,
+        diagnostic: CameraSourceDiagnostic? = null,
+    ): Boolean {
         val stopped = synchronized(stateLock) {
             if (!lifecycle.finish(runId)) return false
             teardownInProgress = true
@@ -720,7 +788,21 @@ class Camera2FrameSource(
             listener = null
             target to detachResourcesLocked(callbackCamera)
         }
-        completeTeardown(stopped.second) { stopped.first?.onError(message) }
+        completeTeardown(stopped.second) {
+            if (recoverable) {
+                if (diagnostic == null) {
+                    stopped.first?.onRecoverableError(CAMERA_RESTART_REQUESTED_MESSAGE)
+                } else {
+                    stopped.first?.onRecoverableError(CAMERA_RESTART_REQUESTED_MESSAGE, diagnostic)
+                }
+            } else {
+                if (diagnostic == null) {
+                    stopped.first?.onError(message)
+                } else {
+                    stopped.first?.onError(message, diagnostic)
+                }
+            }
+        }
         return true
     }
 
@@ -760,12 +842,11 @@ class Camera2FrameSource(
 
     private fun attachImageReaders(
         runId: Long,
-        reader: ImageReader,
-        preview: ImageReader,
+        readers: CombinedCameraReaders<ImageReader>,
     ): Boolean = synchronized(stateLock) {
         if (!lifecycle.isActive(runId)) return@synchronized false
-        imageReader = reader
-        previewReader = preview
+        check(cameraReaders == null) { "Camera readers are already attached" }
+        cameraReaders = readers
         true
     }
 
@@ -790,13 +871,6 @@ class Camera2FrameSource(
         true
     }
 
-    private fun detachCaptureSession(runId: Long, session: CameraCaptureSession): Boolean =
-        synchronized(stateLock) {
-            if (!lifecycle.isActive(runId) || captureSession !== session) return@synchronized false
-            captureSession = null
-            true
-        }
-
     private fun listenerFor(runId: Long): FrameSource.Listener? = synchronized(stateLock) {
         listener.takeIf { lifecycle.isActive(runId) }
     }
@@ -804,15 +878,21 @@ class Camera2FrameSource(
     private fun detachResourcesLocked(callbackCamera: CameraDevice? = null): CameraResourceCloser {
         val handler = cameraHandler
         val thread = cameraThread
-        val preview = previewReader
-        val reader = imageReader
+        val processingHandler = imageProcessingHandler
+        val processingThread = imageProcessingThread
+        val previewHandler = previewDrainHandler
+        val previewThread = previewDrainThread
+        val readers = cameraReaders
         val device = cameraDevice
         val session = captureSession
         val captureOpportunity = scheduledCaptureOpportunity
         cameraHandler = null
         cameraThread = null
-        previewReader = null
-        imageReader = null
+        imageProcessingHandler = null
+        imageProcessingThread = null
+        previewDrainHandler = null
+        previewDrainThread = null
+        cameraReaders = null
         cameraDevice = null
         captureSession = null
         captureRequestBuilder = null
@@ -821,11 +901,14 @@ class Camera2FrameSource(
             listOf(
                 { captureOpportunity?.let { handler?.removeCallbacks(it) } },
                 { handler?.removeCallbacksAndMessages(null) },
+                { processingHandler?.removeCallbacksAndMessages(null) },
+                { previewHandler?.removeCallbacksAndMessages(null) },
                 { session?.close() },
                 { if (device !== callbackCamera) device?.close() },
-                { preview?.close() },
-                { reader?.close() },
+                { readers?.close(ImageReader::close) },
                 { closeUnownedThread(thread) },
+                { closeUnownedThread(processingThread) },
+                { closeUnownedThread(previewThread) },
             ),
         )
     }
@@ -837,6 +920,15 @@ private data class PreparedCameraCalibration(
     val metadata: Camera2CalibrationMetadata?,
     val capability: CameraCalibrationCapabilityState,
     val captureContract: CameraCalibrationCaptureContract?,
+)
+
+private data class ProcessedCameraImage(
+    val timestamp: Long,
+    val association: CaptureImageAssociation,
+    val pipelineSnapshot: CapturePipelineSnapshot,
+    val processorStartedMonotonicTimestampNanos: Long,
+    val processorFinishedMonotonicTimestampNanos: Long,
+    val processed: ProcessedYuvCameraFrame,
 )
 
 private fun prepareCameraCalibration(
@@ -915,6 +1007,7 @@ private fun prepareCameraCalibration(
                     CameraCharacteristics.SCALER_CROPPING_TYPE_CENTER_ONLY,
             )
     }
+    val cameraPose = camera2PoseMetadata(characteristics)
     val expectedCrop = CameraCalibrationCrop(
         preCorrectionActiveArray.left.toDouble(),
         preCorrectionActiveArray.top.toDouble(),
@@ -966,6 +1059,7 @@ private fun prepareCameraCalibration(
         coordinateSpaceTopInPixelArray = preCorrectionActiveArray.top.toDouble(),
         physicalFallback = physicalFallback,
         captureContract = captureContract,
+        pose = cameraPose,
     )
     return when (val scaled = scaleCameraCalibration(metadata, output)) {
         is CameraCalibrationScaleResult.Accepted -> {
@@ -991,6 +1085,22 @@ private fun prepareCameraCalibration(
                 captureContract = null,
             )
     }
+}
+
+private fun camera2PoseMetadata(characteristics: CameraCharacteristics): Camera2PoseMetadata? {
+    val rotation = characteristics.get(CameraCharacteristics.LENS_POSE_ROTATION)
+        ?.map(Float::toDouble)
+        ?: return null
+    val translation = characteristics.get(CameraCharacteristics.LENS_POSE_TRANSLATION)
+        ?.map(Float::toDouble)
+        .orEmpty()
+    val reference = when (characteristics.get(CameraCharacteristics.LENS_POSE_REFERENCE)) {
+        CameraCharacteristics.LENS_POSE_REFERENCE_PRIMARY_CAMERA -> Camera2PoseReference.PRIMARY_CAMERA
+        CameraCharacteristics.LENS_POSE_REFERENCE_GYROSCOPE -> Camera2PoseReference.GYROSCOPE
+        CameraCharacteristics.LENS_POSE_REFERENCE_UNDEFINED -> Camera2PoseReference.UNDEFINED
+        else -> Camera2PoseReference.AUTOMOTIVE
+    }
+    return Camera2PoseMetadata(rotation, translation, reference)
 }
 
 internal class AdaptivePhysicalCaptureCadence(
@@ -1264,6 +1374,27 @@ internal class CameraResourceCloser(private var closeActions: List<() -> Unit>) 
     }
 }
 
+/** The preview keepalive and scheduled capture readers share one session and one lifetime. */
+internal class CombinedCameraReaders<T : Any>(
+    val preview: T,
+    val scheduledCapture: T,
+) {
+    private var closed = false
+
+    init {
+        require(preview !== scheduledCapture) { "Camera outputs must use distinct readers" }
+    }
+
+    fun sessionOutputs(): List<T> = listOf(preview, scheduledCapture)
+
+    @Synchronized
+    fun close(closeAction: (T) -> Unit) {
+        if (closed) return
+        closed = true
+        sessionOutputs().forEach { resource -> closeSafely { closeAction(resource) } }
+    }
+}
+
 internal fun drainCameraCallbacksBeforeReset(
     resources: CameraResourceCloser,
     resetState: () -> Unit,
@@ -1288,11 +1419,9 @@ internal fun <T> completeTerminalCallback(
     closer: CallbackResourceCloser<T>,
     transition: () -> Unit,
 ) {
-    try {
-        transition()
-    } finally {
-        closer.close(resource)
-    }
+    // Camera2 may post onClosed while closing. Close before teardown quits its callback looper.
+    closer.close(resource)
+    transition()
 }
 
 internal class CameraRunLifecycle {
@@ -1355,20 +1484,50 @@ internal fun <T> attachOrClose(
 private fun closeUnownedThread(thread: HandlerThread?) {
     if (thread == null) return
     closeSafely { thread.quitSafely() }
-    if (shouldJoinCameraThread(thread)) {
-        try {
-            thread.join(1_000L)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
-    }
+    joinCameraThreadBounded(thread)
 }
 
-private const val MAX_SOURCE_JPEG_BYTES = 20 * 1_024 * 1_024
 private const val THREE_A_WARMUP_MILLIS = 1_000L
 private const val MAX_PREVIEW_PIXELS = 1_280L * 720L
 private const val MAX_CAPTURE_PIPELINE_DEPTH = 8
 private const val RESULT_FOCAL_LENGTH_TOLERANCE_MM = 0.001
+internal const val CONTINUOUS_IMAGE_READER_MAX_IMAGES = 2
+private const val WARMUP_IMAGE_READER_MAX_IMAGES = 2
+
+// This is deliberately independent of FrameLimits: those bounds remain available to legacy
+// diagnostics and a future exclusive high-resolution mode, while continuous capture stays square.
+internal val CONTINUOUS_YUV_CAPTURE_SIZE = PixelDimensions(648, 648)
+
+internal fun selectContinuousYuvSize(
+    candidates: Collection<PixelDimensions>,
+    required: PixelDimensions = CONTINUOUS_YUV_CAPTURE_SIZE,
+): PixelDimensions? = candidates.firstOrNull { it == required }
+
+private fun borrowYuv420Frame(image: Image): Yuv420Frame {
+    require(image.format == ImageFormat.YUV_420_888)
+    val dimensions = PixelDimensions(image.width, image.height)
+    val planes = image.planes
+    require(planes.size == 3)
+    val chromaWidth = (dimensions.width + 1) / 2
+    val chromaHeight = (dimensions.height + 1) / 2
+    return Yuv420Frame(
+        dimensions = dimensions,
+        y = borrowYuvPlane(planes[0], dimensions.width, dimensions.height),
+        u = borrowYuvPlane(planes[1], chromaWidth, chromaHeight),
+        v = borrowYuvPlane(planes[2], chromaWidth, chromaHeight),
+    )
+}
+
+private fun borrowYuvPlane(
+    plane: Image.Plane,
+    width: Int,
+    height: Int,
+): Yuv420Plane {
+    val requiredBytes = minimumYuvPlaneBytes(width, height, plane.rowStride, plane.pixelStride)
+    val source = plane.buffer.duplicate()
+    require(source.remaining() >= requiredBytes)
+    return ByteBufferYuv420Plane(source, plane.rowStride, plane.pixelStride)
+}
 
 internal fun selectHeadlessPreviewSize(
     candidates: Collection<PixelDimensions>,
@@ -1393,6 +1552,100 @@ internal fun shouldJoinCameraThread(
     currentThread: Thread = Thread.currentThread(),
 ): Boolean = cameraThread != null && cameraThread !== currentThread
 
+internal fun joinCameraThreadBounded(
+    cameraThread: Thread?,
+    currentThread: Thread = Thread.currentThread(),
+    timeoutMillis: Long = CAMERA_THREAD_JOIN_TIMEOUT_MILLIS,
+    onTimeout: (threadName: String, timeoutMillis: Long) -> Unit = { threadName, timeout ->
+        Log.w(
+            CAMERA_LOG_TAG,
+            "camera_teardown_thread_join_timed_out thread=$threadName timeout_ms=$timeout; continuing=true",
+        )
+    },
+): Boolean {
+    require(timeoutMillis > 0L)
+    if (!shouldJoinCameraThread(cameraThread, currentThread)) return true
+    checkNotNull(cameraThread)
+    try {
+        cameraThread.join(timeoutMillis)
+    } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        return false
+    }
+    if (!cameraThread.isAlive) return true
+    onTimeout(cameraThread.name, timeoutMillis)
+    return false
+}
+
+internal fun cameraDeviceErrorIsRecoverable(error: Int): Boolean = when (error) {
+    CameraDevice.StateCallback.ERROR_CAMERA_IN_USE,
+    CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE,
+    CameraDevice.StateCallback.ERROR_CAMERA_DEVICE,
+    CameraDevice.StateCallback.ERROR_CAMERA_SERVICE,
+    -> true
+    CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> false
+    else -> false
+}
+
+internal fun cameraAccessErrorIsRecoverable(reason: Int): Boolean = when (reason) {
+    CameraAccessException.CAMERA_DISCONNECTED,
+    CameraAccessException.CAMERA_ERROR,
+    CameraAccessException.CAMERA_IN_USE,
+    CameraAccessException.MAX_CAMERAS_IN_USE,
+    -> true
+    CameraAccessException.CAMERA_DISABLED -> false
+    else -> false
+}
+
+internal fun cameraDeviceErrorDiagnostic(error: Int): CameraSourceDiagnostic =
+    CameraSourceDiagnostic(
+        domain = CameraSourceDiagnosticDomain.DEVICE_STATE_CALLBACK,
+        numericCode = error,
+        symbolicCode = when (error) {
+            CameraDevice.StateCallback.ERROR_CAMERA_IN_USE -> "ERROR_CAMERA_IN_USE"
+            CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE -> "ERROR_MAX_CAMERAS_IN_USE"
+            CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> "ERROR_CAMERA_DISABLED"
+            CameraDevice.StateCallback.ERROR_CAMERA_DEVICE -> "ERROR_CAMERA_DEVICE"
+            CameraDevice.StateCallback.ERROR_CAMERA_SERVICE -> "ERROR_CAMERA_SERVICE"
+            else -> "UNKNOWN"
+        },
+        recoverable = cameraDeviceErrorIsRecoverable(error),
+    )
+
+internal fun cameraDisconnectedDiagnostic(): CameraSourceDiagnostic = CameraSourceDiagnostic(
+    domain = CameraSourceDiagnosticDomain.DEVICE_STATE_CALLBACK,
+    numericCode = null,
+    symbolicCode = "ON_DISCONNECTED",
+    recoverable = true,
+)
+
+internal fun cameraAccessErrorDiagnostic(reason: Int): CameraSourceDiagnostic =
+    CameraSourceDiagnostic(
+        domain = CameraSourceDiagnosticDomain.CAMERA_ACCESS_EXCEPTION,
+        numericCode = reason,
+        symbolicCode = when (reason) {
+            CameraAccessException.CAMERA_DISABLED -> "CAMERA_DISABLED"
+            CameraAccessException.CAMERA_DISCONNECTED -> "CAMERA_DISCONNECTED"
+            CameraAccessException.CAMERA_ERROR -> "CAMERA_ERROR"
+            CameraAccessException.CAMERA_IN_USE -> "CAMERA_IN_USE"
+            CameraAccessException.MAX_CAMERAS_IN_USE -> "MAX_CAMERAS_IN_USE"
+            else -> "UNKNOWN"
+        },
+        recoverable = cameraAccessErrorIsRecoverable(reason),
+    )
+
+internal fun captureFailureDiagnostic(reason: Int): CameraSourceDiagnostic =
+    CameraSourceDiagnostic(
+        domain = CameraSourceDiagnosticDomain.CAPTURE_CALLBACK,
+        numericCode = reason,
+        symbolicCode = when (reason) {
+            CaptureFailure.REASON_ERROR -> "REASON_ERROR"
+            CaptureFailure.REASON_FLUSHED -> "REASON_FLUSHED"
+            else -> "UNKNOWN"
+        },
+        recoverable = true,
+    )
+
 internal const val CAMERA_PERMISSION_UNAVAILABLE_MESSAGE =
     "Camera permission became unavailable before the camera could open; capture remains stopped"
 internal const val CAMERA_START_FAILURE_MESSAGE = "Camera could not start; capture remains stopped"
@@ -1402,6 +1655,9 @@ internal const val CAMERA_CONFIGURATION_FAILURE_MESSAGE =
 internal const val CAMERA_CAPTURE_FAILURE_MESSAGE = "Camera capture failed; capture remains stopped"
 internal const val CAMERA_DISCONNECTED_MESSAGE = "Camera disconnected; capture remains stopped"
 internal const val CAMERA_DEVICE_FAILURE_MESSAGE = "Camera device failed; capture remains stopped"
+internal const val CAMERA_RESTART_REQUESTED_MESSAGE = "Camera device failed; capture restart requested"
+internal const val CAMERA_THREAD_JOIN_TIMEOUT_MILLIS = 500L
+private const val CAMERA_LOG_TAG = "ConceptFlowCamera2"
 
 internal fun cameraPermissionFailure(cause: SecurityException? = null): IllegalStateException =
     IllegalStateException(CAMERA_PERMISSION_UNAVAILABLE_MESSAGE, cause)

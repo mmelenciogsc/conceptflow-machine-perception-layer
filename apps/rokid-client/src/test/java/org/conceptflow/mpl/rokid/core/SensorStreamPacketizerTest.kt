@@ -63,6 +63,57 @@ class SensorStreamPacketizerTest {
         assertNull(packetizer.microphone(lease(microphoneExpiry = 150L), chunk))
     }
 
+    @Test
+    fun touchPacketPreservesRawOrderingSemanticsAndBothClockDomains() {
+        val packet = SensorStreamPacketizer(FixedClock(100L)).touch(
+            lease(),
+            eventId = 9L,
+            observedMonotonicTimestampNs = 80_000_000L,
+            event = RokidInputEvent(
+                key = RokidInputKey.SWIPE_FORWARD,
+                action = RokidInputAction.UP,
+                eventTimeMillis = 75L,
+                repeatCount = 0,
+                canceled = false,
+                longPress = false,
+                scanCode = 115,
+                device = RokidInputDeviceIdentity(4, 257, 257, "ROKID,PSOC-TP-R", false, 1, 2),
+            ),
+        )!!
+
+        assertEquals(9L, packet.touchEvent.eventId)
+        assertEquals(80_000_000L, packet.touchEvent.observedMonotonicTimestampNs)
+        assertEquals(75L, packet.touchEvent.sourceUptimeMs)
+        assertEquals(115, packet.touchEvent.scanCode)
+    }
+
+    @Test
+    fun systemTwoFingerHoldIsOneTriggeredSemanticEventRatherThanSyntheticKeyEdges() {
+        val packet = SensorStreamPacketizer(FixedClock(100L)).systemTouch(
+            lease(),
+            eventId = 10L,
+            event = RokidSystemTouchEvent(
+                input = RokidSystemBroadcastInput.TWO_FINGER_LONG_PRESS,
+                sourceUptimeMillis = 76L,
+                observedMonotonicTimestampNs = 81_000_000L,
+            ),
+        )!!
+
+        assertEquals(10L, packet.touchEvent.eventId)
+        assertEquals(81_000_000L, packet.touchEvent.observedMonotonicTimestampNs)
+        assertEquals(76L, packet.touchEvent.sourceUptimeMs)
+        assertEquals(
+            org.conceptflow.mpl.v1.RokidTouchKey.ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS,
+            packet.touchEvent.key,
+        )
+        assertEquals(
+            org.conceptflow.mpl.v1.RokidTouchAction.ROKID_TOUCH_ACTION_TRIGGERED,
+            packet.touchEvent.action,
+        )
+        assertTrue(packet.touchEvent.longPress)
+        assertEquals(149, packet.touchEvent.scanCode)
+    }
+
     private fun lease(expiresAt: Long = 1_000L, microphoneExpiry: Long? = null) = ActiveStreamLease(
         leaseId = "lease",
         peer = AuthenticatedStreamPeer("peer"),
@@ -70,6 +121,7 @@ class SensorStreamPacketizerTest {
         streams = buildSet {
             add(SensorStreamKind.SENSOR_STREAM_KIND_CAMERA)
             add(SensorStreamKind.SENSOR_STREAM_KIND_IMU)
+            add(SensorStreamKind.SENSOR_STREAM_KIND_TOUCH)
             if (microphoneExpiry != null) add(SensorStreamKind.SENSOR_STREAM_KIND_MICROPHONE)
         },
         openedAtNanos = 1L,

@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
+readonly PRIVATE_ROOT="no_backup/private"
+readonly TARGET_DIRECTORY="$PRIVATE_ROOT/rokid_brand_voice"
+readonly STAGING_DIRECTORY="$PRIVATE_ROOT/rokid_brand_voice.staging"
+readonly PREVIOUS_DIRECTORY="$PRIVATE_ROOT/rokid_brand_voice.previous"
+readonly -a VOICE_FILES=(
+    concept_flow.wav
+    machine_intelligence.wav
+    human_architecture.wav
+    machine_perception_layer.wav
+    map.wav
+    morph.wav
+    move.wav
+    supplemental_awareness.wav
+    manifest.json
+)
+
+serial=""
+voice_directory=""
+validate_only=false
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/provision-private-rokid-brand-voice [--serial SERIAL] --voice-dir DIRECTORY [--validate-only]
+
+Validate and install an externally generated, consent-affirmed voice set into
+the debuggable Rokid app's private no-backup storage. The app is force-stopped
+during the staged directory replacement and is not restarted. Hashes and file
+contents are never printed. --validate-only performs no ADB or device action.
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --serial)
+            (($# >= 2)) || fail "--serial requires a value"
+            serial="$2"
+            shift 2
+            ;;
+        --voice-dir)
+            (($# >= 2)) || fail "--voice-dir requires a value"
+            voice_directory="$2"
+            shift 2
+            ;;
+        --validate-only)
+            validate_only=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            fail "unknown argument; use --help"
+            ;;
+    esac
+done
+
+[[ -n "$voice_directory" ]] || fail "--voice-dir is required"
+require_command adb "Android platform-tools (adb) are required"
+require_command python3 "Python 3 is required to validate the private manifest"
+require_command realpath "realpath is required to resolve the private voice directory"
+require_command sha256sum "sha256sum is required to verify transfers"
+voice_directory="$(realpath -e -- "$voice_directory")"
+[[ -d "$voice_directory" ]] || fail "the private voice directory does not exist"
+case "$voice_directory/" in
+    "$REPOSITORY_ROOT/"*) fail "the private voice directory must be outside the repository" ;;
+esac
+
+python3 - "$voice_directory" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+import wave
+
+directory = Path(sys.argv[1]).resolve(strict=True)
+expected_names = {
+    "concept_flow.wav",
+    "machine_intelligence.wav",
+    "human_architecture.wav",
+    "machine_perception_layer.wav",
+    "map.wav",
+    "morph.wav",
+    "move.wav",
+    "supplemental_awareness.wav",
+}
+expected_manifest_keys = {
+    "schemaVersion",
+    "sourceRepository",
+    "sourceRevision",
+    "workerSha256",
+    "engine",
+    "modelRevision",
+    "runtimeManifestSha256",
+    "voicePermissionAffirmed",
+    "voiceSampleKeptExternal",
+    "watermark",
+    "outputs",
+}
+expected_values = {
+    "schemaVersion": 1,
+    "sourceRepository": "https://github.com/mmelenciogsc/QUICKPub",
+    "sourceRevision": "27808e8f9d0ec073af6091a6b9a49f1d021779a9",
+    "workerSha256": "7fa492d8d684bf7c01daef8d65e67a1307e7fe3df16268e796abe85610b9801b",
+    "engine": "chatterbox-turbo-0.1.7",
+    "modelRevision": "749d1c1a46eb10492095d68fbcf55691ccf137cd",
+    "runtimeManifestSha256": "dda48c703de5fc22b997f28921658a6e414a4795ff5e2f4ea3e88b2048389d35",
+    "voicePermissionAffirmed": True,
+    "voiceSampleKeptExternal": True,
+    "watermark": "PerTh disclosure watermark retained by Chatterbox",
+}
+
+def reject(message: str) -> None:
+    raise SystemExit(f"Private voice validation failed: {message}")
+
+try:
+    if {item.name for item in directory.iterdir()} != expected_names | {"manifest.json"}:
+        reject("directory must contain exactly the eight WAV files and manifest")
+    manifest_path = directory / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        reject("manifest must be a regular file")
+    if not 1 <= manifest_path.stat().st_size <= 65_536:
+        reject("manifest size is outside the allowed bound")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if set(manifest) != expected_manifest_keys:
+        reject("manifest fields differ from the private voice schema")
+    for key, expected in expected_values.items():
+        if type(manifest.get(key)) is not type(expected) or manifest.get(key) != expected:
+            reject(f"manifest field is invalid: {key}")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or len(outputs) != len(expected_names):
+        reject("manifest output list is invalid")
+    declared = {}
+    for output in outputs:
+        if not isinstance(output, dict) or set(output) != {"file", "sha256"}:
+            reject("manifest output entry is invalid")
+        name = output.get("file")
+        digest = output.get("sha256")
+        if name not in expected_names or name in declared:
+            reject("manifest output names are invalid")
+        if not isinstance(digest, str) or len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            reject("manifest output digest is invalid")
+        declared[name] = digest
+    if set(declared) != expected_names:
+        reject("manifest output set is incomplete")
+    for name in sorted(expected_names):
+        path = directory / name
+        if path.is_symlink() or not path.is_file():
+            reject(f"voice output must be a regular file: {name}")
+        if not 1 <= path.stat().st_size <= 20 * 1_024 * 1_024:
+            reject(f"voice output size is outside the allowed bound: {name}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != declared[name]:
+            reject(f"voice output does not match its manifest: {name}")
+        with wave.open(str(path), "rb") as audio:
+            if audio.getnchannels() < 1 or audio.getframerate() < 8_000 or audio.getnframes() < 1:
+                reject(f"voice output is not a usable WAV: {name}")
+except (OSError, TypeError, ValueError, json.JSONDecodeError, wave.Error) as error:
+    reject(type(error).__name__)
+PY
+
+if [[ "$validate_only" == true ]]; then
+    printf 'Private voice set validation passed; no device action was performed.\n'
+    exit 0
+fi
+
+select_rokid_target "$serial"
+verify_rokid_target
+adb -s "$ROKID_SERIAL" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1 || \
+    fail "install the debuggable Rokid Node APK first"
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" id >/dev/null 2>&1 || \
+    fail "run-as failed; private voice provisioning requires a debuggable app"
+
+remote_staging_active=false
+cleanup() {
+    if [[ "$remote_staging_active" == true ]]; then
+        adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+            rm -rf "$STAGING_DIRECTORY" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+adb -s "$ROKID_SERIAL" shell am force-stop "$PACKAGE_NAME" >/dev/null
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" mkdir -p "$PRIVATE_ROOT" >/dev/null
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" chmod 700 "$PRIVATE_ROOT" >/dev/null
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" rm -rf "$STAGING_DIRECTORY" >/dev/null
+if ! adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+    test -d "$TARGET_DIRECTORY" >/dev/null 2>&1 && \
+    adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        test -d "$PREVIOUS_DIRECTORY" >/dev/null 2>&1; then
+    adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        mv "$PREVIOUS_DIRECTORY" "$TARGET_DIRECTORY" >/dev/null
+else
+    adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        rm -rf "$PREVIOUS_DIRECTORY" >/dev/null
+fi
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" mkdir "$STAGING_DIRECTORY" >/dev/null
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" chmod 700 "$STAGING_DIRECTORY" >/dev/null
+remote_staging_active=true
+
+for name in "${VOICE_FILES[@]}"; do
+    source_file="$voice_directory/$name"
+    host_hash="$(sha256sum -- "$source_file")"
+    host_hash="${host_hash%% *}"
+    # $1 is expanded by the app-private device shell, not by the host shell.
+    # shellcheck disable=SC2016
+    if ! adb -s "$ROKID_SERIAL" exec-in run-as "$PACKAGE_NAME" \
+        sh -c 'cat > "$1"' sh "$STAGING_DIRECTORY/$name" <"$source_file"; then
+        fail "private voice transfer failed: $name"
+    fi
+    adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        chmod 600 "$STAGING_DIRECTORY/$name" >/dev/null
+    installed_hash="$(adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        sha256sum "$STAGING_DIRECTORY/$name")"
+    installed_hash="${installed_hash%% *}"
+    [[ "$installed_hash" == "$host_hash" ]] || fail "private voice transfer verification failed: $name"
+done
+
+had_previous=false
+if adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+    test -d "$TARGET_DIRECTORY" >/dev/null 2>&1; then
+    adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+        mv "$TARGET_DIRECTORY" "$PREVIOUS_DIRECTORY" >/dev/null
+    had_previous=true
+fi
+if ! adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+    mv "$STAGING_DIRECTORY" "$TARGET_DIRECTORY" >/dev/null; then
+    if [[ "$had_previous" == true ]]; then
+        adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+            mv "$PREVIOUS_DIRECTORY" "$TARGET_DIRECTORY" >/dev/null 2>&1 || true
+    fi
+    fail "private voice directory commit failed"
+fi
+remote_staging_active=false
+adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
+    rm -rf "$PREVIOUS_DIRECTORY" >/dev/null
+
+printf 'Installed the validated private voice set in app no-backup storage.\n'
+printf 'The Rokid app remains stopped; start it explicitly when ready.\n'

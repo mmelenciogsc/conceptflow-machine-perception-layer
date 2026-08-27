@@ -133,6 +133,8 @@ screenshots/
 *.jpg
 *.jpeg
 *.png
+# Defense in depth: private narration is never a Gradle source; keep legacy paths ignored.
+apps/rokid-client/src/main/assets/private/rokid_brand_voice/
 !tests/fixtures/**
 !**/src/test/**/fixtures/**
 

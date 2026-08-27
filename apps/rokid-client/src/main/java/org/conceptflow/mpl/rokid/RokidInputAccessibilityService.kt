@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.rokid
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Intent
+import android.os.SystemClock
+import android.provider.Settings
+import android.util.Log
+import android.view.KeyEvent
+import android.view.accessibility.AccessibilityEvent
+import org.conceptflow.mpl.rokid.core.ExactRokidInputHardwarePolicy
+import org.conceptflow.mpl.rokid.core.IdleControlPolicy
+import org.conceptflow.mpl.rokid.core.RokidCandidateInputProfile
+import org.conceptflow.mpl.rokid.core.RokidInputAction
+import org.conceptflow.mpl.rokid.core.RokidInputDispatchPolicy
+import org.conceptflow.mpl.rokid.core.RokidInputDeviceIdentity
+import org.conceptflow.mpl.rokid.core.RokidInputEvent
+import org.conceptflow.mpl.rokid.core.RokidInputKey
+import org.conceptflow.mpl.rokid.core.RokidInputSequenceStateMachine
+import org.conceptflow.mpl.rokid.core.RokidLocalControlCommand
+import org.conceptflow.mpl.rokid.core.RokidTouchEventHub
+import org.conceptflow.mpl.rokid.core.uptimeMillisToElapsedRealtimeNanos
+import java.util.concurrent.atomic.AtomicLong
+
+class RokidInputAccessibilityService : AccessibilityService() {
+    private val hardwarePolicy = ExactRokidInputHardwarePolicy(
+        expectedDeviceName = RokidCandidateInputProfile.DEVICE_NAME,
+        expectedSource = RokidCandidateInputProfile.SOURCE_KEYBOARD,
+        scanCodeByKey = RokidCandidateInputProfile.scanCodeByKey,
+    )
+    private val sequence = RokidInputSequenceStateMachine(hardwarePolicy)
+    private val commandGateStore by lazy { RokidInputCommandGateStore(this) }
+    private var systemBroadcastObserver: RokidSystemBroadcastObserver? = null
+
+    override fun onServiceConnected() {
+        serviceInfo = serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+        }
+        systemBroadcastObserver?.close()
+        systemBroadcastObserver = RokidSystemBroadcastObserver(this)
+        requestSameBootRecoveryIfArmed()
+    }
+
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        val key = event.keyCode.toRokidInputKey()
+        val device = event.toDeviceIdentity()
+        val inputEvent = RokidInputEvent(
+            key = key,
+            action = event.action.toRokidInputAction(),
+            eventTimeMillis = event.eventTime,
+            repeatCount = event.repeatCount,
+            canceled = event.isCanceled,
+            longPress = event.isLongPress,
+            scanCode = event.scanCode,
+            device = device,
+        )
+        val allowlisted = hardwarePolicy.accepts(inputEvent)
+        val twoFingerLongPressProbe = RokidCandidateInputProfile.isTwoFingerLongPressProbe(
+            androidKeyCode = event.keyCode,
+            scanCode = event.scanCode,
+            device = device,
+        )
+        if (key != RokidInputKey.UNRELATED) {
+            logCandidateEvent(event, allowlisted, mapping = "existing_candidate")
+        } else if (twoFingerLongPressProbe) {
+            logCandidateEvent(event, allowlisted = false, mapping = "two_finger_long_press_probe")
+        }
+        if (allowlisted) {
+            RokidTouchEventHub.publish(
+                inputEvent,
+                uptimeMillisToElapsedRealtimeNanos(
+                    eventUptimeMillis = event.eventTime,
+                    receiptUptimeMillis = SystemClock.uptimeMillis(),
+                    receiptElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                ),
+            )
+        }
+        val nodeActive = IdleControlModeStore(this).isEnabled()
+        val command = sequence.observe(
+            inputEvent,
+            nodeActive = nodeActive,
+        )
+        if (command != null) {
+            val dispatched = RokidInputDispatchPolicy.dispatchIfEnabled(
+                commandsEnabled = commandGateStore.isEnabled(),
+                command = command,
+            ) { dispatch(it, nodeActive, event.eventTime) }
+            if (!dispatched) {
+                Log.i(
+                    TAG,
+                    "state=input_sequence command=${command.name.lowercase()} result=observe_only",
+                )
+            }
+        }
+        return false
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+
+    override fun onInterrupt() {
+        sequence.reset()
+    }
+
+    override fun onDestroy() {
+        systemBroadcastObserver?.close()
+        systemBroadcastObserver = null
+        sequence.reset()
+        super.onDestroy()
+    }
+
+    private fun requestSameBootRecoveryIfArmed() {
+        val store = IdleControlModeStore(this)
+        val currentBootCount = runCatching {
+            Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT)
+        }.getOrNull()
+        if (!IdleControlPolicy.mayResumeSameBoot(
+                enabled = store.isEnabled(),
+                armedBootCount = store.armedBootCount(),
+                currentBootCount = currentBootCount,
+            )
+        ) {
+            Log.i(TAG, "state=same_boot_recovery result=not_authorized")
+            return
+        }
+        runCatching {
+            // YodaOS rejects Service.startForeground() when a killed process is recreated only in
+            // the background, even though this system-bound accessibility service is restarted.
+            // Re-enter through the same short-lived nonvisual Activity broker used for explicit
+            // arming so the runtime receives valid foreground-start eligibility. The runtime
+            // independently rechecks the same-boot capability before opening the network.
+            startActivity(
+                Intent(this, RokidCommandActivity::class.java)
+                    .setAction(RokidRuntimeService.ACTION_RECOVER_SAME_BOOT)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                    ),
+            )
+        }.onSuccess {
+            Log.i(TAG, "state=same_boot_recovery result=visible_broker_requested")
+        }.onFailure {
+            Log.w(TAG, "state=same_boot_recovery result=rejected")
+        }
+    }
+
+    private fun dispatch(
+        command: RokidLocalControlCommand,
+        nodeActive: Boolean,
+        eventTimeMillis: Long,
+    ) {
+        if (command == RokidLocalControlCommand.DISABLE_NODE && !nodeActive) {
+            Log.i(TAG, "state=local_control_dispatch command=disable_node result=already_disabled")
+            return
+        }
+        val observedMonotonicNs = uptimeMillisToElapsedRealtimeNanos(
+            eventUptimeMillis = eventTimeMillis,
+            receiptUptimeMillis = SystemClock.uptimeMillis(),
+            receiptElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+        )
+        val intent = Intent(this, RokidRuntimeService::class.java)
+            .setAction(command.action)
+            .putExtra(RokidRuntimeService.EXTRA_GESTURE_OBSERVED_MONOTONIC_NS, observedMonotonicNs)
+        val result = runCatching {
+            startForegroundService(intent)
+        }
+        if (result.isSuccess) {
+            Log.i(
+                TAG,
+                "state=local_control_dispatch command=${command.name.lowercase()} " +
+                    "result=requested physical_validation=required",
+            )
+        } else {
+            Log.w(
+                TAG,
+                "state=local_control_dispatch command=${command.name.lowercase()} result=rejected",
+            )
+        }
+    }
+
+    private fun logCandidateEvent(
+        event: KeyEvent,
+        allowlisted: Boolean,
+        mapping: String,
+    ) {
+        val device = event.device
+        Log.i(
+            TAG,
+            "state=input_candidate mapping=$mapping sequence=${candidateEvents.incrementAndGet()} " +
+                "key_code=${event.keyCode} action=${event.action.toDiagnosticAction()} " +
+                "repeat=${event.repeatCount} canceled=${event.isCanceled} " +
+                "long_press=${event.isLongPress} scan_code=${event.scanCode} " +
+                "device_id=${event.deviceId} " +
+                "vendor_id=${device?.vendorId ?: -1} product_id=${device?.productId ?: -1} " +
+                "source=${event.source} allowlisted=$allowlisted",
+        )
+    }
+
+    private fun KeyEvent.toDeviceIdentity(): RokidInputDeviceIdentity = RokidInputDeviceIdentity(
+        deviceId = deviceId,
+        source = source,
+        deviceSources = device?.sources ?: 0,
+        name = device?.name.orEmpty(),
+        isVirtual = device?.isVirtual ?: true,
+        vendorId = device?.vendorId ?: -1,
+        productId = device?.productId ?: -1,
+    )
+
+    private fun Int.toRokidInputKey(): RokidInputKey =
+        RokidCandidateInputProfile.keyByAndroidKeyCode[this] ?: RokidInputKey.UNRELATED
+
+    private fun Int.toRokidInputAction(): RokidInputAction = when (this) {
+        KeyEvent.ACTION_DOWN -> RokidInputAction.DOWN
+        KeyEvent.ACTION_UP -> RokidInputAction.UP
+        else -> RokidInputAction.OTHER
+    }
+
+    private fun Int.toDiagnosticAction(): String = when (this) {
+        KeyEvent.ACTION_DOWN -> "down"
+        KeyEvent.ACTION_UP -> "up"
+        else -> "other"
+    }
+
+    companion object {
+        private const val TAG = "ConceptFlowRokidInput"
+        private val candidateEvents = AtomicLong(0L)
+    }
+}

@@ -7,11 +7,16 @@ import org.conceptflow.mpl.v1.CameraFrameChunk
 import org.conceptflow.mpl.v1.ImuBatch
 import org.conceptflow.mpl.v1.ImuReading
 import org.conceptflow.mpl.v1.MicrophoneChunk
+import org.conceptflow.mpl.v1.RokidTouchAction
+import org.conceptflow.mpl.v1.RokidTouchEvent
+import org.conceptflow.mpl.v1.RokidTouchKey
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 import org.conceptflow.mpl.v1.SensorStreamKind
 
 data class StreamPacketLimits(
-    val cameraChunkBytes: Int = 16 * 1_024,
+    // 64 KiB keeps a 640x640 RGB frame to 19 records instead of 75 while remaining below the
+    // receiver's independently enforced per-chunk maximum.
+    val cameraChunkBytes: Int = 64 * 1_024,
     val maximumCameraBytes: Int = 2 * 1_024 * 1_024,
     val maximumImuSamplesPerBatch: Int = 64,
     val maximumMicrophoneChunkBytes: Int = 64 * 1_024,
@@ -58,6 +63,7 @@ class SensorStreamPacketizer(
                 .setChunkIndex(chunkIndex)
                 .setChunkCount(chunkCount)
                 .setTotalPayloadBytes(payload.size().toLong())
+                .setCaptureMonotonicTimestampNs(frame.captureMonotonicTimestampNs)
                 .setChunkData(payload.substring(start, end))
                 .apply { if (chunkIndex == 0) frameMetadata = metadata }
                 .build()
@@ -101,6 +107,70 @@ class SensorStreamPacketizer(
             .setAudioData(ByteString.copyFrom(chunk.pcm16LittleEndian))
             .build()
         return envelope(lease).setMicrophoneChunk(payload).build()
+    }
+
+    @Synchronized
+    fun touch(
+        lease: ActiveStreamLease,
+        eventId: Long,
+        observedMonotonicTimestampNs: Long,
+        event: RokidInputEvent,
+    ): SensorStreamEnvelope? {
+        val now = clock.nowNanos()
+        if (!lease.permits(SensorStreamKind.SENSOR_STREAM_KIND_TOUCH, now) ||
+            eventId <= 0L || observedMonotonicTimestampNs <= 0L || event.eventTimeMillis < 0L
+        ) return null
+        val key = when (event.key) {
+            RokidInputKey.PREAMBLE -> RokidTouchKey.ROKID_TOUCH_KEY_PREAMBLE
+            RokidInputKey.SWIPE_FORWARD -> RokidTouchKey.ROKID_TOUCH_KEY_SWIPE_FORWARD
+            RokidInputKey.SWIPE_BACKWARD -> RokidTouchKey.ROKID_TOUCH_KEY_SWIPE_BACKWARD
+            RokidInputKey.SINGLE_TAP -> RokidTouchKey.ROKID_TOUCH_KEY_SINGLE_TAP
+            RokidInputKey.DOUBLE_TAP -> RokidTouchKey.ROKID_TOUCH_KEY_DOUBLE_TAP
+            RokidInputKey.UNRELATED -> return null
+        }
+        val action = when (event.action) {
+            RokidInputAction.DOWN -> RokidTouchAction.ROKID_TOUCH_ACTION_DOWN
+            RokidInputAction.UP -> RokidTouchAction.ROKID_TOUCH_ACTION_UP
+            RokidInputAction.OTHER -> return null
+        }
+        val payload = RokidTouchEvent.newBuilder()
+            .setEventId(eventId)
+            .setObservedMonotonicTimestampNs(observedMonotonicTimestampNs)
+            .setSourceUptimeMs(event.eventTimeMillis)
+            .setKey(key)
+            .setAction(action)
+            .setRepeatCount(event.repeatCount)
+            .setCanceled(event.canceled)
+            .setLongPress(event.longPress)
+            .setScanCode(event.scanCode)
+            .build()
+        return envelope(lease).setTouchEvent(payload).build()
+    }
+
+    @Synchronized
+    fun systemTouch(
+        lease: ActiveStreamLease,
+        eventId: Long,
+        event: RokidSystemTouchEvent,
+    ): SensorStreamEnvelope? {
+        val now = clock.nowNanos()
+        if (!lease.permits(SensorStreamKind.SENSOR_STREAM_KIND_TOUCH, now) || eventId <= 0L) {
+            return null
+        }
+        if (event.input != RokidSystemBroadcastInput.TWO_FINGER_LONG_PRESS) return null
+        val payload = RokidTouchEvent.newBuilder()
+            .setEventId(eventId)
+            .setObservedMonotonicTimestampNs(event.observedMonotonicTimestampNs)
+            .setSourceUptimeMs(event.sourceUptimeMillis)
+            .setKey(RokidTouchKey.ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS)
+            .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_TRIGGERED)
+            .setRepeatCount(0)
+            .setCanceled(false)
+            .setLongPress(true)
+            // Physically correlated raw PSOC event: Linux KEY_PROG2 / scan code 149.
+            .setScanCode(RokidCandidateInputProfile.TWO_FINGER_LONG_PRESS_SCAN_CODE)
+            .build()
+        return envelope(lease).setTouchEvent(payload).build()
     }
 
     private fun envelope(lease: ActiveStreamLease): SensorStreamEnvelope.Builder =

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.rokid.hardware
 
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CaptureFailure
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -14,8 +17,79 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.conceptflow.mpl.rokid.core.PixelDimensions
+import org.conceptflow.mpl.rokid.core.CameraSourceDiagnosticDomain
 
 class Camera2FrameSourceTest {
+    @Test
+    fun continuousCaptureSelectsOnlyTheNativeSquareYuvSize() {
+        val selected = selectContinuousYuvSize(
+            listOf(
+                PixelDimensions(4_032, 3_024),
+                PixelDimensions(1_920, 1_080),
+                PixelDimensions(648, 648),
+            ),
+        )
+
+        assertEquals(PixelDimensions(648, 648), selected)
+        assertNull(
+            selectContinuousYuvSize(
+                listOf(PixelDimensions(4_032, 3_024), PixelDimensions(1_920, 1_080)),
+            ),
+        )
+        assertEquals(2, CONTINUOUS_IMAGE_READER_MAX_IMAGES)
+    }
+
+    @Test
+    fun borrowedCameraImageOwnershipClosesExactlyOnceOnSuccessAndFailure() {
+        val success = FakeImageResource()
+        assertEquals("processed", processAndCloseCameraImage(success) { "processed" })
+        assertEquals(1, success.closeCalls)
+
+        val failure = FakeImageResource()
+        assertThrows(IllegalStateException::class.java) {
+            processAndCloseCameraImage(failure) { error("processing failed") }
+        }
+        assertEquals(1, failure.closeCalls)
+    }
+
+    @Test
+    fun oneCombinedSessionOwnsPreviewAndScheduledCaptureUntilSharedClose() {
+        val preview = FakeImageResource()
+        val scheduledCapture = FakeImageResource()
+        val readers = CombinedCameraReaders(preview, scheduledCapture)
+
+        val sessionOutputs = readers.sessionOutputs()
+
+        assertEquals(2, sessionOutputs.size)
+        assertSame(preview, sessionOutputs[0])
+        assertSame(scheduledCapture, sessionOutputs[1])
+        // Completing warmup only starts scheduled requests; neither reader is detached.
+        assertEquals(0, preview.closeCalls)
+        assertEquals(0, scheduledCapture.closeCalls)
+
+        readers.close(FakeImageResource::close)
+        readers.close(FakeImageResource::close)
+
+        assertEquals(1, preview.closeCalls)
+        assertEquals(1, scheduledCapture.closeCalls)
+    }
+
+    @Test
+    fun repeatingPreviewDoesNotExpandTheBoundedScheduledRequestPipeline() {
+        val pipeline = BoundedCaptureRequestPipeline(maximumOutstandingRequests = 3)
+        pipeline.beginRun(31L)
+
+        // Preview frames are drained independently and never acquire one-shot tickets.
+        repeat(120) { assertEquals(0, pipeline.snapshot().outstandingRequests) }
+        repeat(3) { index -> assertTrue(pipeline.tryAcquire(31L, (index + 1L) * 1_000L) != null) }
+        assertNull(pipeline.tryAcquire(31L, 4_000L))
+
+        val snapshot = pipeline.snapshot()
+        assertEquals(3L, snapshot.requestsSubmitted)
+        assertEquals(1L, snapshot.opportunitiesBackpressured)
+        assertEquals(3, snapshot.outstandingRequests)
+    }
+
     @Test
     fun physicalCaptureCadenceStartsRelaxedAndRaisesOnlyAfterMotionSignal() {
         val cadence = AdaptivePhysicalCaptureCadence()
@@ -163,11 +237,13 @@ class Camera2FrameSourceTest {
                 videoStabilizationOff = true,
                 opticalStabilizationOff = true,
             ),
-            PixelDimensions(1_920, 1_080),
+            CONTINUOUS_YUV_CAPTURE_SIZE,
         )!!
 
-        assertEquals(904.7619047619, intrinsics.focalXPixels, 1e-9)
-        assertEquals(960.0, intrinsics.principalXPixels, 1e-9)
+        assertEquals(407.1428571429, intrinsics.focalXPixels, 1e-9)
+        assertEquals(324.0, intrinsics.principalXPixels, 1e-9)
+        assertEquals(648, intrinsics.calibratedWidth)
+        assertEquals(648, intrinsics.calibratedHeight)
         assertFalse(intrinsics.hasUncertainty())
     }
 
@@ -186,7 +262,7 @@ class Camera2FrameSourceTest {
                 videoStabilizationOff = false,
                 opticalStabilizationOff = true,
             ),
-            PixelDimensions(1_920, 1_080),
+            CONTINUOUS_YUV_CAPTURE_SIZE,
         )
         val cropContradiction = resolveCameraIntrinsicsForCapture(
             metadata,
@@ -199,7 +275,7 @@ class Camera2FrameSourceTest {
                 videoStabilizationOff = true,
                 opticalStabilizationOff = true,
             ),
-            PixelDimensions(1_920, 1_080),
+            CONTINUOUS_YUV_CAPTURE_SIZE,
         )
 
         assertNull(stabilizationContradiction)
@@ -211,10 +287,10 @@ class Camera2FrameSourceTest {
         val intrinsics = resolveCameraIntrinsicsForCapture(
             gatedRokidMetadata(),
             captureResult = null,
-            output = PixelDimensions(1_920, 1_080),
+            output = CONTINUOUS_YUV_CAPTURE_SIZE,
         )!!
 
-        assertEquals(540.0, intrinsics.principalYPixels, 1e-9)
+        assertEquals(324.0, intrinsics.principalYPixels, 1e-9)
         assertFalse(intrinsics.hasUncertainty())
     }
 
@@ -401,21 +477,38 @@ class Camera2FrameSourceTest {
         val closed = mutableListOf<String>()
         val resources = CameraResourceCloser(
             listOf(
-                { closed += "handler" },
+                { closed += "control_callbacks" },
+                { closed += "processing_callbacks" },
+                { closed += "preview_callbacks" },
                 {
                     closed += "session"
                     throw IllegalStateException("already closed")
                 },
                 { closed += "device" },
-                { closed += "reader" },
-                { closed += "thread" },
+                { closed += "readers" },
+                { closed += "control_thread" },
+                { closed += "processing_thread" },
+                { closed += "preview_thread" },
             ),
         )
 
         resources.close()
         resources.close()
 
-        assertEquals(listOf("handler", "session", "device", "reader", "thread"), closed)
+        assertEquals(
+            listOf(
+                "control_callbacks",
+                "processing_callbacks",
+                "preview_callbacks",
+                "session",
+                "device",
+                "readers",
+                "control_thread",
+                "processing_thread",
+                "preview_thread",
+            ),
+            closed,
+        )
     }
 
     @Test
@@ -423,15 +516,27 @@ class Camera2FrameSourceTest {
         val order = mutableListOf<String>()
         val resources = CameraResourceCloser(
             listOf(
-                { order += "callbacks_cancelled" },
-                { order += "camera_thread_joined" },
+                { order += "control_callbacks_cancelled" },
+                { order += "processing_callbacks_cancelled" },
+                { order += "preview_callbacks_cancelled" },
+                { order += "control_thread_joined" },
+                { order += "processing_thread_joined" },
+                { order += "preview_thread_joined" },
             ),
         )
 
         drainCameraCallbacksBeforeReset(resources) { order += "processing_state_reset" }
 
         assertEquals(
-            listOf("callbacks_cancelled", "camera_thread_joined", "processing_state_reset"),
+            listOf(
+                "control_callbacks_cancelled",
+                "processing_callbacks_cancelled",
+                "preview_callbacks_cancelled",
+                "control_thread_joined",
+                "processing_thread_joined",
+                "preview_thread_joined",
+                "processing_state_reset",
+            ),
             order,
         )
     }
@@ -441,13 +546,24 @@ class Camera2FrameSourceTest {
         val lifecycle = CameraRunLifecycle()
         val runId = lifecycle.begin()
         val camera = FakeCameraResource()
-        val closer = CallbackResourceCloser<FakeCameraResource> { it.close() }
+        val order = mutableListOf<String>()
+        val closer = CallbackResourceCloser<FakeCameraResource> {
+            order += "device_closed"
+            it.close()
+        }
         val transitions = mutableListOf<Boolean>()
 
-        completeTerminalCallback(camera, closer) { transitions += lifecycle.finish(runId) }
-        completeTerminalCallback(camera, closer) { transitions += lifecycle.finish(runId) }
+        completeTerminalCallback(camera, closer) {
+            order += "transition"
+            transitions += lifecycle.finish(runId)
+        }
+        completeTerminalCallback(camera, closer) {
+            order += "transition"
+            transitions += lifecycle.finish(runId)
+        }
 
         assertEquals(listOf(true, false), transitions)
+        assertEquals(listOf("device_closed", "transition", "transition"), order)
         assertEquals(1, camera.closeCalls)
         assertFalse(lifecycle.isRunning)
     }
@@ -472,10 +588,67 @@ class Camera2FrameSourceTest {
     }
 
     @Test
+    fun handlerThreadJoinIsBoundedAndReportsTruthfulContinuation() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = thread(name = "wedged-camera-callback", isDaemon = true) {
+            entered.countDown()
+            release.await()
+        }
+        assertTrue(entered.await(1, TimeUnit.SECONDS))
+        val timeouts = mutableListOf<Pair<String, Long>>()
+
+        assertFalse(
+            joinCameraThreadBounded(worker, timeoutMillis = 5L) { name, timeout ->
+                timeouts += name to timeout
+            },
+        )
+        assertEquals(listOf("wedged-camera-callback" to 5L), timeouts)
+        assertTrue(worker.isAlive)
+
+        release.countDown()
+        worker.join(1_000L)
+        assertFalse(worker.isAlive)
+    }
+
+    @Test
     fun cameraFailureMessagesAreStableAndDoNotExposeFrameworkDetails() {
         assertEquals("Camera could not be opened; capture remains stopped", CAMERA_OPEN_FAILURE_MESSAGE)
         assertEquals("Camera capture failed; capture remains stopped", CAMERA_CAPTURE_FAILURE_MESSAGE)
         assertEquals("Camera disconnected; capture remains stopped", CAMERA_DISCONNECTED_MESSAGE)
+        assertEquals("Camera device failed; capture restart requested", CAMERA_RESTART_REQUESTED_MESSAGE)
+    }
+
+    @Test
+    fun onlyPolicyDisabledAndUnknownCameraErrorsAreTerminal() {
+        assertTrue(cameraDeviceErrorIsRecoverable(CameraDevice.StateCallback.ERROR_CAMERA_DEVICE))
+        assertTrue(cameraDeviceErrorIsRecoverable(CameraDevice.StateCallback.ERROR_CAMERA_SERVICE))
+        assertTrue(cameraDeviceErrorIsRecoverable(CameraDevice.StateCallback.ERROR_CAMERA_IN_USE))
+        assertFalse(cameraDeviceErrorIsRecoverable(CameraDevice.StateCallback.ERROR_CAMERA_DISABLED))
+        assertFalse(cameraDeviceErrorIsRecoverable(Int.MAX_VALUE))
+        assertTrue(cameraAccessErrorIsRecoverable(CameraAccessException.CAMERA_ERROR))
+        assertTrue(cameraAccessErrorIsRecoverable(CameraAccessException.CAMERA_DISCONNECTED))
+        assertFalse(cameraAccessErrorIsRecoverable(CameraAccessException.CAMERA_DISABLED))
+    }
+
+    @Test
+    fun cameraDiagnosticsDisambiguateEqualNumericCodesAndPreserveCaptureReason() {
+        val stateCallback = cameraDeviceErrorDiagnostic(CameraDevice.StateCallback.ERROR_CAMERA_DISABLED)
+        val accessException = cameraAccessErrorDiagnostic(CameraAccessException.CAMERA_ERROR)
+        val captureFailure = captureFailureDiagnostic(CaptureFailure.REASON_FLUSHED)
+
+        assertEquals(3, stateCallback.numericCode)
+        assertEquals(CameraSourceDiagnosticDomain.DEVICE_STATE_CALLBACK, stateCallback.domain)
+        assertEquals("ERROR_CAMERA_DISABLED", stateCallback.symbolicCode)
+        assertFalse(stateCallback.recoverable)
+        assertEquals(3, accessException.numericCode)
+        assertEquals(CameraSourceDiagnosticDomain.CAMERA_ACCESS_EXCEPTION, accessException.domain)
+        assertEquals("CAMERA_ERROR", accessException.symbolicCode)
+        assertTrue(accessException.recoverable)
+        assertEquals(CameraSourceDiagnosticDomain.CAPTURE_CALLBACK, captureFailure.domain)
+        assertEquals(CaptureFailure.REASON_FLUSHED, captureFailure.numericCode)
+        assertEquals("REASON_FLUSHED", captureFailure.symbolicCode)
+        assertTrue(captureFailure.recoverable)
     }
 
     private class FakeCameraResource {
@@ -488,6 +661,14 @@ class Camera2FrameSourceTest {
 
         fun createSession() {
             sessionCalls += 1
+        }
+    }
+
+    private class FakeImageResource : AutoCloseable {
+        var closeCalls = 0
+
+        override fun close() {
+            closeCalls += 1
         }
     }
 

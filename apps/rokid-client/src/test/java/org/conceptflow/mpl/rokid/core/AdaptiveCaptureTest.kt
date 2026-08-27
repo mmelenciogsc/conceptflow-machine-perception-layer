@@ -9,6 +9,19 @@ import org.junit.Test
 
 class AdaptiveCaptureTest {
     @Test
+    fun protectedGateDefaultsRemainUnchangedForNativeSquareCapture() {
+        val config = AdaptiveFrameConfig()
+
+        assertEquals(3.0, config.relaxedFramesPerSecond, 0.0)
+        assertEquals(5.0, config.motionFramesPerSecond, 0.0)
+        assertEquals(18.0, config.minimumMeanLuma, 0.0)
+        assertEquals(0.92, config.maximumDarkFraction, 0.0)
+        assertEquals(60.0, config.minimumLaplacianVariance, 0.0)
+        assertEquals(0.06, config.materialMotionThreshold, 0.0)
+        assertEquals(1_500_000_000L, config.motionHoldNanos)
+    }
+
+    @Test
     fun captureSelectionPrefersExactGateThenClosestAspectCompatibleSource() {
         val exact = PixelDimensions(1_920, 1_080)
         assertEquals(

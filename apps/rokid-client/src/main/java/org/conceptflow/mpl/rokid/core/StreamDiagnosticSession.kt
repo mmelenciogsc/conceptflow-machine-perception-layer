@@ -3,8 +3,8 @@ package org.conceptflow.mpl.rokid.core
 
 data class StreamDiagnosticSnapshot(
     val durationMillis: Long,
-    val cameraJpegSessionReady: Boolean,
-    val cameraJpegSessionStartupMillis: Double,
+    val cameraCaptureSessionReady: Boolean,
+    val cameraCaptureSessionStartupMillis: Double,
     val cameraFrames: Long,
     val cameraBytes: Long,
     val cameraFramesAnalyzed: Long,
@@ -35,6 +35,8 @@ data class StreamDiagnosticSnapshot(
     val cameraProcessorP50Millis: Double,
     val cameraProcessorP95Millis: Double,
     val cameraProcessorMaximumMillis: Double,
+    val cameraRgbConversions: Long,
+    val cameraNativeRgbConversions: Long,
     val cameraListenerPathP50Millis: Double,
     val cameraListenerPathP95Millis: Double,
     val cameraListenerPathMaximumMillis: Double,
@@ -61,7 +63,7 @@ data class StreamDiagnosticSnapshot(
 
 class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private var accepting = true
-    private var cameraJpegSessionReadyTimestampNanos: Long? = null
+    private var cameraCaptureSessionReadyTimestampNanos: Long? = null
     private var cameraFrames = 0L
     private var cameraBytes = 0L
     private var cameraFramesAnalyzed = 0L
@@ -79,6 +81,8 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     private val requestToImageTimings = BoundedTimingWindow()
     private val imageAcquisitionTimings = BoundedTimingWindow()
     private val processorTimings = BoundedTimingWindow()
+    private var cameraRgbConversions = 0L
+    private var cameraNativeRgbConversions = 0L
     private val listenerPathTimings = BoundedTimingWindow()
     private var capturePipelineSnapshot = EMPTY_CAPTURE_PIPELINE_SNAPSHOT
     private var imuSamples = 0L
@@ -124,15 +128,15 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
     }
 
     @Synchronized
-    fun recordCameraJpegSessionReady(readyMonotonicTimestampNanos: Long): Boolean {
+    fun recordCameraCaptureSessionReady(readyMonotonicTimestampNanos: Long): Boolean {
         if (!accepting) return false
         if (readyMonotonicTimestampNanos < startedMonotonicNs ||
-            cameraJpegSessionReadyTimestampNanos != null
+            cameraCaptureSessionReadyTimestampNanos != null
         ) {
             cameraTimingRejectedEvents += 1L
             return false
         }
-        cameraJpegSessionReadyTimestampNanos = readyMonotonicTimestampNanos
+        cameraCaptureSessionReadyTimestampNanos = readyMonotonicTimestampNanos
         return true
     }
 
@@ -152,6 +156,10 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
         event.requestToImageLatencyNanos?.let { check(requestToImageTimings.record(it)) }
         check(imageAcquisitionTimings.record(event.imageAcquisitionDurationNanos))
         check(processorTimings.record(event.processorDurationNanos))
+        event.nativeRgbConversion?.let { native ->
+            cameraRgbConversions += 1L
+            if (native) cameraNativeRgbConversions += 1L
+        }
         check(listenerPathTimings.record(event.listenerPathDurationNanos))
         return true
     }
@@ -221,11 +229,11 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
         val imageAcquisition = imageAcquisitionTimings.snapshot()
         val processor = processorTimings.snapshot()
         val listenerPath = listenerPathTimings.snapshot()
-        val jpegSessionReadyTimestamp = cameraJpegSessionReadyTimestampNanos
+        val captureSessionReadyTimestamp = cameraCaptureSessionReadyTimestampNanos
         return StreamDiagnosticSnapshot(
             durationMillis = ((finishedMonotonicNs - startedMonotonicNs).coerceAtLeast(0L)) / 1_000_000L,
-            cameraJpegSessionReady = jpegSessionReadyTimestamp != null,
-            cameraJpegSessionStartupMillis = jpegSessionReadyTimestamp
+            cameraCaptureSessionReady = captureSessionReadyTimestamp != null,
+            cameraCaptureSessionStartupMillis = captureSessionReadyTimestamp
                 ?.let { (it - startedMonotonicNs).coerceAtLeast(0L).toMilliseconds() }
                 ?: 0.0,
             cameraFrames = cameraFrames,
@@ -258,6 +266,8 @@ class StreamDiagnosticSession(private val startedMonotonicNs: Long) {
             cameraProcessorP50Millis = processor.p50Nanos.toMilliseconds(),
             cameraProcessorP95Millis = processor.p95Nanos.toMilliseconds(),
             cameraProcessorMaximumMillis = processor.maximumNanos.toMilliseconds(),
+            cameraRgbConversions = cameraRgbConversions,
+            cameraNativeRgbConversions = cameraNativeRgbConversions,
             cameraListenerPathP50Millis = listenerPath.p50Nanos.toMilliseconds(),
             cameraListenerPathP95Millis = listenerPath.p95Nanos.toMilliseconds(),
             cameraListenerPathMaximumMillis = listenerPath.maximumNanos.toMilliseconds(),

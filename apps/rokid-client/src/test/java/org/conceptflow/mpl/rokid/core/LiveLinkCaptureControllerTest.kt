@@ -6,20 +6,202 @@ import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkSession
 import org.conceptflow.mpl.transport.LiveSessionBinding
+import org.conceptflow.mpl.transport.MicrophoneGestureDispatch
+import org.conceptflow.mpl.transport.MicrophoneGestureResult
+import org.conceptflow.mpl.transport.MicrophoneLeaseAuthorization
 import org.conceptflow.mpl.transport.NegotiatedLiveLease
+import org.conceptflow.mpl.transport.RokidGestureDispatch
 import org.conceptflow.mpl.transport.RokidLiveLinkObserver
 import org.conceptflow.mpl.v1.CoordinateFrame
 import org.conceptflow.mpl.v1.FramePayload
+import org.conceptflow.mpl.v1.MicrophoneControlOperation
 import org.conceptflow.mpl.v1.Pose
+import org.conceptflow.mpl.v1.RokidGestureOperation
 import org.conceptflow.mpl.v1.Quaternion
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 import org.conceptflow.mpl.v1.Vector3
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveLinkCaptureControllerTest {
+    @Test
+    fun `admitted camera imu and microphone persist to spool instead of push queues`() {
+        val spool = FakeSpool()
+        val fixture = Fixture(microphonePermissionAvailable = true, sensorSpool = spool)
+        fixture.controller.start()
+        fixture.transport.ready()
+
+        fixture.frames.single().emit(frame())
+        fixture.poses.single().emit(sample(sequence = 1L, timestamp = fixture.clock.value))
+        fixture.clock.value += 20_000_000L
+        fixture.controller.poll()
+        assertTrue(fixture.transport.requestMicrophone())
+        fixture.audioSources.single().emit(
+            PcmAudioChunk(1L, fixture.clock.value, 16_000, 1, byteArrayOf(1, 2)),
+        )
+
+        assertEquals(1, spool.camera.size)
+        assertEquals(1, spool.imu.size)
+        assertEquals(1, spool.microphone.size)
+        assertTrue(fixture.transport.camera.isEmpty())
+        assertTrue(fixture.transport.imu.isEmpty())
+        assertTrue(fixture.transport.microphone.isEmpty())
+    }
+
+    @Test
+    fun `node gesture keeps its observed time and enters the transport control lane`() {
+        val fixture = Fixture()
+        fixture.controller.start()
+
+        assertEquals(
+            RokidGestureDispatch.QUEUED,
+            fixture.controller.requestRokidGesture(
+                RokidGestureOperation.ROKID_GESTURE_OPERATION_ENABLE_NODE,
+                900_000_000L,
+            ),
+        )
+        assertEquals(
+            RokidGestureOperation.ROKID_GESTURE_OPERATION_ENABLE_NODE to 900_000_000L,
+            fixture.transport.nodeGestures.single(),
+        )
+    }
+
+    @Test
+    fun `wearer start waits for sublease and stop is immediate and idempotent`() {
+        val fixture = Fixture(microphonePermissionAvailable = true)
+
+        assertEquals(
+            MicrophoneGestureDispatch.NO_AUTHENTICATED_SESSION,
+            fixture.controller.requestMicrophoneFromUserGesture(),
+        )
+        fixture.controller.start()
+        fixture.transport.ready()
+
+        assertEquals(MicrophoneGestureDispatch.QUEUED, fixture.controller.requestMicrophoneFromUserGesture())
+        assertEquals(1, fixture.transport.gestureStarts)
+        assertTrue(fixture.audioSources.isEmpty())
+
+        assertTrue(fixture.transport.requestMicrophone())
+        val microphone = fixture.audioSources.single()
+        assertTrue(microphone.isRunning)
+
+        assertEquals(MicrophoneGestureDispatch.QUEUED, fixture.controller.stopMicrophoneFromUserGesture())
+        assertFalse(microphone.isRunning)
+        assertEquals(1, fixture.transport.gestureStops)
+        assertTrue(fixture.frames.single().isRunning)
+        assertTrue(fixture.poses.single().isRunning)
+
+        assertEquals(MicrophoneGestureDispatch.QUEUED, fixture.controller.stopMicrophoneFromUserGesture())
+        assertEquals(2, fixture.transport.gestureStops)
+        assertTrue(fixture.frames.single().isRunning)
+        assertTrue(fixture.poses.single().isRunning)
+    }
+
+    @Test
+    fun `gesture rejection leaves camera and IMU streaming`() {
+        val fixture = Fixture(microphonePermissionAvailable = true)
+        fixture.controller.start()
+        fixture.transport.ready()
+        assertEquals(MicrophoneGestureDispatch.QUEUED, fixture.controller.requestMicrophoneFromUserGesture())
+
+        fixture.transport.gestureResult(
+            MicrophoneGestureResult(
+                1L,
+                MicrophoneControlOperation.MICROPHONE_CONTROL_OPERATION_START,
+                accepted = false,
+            ),
+        )
+
+        assertEquals(LiveMicrophoneCaptureState.REJECTED_STATE, fixture.microphoneStates.last())
+        assertTrue(fixture.frames.single().isRunning)
+        assertTrue(fixture.poses.single().isRunning)
+    }
+
+    @Test
+    fun microphoneRequiresPermissionAndAnAuthenticatedBoundLease() {
+        val denied = Fixture(microphonePermissionAvailable = false)
+        denied.controller.start()
+        denied.transport.ready()
+        assertFalse(denied.transport.requestMicrophone())
+        assertTrue(denied.audioSources.isEmpty())
+        assertEquals(LiveMicrophoneCaptureState.REJECTED_PERMISSION, denied.microphoneStates.last())
+        assertTrue(denied.frames.single().isRunning)
+        assertTrue(denied.poses.single().isRunning)
+
+        val mismatched = Fixture(microphonePermissionAvailable = true)
+        mismatched.controller.start()
+        mismatched.transport.ready()
+        assertFalse(mismatched.transport.requestMicrophone(sessionId = "other-session"))
+        assertTrue(mismatched.audioSources.isEmpty())
+        assertEquals(LiveMicrophoneCaptureState.REJECTED_STATE, mismatched.microphoneStates.last())
+        assertTrue(mismatched.frames.single().isRunning)
+        assertTrue(mismatched.poses.single().isRunning)
+
+        val allowed = Fixture(microphonePermissionAvailable = true)
+        allowed.controller.start()
+        allowed.transport.ready()
+        assertTrue(allowed.transport.requestMicrophone())
+        val microphone = allowed.audioSources.single()
+        assertTrue(microphone.isRunning)
+        microphone.emit(PcmAudioChunk(1L, allowed.clock.value, 16_000, 1, byteArrayOf(1, 2)))
+        assertEquals(1L, allowed.controller.snapshot().microphoneChunksQueued)
+        assertTrue(allowed.transport.microphone.single().hasMicrophoneChunk())
+
+        allowed.clock.value += 10_000_000_000L
+        allowed.controller.poll()
+        assertFalse(microphone.isRunning)
+        assertTrue(allowed.frames.single().isRunning)
+        assertTrue(allowed.poses.single().isRunning)
+        assertEquals(LiveMicrophoneCaptureState.STOPPED, allowed.microphoneStates.last())
+    }
+
+    @Test
+    fun microphoneForegroundPromotionMustSucceedBeforeRecorderCreation() {
+        val events = mutableListOf<String>()
+        val fixture = Fixture(
+            microphonePermissionAvailable = true,
+            beforeMicrophoneStart = {
+                events += "foreground"
+                false
+            },
+            onAudioFactory = { events += "microphone" },
+        )
+        fixture.controller.start()
+        fixture.transport.ready()
+
+        assertTrue(fixture.transport.requestMicrophone())
+        assertEquals(listOf("foreground"), events)
+        assertTrue(fixture.audioSources.isEmpty())
+        assertTrue(fixture.frames.single().isRunning)
+        assertTrue(fixture.poses.single().isRunning)
+        assertEquals(LiveMicrophoneCaptureState.SOURCE_FAILURE, fixture.microphoneStates.last())
+    }
+
+    @Test
+    fun microphoneCannotStartAfterTheBaseLeaseExpires() {
+        val events = mutableListOf<String>()
+        val fixture = Fixture(
+            microphonePermissionAvailable = true,
+            beforeMicrophoneStart = {
+                events += "foreground"
+                true
+            },
+            onAudioFactory = { events += "microphone" },
+        )
+        fixture.controller.start()
+        fixture.transport.ready(expiresAtNanos = fixture.clock.value + 1_000_000L)
+        fixture.clock.value += 2_000_000L
+
+        assertFalse(fixture.transport.requestMicrophone())
+        assertTrue(events.isEmpty())
+        assertTrue(fixture.audioSources.isEmpty())
+        assertEquals(LiveMicrophoneCaptureState.REJECTED_STATE, fixture.microphoneStates.last())
+    }
+
     @Test
     fun producersStartOnlyAfterReadyAndUseNegotiatedBinding() {
         val fixture = Fixture()
@@ -92,7 +274,92 @@ class LiveLinkCaptureControllerTest {
     }
 
     @Test
-    fun retryAndTimeBoundsTerminateExactlyOnce() {
+    fun recoverableCameraFailureReplacesOnlyCameraAndKeepsAuthenticatedStreamAlive() {
+        val fixture = Fixture()
+        fixture.controller.start()
+        fixture.transport.ready()
+        val firstCamera = fixture.frames.single()
+        val pose = fixture.poses.single()
+        repeat(158) { expected -> assertEquals(expected + 1L, firstCamera.nextFrameId()) }
+        firstCamera.emitPipeline(CapturePipelineSnapshot(2, 0, 0, 0, 0, 0, 0, 1))
+
+        val diagnostic = CameraSourceDiagnostic(
+            CameraSourceDiagnosticDomain.CAMERA_ACCESS_EXCEPTION,
+            3,
+            "CAMERA_ERROR",
+            recoverable = true,
+        )
+        firstCamera.emitRecoverableError("camera restart requested", diagnostic)
+
+        val snapshot = fixture.controller.snapshot()
+        assertEquals(LiveLinkCaptureState.STREAMING, snapshot.state)
+        assertNull(snapshot.stopReason)
+        assertEquals(0, fixture.transport.closeCount)
+        assertFalse(firstCamera.isRunning)
+        assertEquals(2, fixture.frames.size)
+        assertTrue(fixture.frames.last().isRunning)
+        assertSame(pose, fixture.poses.single())
+        assertTrue(pose.isRunning)
+        assertEquals(1L, snapshot.producerStarts)
+        assertEquals(1L, snapshot.cameraSourceRestarts)
+        assertEquals(diagnostic, snapshot.lastCameraSourceDiagnostic)
+
+        firstCamera.emitLateError("stale terminal callback")
+        fixture.frames.last().emitPipeline(CapturePipelineSnapshot(3, 0, 0, 0, 0, 0, 0, 1))
+        val postRestartFrameId = fixture.frames.last().nextFrameId()
+        assertEquals(159L, postRestartFrameId)
+        fixture.frames.last().emit(frame(frameId = postRestartFrameId))
+        assertEquals(1L, fixture.controller.snapshot().cameraFramesQueued)
+        assertEquals(5L, fixture.controller.snapshot().cameraSourceTiming.pipeline.requestsSubmitted)
+        assertEquals(LiveLinkCaptureState.STREAMING, fixture.controller.snapshot().state)
+    }
+
+    @Test
+    fun cameraRecoveryAttemptsAreBoundedBeforeFailingTheAuthenticatedStream() {
+        val fixture = Fixture(maximumCameraRestartAttempts = 1)
+        fixture.controller.start()
+        fixture.transport.ready()
+
+        fixture.frames.single().emitRecoverableError("first camera failure")
+        assertEquals(LiveLinkCaptureState.STREAMING, fixture.controller.snapshot().state)
+        fixture.frames.last().emitRecoverableError("replacement camera failure")
+
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.SOURCE_FAILURE, fixture.controller.snapshot().stopReason)
+        assertEquals(1, fixture.transport.closeCount)
+        assertFalse(fixture.poses.single().isRunning)
+    }
+
+    @Test
+    fun cameraRestartRechecksLeaseExpiryAfterFailedSourceStops() {
+        val fixture = Fixture()
+        fixture.controller.start()
+        fixture.transport.ready(expiresAtNanos = 2_000_000_000L)
+        fixture.frames.single().onStop = { fixture.clock.value = 2_000_000_000L }
+
+        fixture.frames.single().emitRecoverableError("camera restart requested")
+
+        assertEquals(1, fixture.frames.size)
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.LEASE_EXPIRED, fixture.controller.snapshot().stopReason)
+    }
+
+    @Test
+    fun cameraRestartRechecksTotalDeadlineAfterFailedSourceStops() {
+        val fixture = Fixture(runDurationMillis = 1_000L)
+        fixture.controller.start()
+        fixture.transport.ready(expiresAtNanos = 10_000_000_000L)
+        fixture.frames.single().onStop = { fixture.clock.value = 2_000_000_000L }
+
+        fixture.frames.single().emitRecoverableError("camera restart requested")
+
+        assertEquals(1, fixture.frames.size)
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.TIME_LIMIT_REACHED, fixture.controller.snapshot().stopReason)
+    }
+
+    @Test
+    fun retryAndActiveTimeBoundsTerminateExactlyOnce() {
         val retryFixture = Fixture(maximumDisconnects = 2)
         retryFixture.controller.start()
         retryFixture.transport.disconnect(LiveLinkDisconnectReason.AUTHENTICATION)
@@ -107,11 +374,150 @@ class LiveLinkCaptureControllerTest {
         timeFixture.controller.start()
         timeFixture.clock.value += 1_000_000_000L
         timeFixture.controller.poll()
+        assertEquals(LiveLinkCaptureState.CONNECTING, timeFixture.controller.snapshot().state)
+        assertTrue(timeFixture.frames.isEmpty())
+        timeFixture.transport.ready(expiresAtNanos = timeFixture.clock.value + 2_000_000_000L)
+        timeFixture.clock.value += 1_000_000_000L
+        timeFixture.controller.poll()
         timeFixture.controller.stop()
 
         assertEquals(LiveLinkCaptureStopReason.TIME_LIMIT_REACHED, timeFixture.controller.snapshot().stopReason)
         assertEquals(1, timeFixture.transport.closeCount)
         assertEquals(1, timeFixture.terminals.size)
+    }
+
+    @Test
+    fun firstTransientDisconnectBeforeAuthenticationEndsTheRendezvousEpoch() {
+        val fixture = Fixture(maximumDisconnects = 6)
+        fixture.controller.start()
+
+        fixture.transport.disconnect(LiveLinkDisconnectReason.NETWORK)
+
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.RETRY_LIMIT_REACHED, fixture.controller.snapshot().stopReason)
+        assertEquals(1L, fixture.controller.snapshot().disconnects)
+        assertEquals(1, fixture.transport.closeCount)
+        assertTrue(fixture.frames.isEmpty())
+        assertTrue(fixture.poses.isEmpty())
+    }
+
+    @Test
+    fun totalPreAuthenticationDeadlineUsesDistinctTerminalReason() {
+        val fixture = Fixture()
+        fixture.controller.start()
+
+        fixture.controller.stop(LiveLinkCaptureStopReason.RENDEZVOUS_TIMEOUT)
+
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.RENDEZVOUS_TIMEOUT, fixture.controller.snapshot().stopReason)
+        assertEquals(1, fixture.transport.closeCount)
+        assertTrue(fixture.frames.isEmpty())
+        assertTrue(fixture.poses.isEmpty())
+    }
+
+    @Test
+    fun authenticatedRunRetainsSixDisconnectBoundWithoutExtendingDeadline() {
+        val fixture = Fixture(maximumDisconnects = 6)
+        fixture.controller.start()
+        fixture.transport.ready()
+        val deadline = fixture.controller.snapshot().activeDeadlineNanos
+
+        repeat(5) { index ->
+            fixture.transport.disconnect(LiveLinkDisconnectReason.NETWORK)
+            assertEquals(LiveLinkCaptureState.CONNECTING, fixture.controller.snapshot().state)
+            fixture.transport.ready(
+                sessionId = "session-${index + 2}",
+                leaseId = "lease-${index + 2}",
+            )
+            assertEquals(deadline, fixture.controller.snapshot().activeDeadlineNanos)
+        }
+        fixture.transport.disconnect(LiveLinkDisconnectReason.NETWORK)
+
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureStopReason.RETRY_LIMIT_REACHED, fixture.controller.snapshot().stopReason)
+        assertEquals(6L, fixture.controller.snapshot().disconnects)
+        assertEquals(deadline, fixture.controller.snapshot().activeDeadlineNanos)
+    }
+
+    @Test
+    fun firstAuthenticatedSessionStartsOneDeadlineThatReconnectCannotExtend() {
+        val fixture = Fixture(runDurationMillis = 1_000L)
+        fixture.controller.start()
+        assertEquals(null, fixture.controller.snapshot().activeDeadlineNanos)
+        fixture.transport.ready(expiresAtNanos = fixture.clock.value + 5_000_000_000L)
+        val deadline = fixture.controller.snapshot().activeDeadlineNanos
+
+        fixture.clock.value += 400_000_000L
+        fixture.transport.disconnect(LiveLinkDisconnectReason.NETWORK)
+        fixture.transport.ready(
+            sessionId = "replacement-session",
+            leaseId = "replacement-lease",
+            expiresAtNanos = fixture.clock.value + 5_000_000_000L,
+        )
+
+        assertEquals(deadline, fixture.controller.snapshot().activeDeadlineNanos)
+        fixture.clock.value = requireNotNull(deadline)
+        fixture.controller.poll()
+        assertEquals(LiveLinkCaptureStopReason.TIME_LIMIT_REACHED, fixture.controller.snapshot().stopReason)
+    }
+
+    @Test
+    fun foregroundGateRunsBeforeFactoriesAndFailureKeepsSensorsOff() {
+        val events = mutableListOf<String>()
+        val fixture = Fixture(
+            beforeProducerStart = {
+                events += "foreground"
+                false
+            },
+            onFrameFactory = { events += "camera" },
+            onPoseFactory = { events += "imu" },
+        )
+        fixture.controller.start()
+
+        fixture.transport.ready()
+
+        assertEquals(listOf("foreground"), events)
+        assertTrue(fixture.frames.isEmpty())
+        assertTrue(fixture.poses.isEmpty())
+        assertFalse(fixture.frameController.hasActiveSource)
+        assertEquals(LiveLinkCaptureStopReason.SOURCE_FAILURE, fixture.controller.snapshot().stopReason)
+    }
+
+    @Test
+    fun foregroundGateCompletesBeforeEitherProducerFactoryRuns() {
+        val events = mutableListOf<String>()
+        val fixture = Fixture(
+            beforeProducerStart = {
+                events += "foreground"
+                true
+            },
+            onFrameFactory = { events += "camera" },
+            onPoseFactory = { events += "imu" },
+        )
+        fixture.controller.start()
+
+        fixture.transport.ready()
+
+        assertEquals(listOf("foreground", "camera", "imu"), events)
+        assertTrue(fixture.frames.single().isRunning)
+        assertTrue(fixture.poses.single().isRunning)
+    }
+
+    @Test
+    fun authenticationAndProtocolFailuresFailClosedWithoutUsingRetryBudget() {
+        listOf(
+            LiveLinkDisconnectReason.AUTHENTICATION,
+            LiveLinkDisconnectReason.CONFIGURATION,
+            LiveLinkDisconnectReason.PROTOCOL,
+        ).forEach { reason ->
+            val fixture = Fixture(maximumDisconnects = 6)
+            fixture.controller.start()
+            fixture.transport.disconnect(reason)
+            assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+            assertEquals(0L, fixture.controller.snapshot().disconnects)
+            assertTrue(fixture.frames.isEmpty())
+            assertTrue(fixture.poses.isEmpty())
+        }
     }
 
     @Test
@@ -181,6 +587,7 @@ class LiveLinkCaptureControllerTest {
             clientAcknowledgementReceived = false,
         )
         fixture.controller.start()
+        fixture.transport.ready(expiresAtNanos = fixture.clock.value + 2_000_000_000L)
         fixture.clock.value += 1_000_000_000L
 
         fixture.controller.poll()
@@ -203,11 +610,13 @@ class LiveLinkCaptureControllerTest {
             clientAcknowledgementReceived = true,
         )
         fixture.controller.start()
+        fixture.transport.ready(expiresAtNanos = fixture.clock.value + 2_000_000_000L)
         fixture.clock.value += 1_000_000_000L
 
         fixture.controller.poll()
 
         assertEquals(LiveLinkCaptureState.STOPPED, fixture.controller.snapshot().state)
+        assertEquals(LiveLinkCaptureState.STOPPED, fixture.statuses.last().state)
         assertEquals(1, fixture.transport.closeCount)
         assertTrue(fixture.terminals.isEmpty())
 
@@ -217,30 +626,121 @@ class LiveLinkCaptureControllerTest {
         assertTrue(fixture.terminals.single().closeEvidence.clientAcknowledgementReceived)
     }
 
+    @Test
+    fun cameraSourceTimingsAndReconnectPipelineCountersRemainAggregateOnly() {
+        val fixture = Fixture()
+        fixture.controller.start()
+        fixture.transport.ready("session-one", "lease-one")
+        fixture.frames.single().emitTiming(
+            CaptureTimingEvent(
+                analyzedMonotonicTimestampNanos = 2_000_000_000L,
+                emittedMonotonicTimestampNanos = 2_000_000_400L,
+                requestToImageLatencyNanos = 100L,
+                imageAcquisitionDurationNanos = 200L,
+                processorDurationNanos = 300L,
+                listenerPathDurationNanos = 400L,
+            ),
+        )
+        fixture.frames.single().emitPipeline(
+            CapturePipelineSnapshot(3, 1, 1, 0, 0, 0, 1, 1),
+        )
+        fixture.transport.disconnect(LiveLinkDisconnectReason.NETWORK)
+        fixture.transport.ready("session-two", "lease-two")
+        fixture.frames.last().emitTiming(
+            CaptureTimingEvent(
+                analyzedMonotonicTimestampNanos = 3_000_000_000L,
+                emittedMonotonicTimestampNanos = null,
+                requestToImageLatencyNanos = 500L,
+                imageAcquisitionDurationNanos = 600L,
+                processorDurationNanos = 700L,
+                listenerPathDurationNanos = 800L,
+            ),
+        )
+        fixture.frames.last().emitPipeline(
+            CapturePipelineSnapshot(4, 2, 0, 1, 1, 1, 0, 1),
+        )
+
+        val metrics = fixture.controller.snapshot().cameraSourceTiming
+        assertEquals(2L, metrics.requestToImage.samples)
+        assertEquals(100L, metrics.requestToImage.p50Nanos)
+        assertEquals(500L, metrics.requestToImage.p95Nanos)
+        assertEquals(2L, metrics.gateAndResizeProcessor.samples)
+        assertEquals(7L, metrics.pipeline.requestsSubmitted)
+        assertEquals(3L, metrics.pipeline.opportunitiesBackpressured)
+        assertEquals(1L, metrics.pipeline.requestsSuperseded)
+        assertEquals(1L, metrics.pipeline.imagesWithoutExactRequestMatch)
+        assertEquals(1L, metrics.pipeline.captureFailures)
+        assertEquals(1L, metrics.pipeline.lateCallbacks)
+        assertEquals(0, metrics.pipeline.outstandingRequests)
+        assertEquals(1, metrics.pipeline.maximumOutstandingRequests)
+    }
+
     private class Fixture(
         runDurationMillis: Long = LiveLinkCaptureController.DEFAULT_RUN_DURATION_MILLIS,
         maximumDisconnects: Int = LiveLinkCaptureController.DEFAULT_MAXIMUM_DISCONNECTS,
+        beforeProducerStart: (LiveLinkSession) -> Boolean = { true },
+        onFrameFactory: () -> Unit = {},
+        onPoseFactory: () -> Unit = {},
+        microphonePermissionAvailable: Boolean = false,
+        beforeMicrophoneStart: () -> Boolean = { true },
+        onAudioFactory: () -> Unit = {},
+        sensorSpool: RokidSensorSpool? = null,
+        maximumCameraRestartAttempts: Int = LiveLinkCaptureController.DEFAULT_MAXIMUM_CAMERA_RESTART_ATTEMPTS,
     ) {
         val clock = MutableClock(1_000_000_000L)
         val transport = FakeTransport()
         val frameController = FrameSourceStateController()
         val frames = mutableListOf<FakeFrameSource>()
         val poses = mutableListOf<FakePoseSource>()
+        val audioSources = mutableListOf<FakeAudioSource>()
+        val microphoneStates = mutableListOf<LiveMicrophoneCaptureState>()
         val negotiatedLeases = mutableListOf<NegotiatedLiveLease>()
+        val statuses = mutableListOf<LiveLinkCaptureSnapshot>()
         val terminals = mutableListOf<LiveLinkCaptureSnapshot>()
         val controller = LiveLinkCaptureController(
             clock = clock,
             frameSources = frameController,
             transport = transport,
-            frameSourceFactory = { lease ->
+            sensorSpool = sensorSpool,
+            frameSourceFactory = { lease, sequence ->
+                onFrameFactory()
                 negotiatedLeases += lease
-                FakeFrameSource().also(frames::add)
+                FakeFrameSource(sequence).also(frames::add)
             },
-            poseSourceFactory = { FakePoseSource().also(poses::add) },
+            poseSourceFactory = {
+                onPoseFactory()
+                FakePoseSource().also(poses::add)
+            },
+            audioSourceFactory = {
+                onAudioFactory()
+                FakeAudioSource().also(audioSources::add)
+            },
+            microphonePermissionAvailable = { microphonePermissionAvailable },
+            beforeProducerStart = beforeProducerStart,
+            beforeMicrophoneStart = beforeMicrophoneStart,
             runDurationMillis = runDurationMillis,
             maximumDisconnects = maximumDisconnects,
+            maximumCameraRestartAttempts = maximumCameraRestartAttempts,
+            cameraRestartDelayMillis = 0L,
+            onStatus = statuses::add,
+            onMicrophoneState = microphoneStates::add,
             onTerminal = terminals::add,
         )
+    }
+
+    private class FakeSpool : RokidSensorSpool {
+        val camera = mutableListOf<FramePayload>()
+        val imu = mutableListOf<ImuTransmissionBatch>()
+        val microphone = mutableListOf<PcmAudioChunk>()
+
+        override fun storeCamera(lease: ActiveStreamLease, frame: FramePayload): Boolean =
+            true.also { camera += frame }
+
+        override fun storeImu(lease: ActiveStreamLease, batch: ImuTransmissionBatch): Boolean =
+            true.also { imu += batch }
+
+        override fun storeMicrophone(lease: ActiveStreamLease, chunk: PcmAudioChunk): Boolean =
+            true.also { microphone += chunk }
     }
 
     private class FakeTransport : RokidLiveTransport {
@@ -250,9 +750,13 @@ class LiveLinkCaptureControllerTest {
         var closeCount = 0
         var evidence = LiveLinkCloseEvidence()
         var completeCloseImmediately = true
+        var gestureStarts = 0
+        var gestureStops = 0
+        val nodeGestures = mutableListOf<Pair<RokidGestureOperation, Long>>()
         private var closeCompletion: ((LiveLinkCloseEvidence) -> Unit)? = null
         val camera = mutableListOf<List<SensorStreamEnvelope>>()
         val imu = mutableListOf<SensorStreamEnvelope>()
+        val microphone = mutableListOf<SensorStreamEnvelope>()
 
         override fun start(observer: RokidLiveLinkObserver) {
             check(this.observer == null)
@@ -267,6 +771,29 @@ class LiveLinkCaptureControllerTest {
         override fun offerImu(batch: SensorStreamEnvelope): Boolean {
             if (acceptImu) imu += batch
             return acceptImu
+        }
+
+        override fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean {
+            microphone += chunk
+            return true
+        }
+
+        override fun requestMicrophoneFromUserGesture(): MicrophoneGestureDispatch {
+            gestureStarts += 1
+            return MicrophoneGestureDispatch.QUEUED
+        }
+
+        override fun stopMicrophoneFromUserGesture(): MicrophoneGestureDispatch {
+            gestureStops += 1
+            return MicrophoneGestureDispatch.QUEUED
+        }
+
+        override fun requestRokidGesture(
+            operation: RokidGestureOperation,
+            observedMonotonicNs: Long,
+        ): RokidGestureDispatch {
+            nodeGestures += operation to observedMonotonicNs
+            return RokidGestureDispatch.QUEUED
         }
 
         override fun closeAsync(onClosed: (LiveLinkCloseEvidence) -> Unit) {
@@ -319,13 +846,36 @@ class LiveLinkCaptureControllerTest {
         fun diagnostic(code: LiveLinkDiagnosticCode) {
             observer!!.onDiagnostic(code)
         }
+
+        fun gestureResult(result: MicrophoneGestureResult) {
+            observer!!.onMicrophoneGestureResult(result)
+        }
+
+        fun requestMicrophone(
+            sessionId: String = "session",
+            leaseId: String = "lease",
+            durationMillis: Int = 10_000,
+        ): Boolean {
+            val authorization = MicrophoneLeaseAuthorization(
+                sessionId,
+                leaseId,
+                durationMillis,
+                11_000_000_000L,
+            )
+            val accepted = observer!!.mayGrantMicrophoneLease(authorization)
+            if (accepted) observer!!.onMicrophoneLeaseGranted(authorization)
+            return accepted
+        }
     }
 
-    private class FakeFrameSource : FrameSource {
+    private class FakeFrameSource(
+        private val sequence: MonotonicFrameSequence,
+    ) : FrameSource {
         private var listener: FrameSource.Listener? = null
         private var lastListener: FrameSource.Listener? = null
         override var isRunning = false
             private set
+        var onStop: () -> Unit = {}
 
         override fun start(listener: FrameSource.Listener) {
             check(!isRunning)
@@ -339,13 +889,45 @@ class LiveLinkCaptureControllerTest {
             listener!!.onFrame(frame)
         }
 
+        fun nextFrameId(): Long = sequence.nextId()
+
         fun emitLate(frame: FramePayload) {
             lastListener!!.onFrame(frame)
+        }
+
+        fun emitTiming(event: CaptureTimingEvent) {
+            check(isRunning)
+            listener!!.onCaptureTiming(event)
+        }
+
+        fun emitPipeline(snapshot: CapturePipelineSnapshot) {
+            check(isRunning)
+            listener!!.onCapturePipelineSnapshot(snapshot)
+        }
+
+        fun emitRecoverableError(message: String) {
+            check(isRunning)
+            listener!!.onRecoverableError(message)
+        }
+
+        fun emitRecoverableError(message: String, diagnostic: CameraSourceDiagnostic) {
+            check(isRunning)
+            listener!!.onRecoverableError(message, diagnostic)
+        }
+
+        fun emitLateError(message: String) {
+            lastListener!!.onError(message)
+        }
+
+        fun emitError(message: String) {
+            check(isRunning)
+            listener!!.onError(message)
         }
 
         override fun stop() {
             isRunning = false
             listener = null
+            onStop()
         }
     }
 
@@ -363,6 +945,27 @@ class LiveLinkCaptureControllerTest {
         fun emit(sample: ImuSample) {
             check(isRunning)
             listener!!.invoke(sample)
+        }
+
+        override fun stop() {
+            isRunning = false
+            listener = null
+        }
+    }
+
+    private class FakeAudioSource : AudioInputSource {
+        private var listener: AudioInputSource.Listener? = null
+        override var isRunning = false
+            private set
+
+        override fun start(listener: AudioInputSource.Listener) {
+            this.listener = listener
+            isRunning = true
+        }
+
+        fun emit(chunk: PcmAudioChunk) {
+            check(isRunning)
+            listener!!.onAudioChunk(chunk)
         }
 
         override fun stop() {

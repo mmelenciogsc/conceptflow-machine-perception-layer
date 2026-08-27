@@ -2,6 +2,7 @@
 package org.conceptflow.mpl.rokid.core
 
 import com.google.protobuf.ByteString
+import com.google.protobuf.UnsafeByteOperations
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImageDescriptor
@@ -55,6 +56,8 @@ data class CaptureTimingEvent(
     val imageAcquisitionDurationNanos: Long,
     val processorDurationNanos: Long,
     val listenerPathDurationNanos: Long,
+    /** Null when no RGB frame was emitted; otherwise true only for the packaged native path. */
+    val nativeRgbConversion: Boolean? = null,
 ) {
     init {
         require(analyzedMonotonicTimestampNanos > 0L)
@@ -89,6 +92,24 @@ data class CapturePipelineSnapshot(
         require(lateCallbacks >= 0L)
         require(outstandingRequests >= 0)
         require(maximumOutstandingRequests >= outstandingRequests)
+    }
+}
+
+enum class CameraSourceDiagnosticDomain(val diagnosticLabel: String) {
+    DEVICE_STATE_CALLBACK("device_state_callback"),
+    CAMERA_ACCESS_EXCEPTION("camera_access_exception"),
+    CAPTURE_CALLBACK("capture_callback"),
+}
+
+/** Payload-free Camera2 failure evidence suitable for aggregate diagnostics. */
+data class CameraSourceDiagnostic(
+    val domain: CameraSourceDiagnosticDomain,
+    val numericCode: Int?,
+    val symbolicCode: String,
+    val recoverable: Boolean,
+) {
+    init {
+        require(symbolicCode.length in 1..64 && symbolicCode.all { it == '_' || it.isDigit() || it in 'A'..'Z' })
     }
 }
 
@@ -176,6 +197,11 @@ interface FrameSource : AutoCloseable {
         fun onCameraCalibrationCapability(state: CameraCalibrationCapabilityState) = Unit
         fun onCaptureTiming(event: CaptureTimingEvent) = Unit
         fun onCapturePipelineSnapshot(snapshot: CapturePipelineSnapshot) = Unit
+        /** A fresh source instance may be opened without ending the surrounding stream lease. */
+        fun onRecoverableError(message: String) = onError(message)
+        fun onRecoverableError(message: String, diagnostic: CameraSourceDiagnostic) =
+            onRecoverableError(message)
+        fun onError(message: String, diagnostic: CameraSourceDiagnostic) = onError(message)
         fun onError(message: String)
     }
 
@@ -239,7 +265,7 @@ class FrameSourceStateController {
     }
 }
 
-internal class MonotonicFrameSequence {
+class MonotonicFrameSequence {
     private val nextFrameId = AtomicLong(0L)
     private val lastTimestamp = AtomicLong(-1L)
 
@@ -315,6 +341,7 @@ internal fun buildJpegFrame(
     bytes: ByteArray,
     synthetic: Boolean,
     intrinsics: CameraIntrinsics? = null,
+    takeOwnership: Boolean = false,
 ): FramePayload {
     val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
     val descriptor = ImageDescriptor.newBuilder()
@@ -333,7 +360,54 @@ internal fun buildJpegFrame(
         .setCaptureMonotonicTimestampNs(timestampNanos)
         .setCaptureWallTime(protobufTimestamp(wallTimeMillis))
         .setImage(descriptor)
-        .setFrameData(ByteString.copyFrom(bytes))
+        .setFrameData(
+            if (takeOwnership) {
+                // The caller transfers exclusive ownership and must never mutate this array.
+                UnsafeByteOperations.unsafeWrap(bytes)
+            } else {
+                ByteString.copyFrom(bytes)
+            },
+        )
+        .setSynthetic(synthetic)
+    intrinsics?.let(payload::setIntrinsics)
+    return payload.build()
+}
+
+internal fun buildRgbFrame(
+    requestId: String,
+    sessionId: String,
+    streamId: String,
+    frameId: Long,
+    timestampNanos: Long,
+    wallTimeMillis: Long,
+    width: Int,
+    height: Int,
+    bytes: ByteArray,
+    synthetic: Boolean,
+    intrinsics: CameraIntrinsics? = null,
+    takeOwnership: Boolean = false,
+): FramePayload {
+    val rowStride = Math.multiplyExact(width, 3)
+    require(bytes.size == Math.multiplyExact(rowStride, height)) { "RGB8 payload size does not match dimensions" }
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val descriptor = ImageDescriptor.newBuilder()
+        .setWidth(width)
+        .setHeight(height)
+        .setRowStrideBytes(rowStride)
+        .setEncoding(ImageEncoding.IMAGE_ENCODING_RGB8)
+        .setMediaType("application/x-conceptflow-rgb8")
+        .setPayloadBytes(bytes.size.toLong())
+        .setSha256(ByteString.copyFrom(digest))
+        .build()
+    val payload = FramePayload.newBuilder()
+        .setRequestId(requestId)
+        .setSessionId(sessionId)
+        .setStreamId(streamId)
+        .setFrameId(frameId)
+        .setCaptureMonotonicTimestampNs(timestampNanos)
+        .setCaptureWallTime(protobufTimestamp(wallTimeMillis))
+        .setImage(descriptor)
+        .setFrameData(if (takeOwnership) UnsafeByteOperations.unsafeWrap(bytes) else ByteString.copyFrom(bytes))
         .setSynthetic(synthetic)
     intrinsics?.let(payload::setIntrinsics)
     return payload.build()
