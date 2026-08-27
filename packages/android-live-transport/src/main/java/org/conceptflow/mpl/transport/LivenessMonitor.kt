@@ -95,6 +95,8 @@ class LivenessMonitor(
 
     companion object {
         const val DEFAULT_KEEPALIVE_INTERVAL_NS = 1_000_000_000L
-        const val DEFAULT_MISSED_INTERVALS = 3
+        // Tolerate brief Android scheduling stalls and Wi-Fi roaming without treating them as a
+        // dead peer. Sensor TTLs independently reject stale perception while this link recovers.
+        const val DEFAULT_MISSED_INTERVALS = 15
     }
 }

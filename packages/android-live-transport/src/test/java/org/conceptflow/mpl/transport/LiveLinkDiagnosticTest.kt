@@ -103,7 +103,14 @@ class LiveLinkDiagnosticTest {
         expected.forEach { (failure, diagnostic) ->
             val error = FramingException(failure)
             assertEquals(diagnostic, classifyDiagnostic(error))
-            assertEquals(LiveLinkDisconnectReason.PROTOCOL, classifyDisconnect(error))
+            assertEquals(
+                if (failure == FramingFailure.TRUNCATED_PREFIX || failure == FramingFailure.TRUNCATED_RECORD) {
+                    LiveLinkDisconnectReason.NETWORK
+                } else {
+                    LiveLinkDisconnectReason.PROTOCOL
+                },
+                classifyDisconnect(error),
+            )
         }
     }
 }

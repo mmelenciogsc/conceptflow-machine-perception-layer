@@ -14,6 +14,16 @@ enum class LiveLinkEndpointRole {
     ROKID_CLIENT,
 }
 
+enum class LiveLinkNetworkTopology(val configValue: String) {
+    PRIVATE_LAN("private_lan"),
+    WIFI_DIRECT_REQUIRED("wifi_direct_required");
+
+    companion object {
+        fun parse(value: String): LiveLinkNetworkTopology = entries.singleOrNull { it.configValue == value }
+            ?: throw IllegalArgumentException("network_topology is unsupported")
+    }
+}
+
 /**
  * Validated app-private live-link configuration. The peer certificate is public material, while
  * the local private key remains non-exportable in Android Keystore under [identityAlias].
@@ -31,6 +41,7 @@ class LiveLinkPrivateConfig private constructor(
     val connectTimeoutMs: Int,
     val socketReadTimeoutMs: Int,
     val cameraTicketLifetimeMs: Int,
+    val networkTopology: LiveLinkNetworkTopology,
 ) {
     override fun toString(): String =
         "LiveLinkPrivateConfig(role=$role,address=<redacted>,ports=<redacted>,identityAlias=<redacted>,peerCertificate=<public-redacted>)"
@@ -54,6 +65,7 @@ class LiveLinkPrivateConfig private constructor(
             "connect_timeout_ms",
             "socket_read_timeout_ms",
             "camera_ticket_lifetime_ms",
+            "network_topology",
         )
 
         fun parse(input: InputStream, role: LiveLinkEndpointRole): LiveLinkPrivateConfig {
@@ -109,6 +121,11 @@ class LiveLinkPrivateConfig private constructor(
                     30_000,
                     DEFAULT_TICKET_LIFETIME_MS,
                 ),
+                networkTopology = properties.getProperty("network_topology")
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(LiveLinkNetworkTopology::parse)
+                    ?: LiveLinkNetworkTopology.PRIVATE_LAN,
             )
         }
 

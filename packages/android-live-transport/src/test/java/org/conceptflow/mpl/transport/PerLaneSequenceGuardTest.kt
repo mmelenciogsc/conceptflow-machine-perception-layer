@@ -6,6 +6,7 @@ import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImuBatch
 import org.conceptflow.mpl.v1.LiveLinkEnvelope
 import org.conceptflow.mpl.v1.LiveTransportLane
+import org.conceptflow.mpl.v1.LiveTransportPeerRole
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -72,6 +73,41 @@ class PerLaneSequenceGuardTest {
         assertEquals(LaneProtocolFailure.PAYLOAD_LANE_MISMATCH, error.failure)
     }
 
+    @Test
+    fun `oversized advertised camera capability fails before sequence advances`() {
+        val guard = PerLaneSequenceGuard(binding)
+        val valid = LiveControlMessages.capabilities(
+            LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
+        )
+        val malformed = valid.toBuilder().setCapabilities(
+            valid.capabilities.toBuilder().setMaxCameraFrameBytes(8L * 1_024L * 1_024L + 1L),
+        ).build()
+
+        val error = assertThrows(LaneProtocolException::class.java) {
+            guard.accept(control(sequence = 1, malformed))
+        }
+
+        assertEquals(LaneProtocolFailure.MALFORMED_CONTROL, error.failure)
+        guard.accept(control(sequence = 1, valid))
+    }
+
+    @Test
+    fun `impossible peer queue telemetry fails before sequence advances`() {
+        val guard = PerLaneSequenceGuard(binding)
+        val malformed = LiveControlMessages.telemetry(
+            sampledMonotonicNs = 10L,
+            queues = LiveOutboundQueueSnapshot(0, 0, 0, 257, 0, 0, 0, 0),
+            transport = SanitizedTransportMetrics().snapshot(),
+        )
+
+        val error = assertThrows(LaneProtocolException::class.java) {
+            guard.accept(control(sequence = 1, malformed))
+        }
+
+        assertEquals(LaneProtocolFailure.MALFORMED_CONTROL, error.failure)
+        assertEquals(1L, guard.nextExpected(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL))
+    }
+
     private fun realtime(sequence: Long, batchId: Long): LiveLinkEnvelope {
         val sensor = SensorStreamEnvelope.newBuilder()
             .setSessionId(binding.sessionId)
@@ -98,6 +134,11 @@ class PerLaneSequenceGuardTest {
             .setSensor(sensor)
             .build()
     }
+
+    private fun control(sequence: Long, control: org.conceptflow.mpl.v1.LiveLinkControl): LiveLinkEnvelope =
+        base(sequence, LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL)
+            .setControl(control)
+            .build()
 
     private fun base(sequence: Long, lane: LiveTransportLane): LiveLinkEnvelope.Builder =
         LiveLinkEnvelope.newBuilder()

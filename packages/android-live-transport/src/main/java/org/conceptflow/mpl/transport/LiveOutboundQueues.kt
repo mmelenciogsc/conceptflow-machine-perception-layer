@@ -8,25 +8,40 @@ import org.conceptflow.mpl.v1.SensorStreamEnvelope
 data class LiveOutboundQueueSnapshot(
     val pendingCameraFrames: Int,
     val pendingImuBatches: Int,
+    val pendingMicrophoneChunks: Int,
+    val pendingTouchEvents: Int,
     val droppedCameraFrames: Long,
     val droppedImuBatches: Long,
+    val droppedMicrophoneChunks: Long,
+    val touchOverflowEvents: Long,
 )
 
 /**
  * Bounded application-side queues. Camera replacement is atomic at a complete-frame boundary;
- * IMU pressure evicts the oldest whole batch. Microphone records are never accepted.
+ * IMU pressure evicts the oldest whole batch. Microphone preserves a short continuity window and
+ * rejects new chunks on overflow. Touch never evicts accepted input. Realtime dequeue prioritizes
+ * touch, then alternates microphone and IMU so continuous audio cannot starve pose batches.
  */
 class LiveOutboundQueues(
     private val maximumImuBatches: Int = 8,
+    private val maximumMicrophoneChunks: Int = 8,
+    private val maximumTouchEvents: Int = 64,
 ) : Closeable {
     private var pendingCamera: List<SensorStreamEnvelope>? = null
     private val pendingImu = ArrayDeque<SensorStreamEnvelope>()
+    private val pendingMicrophone = ArrayDeque<SensorStreamEnvelope>()
+    private val pendingTouch = ArrayDeque<SensorStreamEnvelope>()
     private var droppedCameraFrames = 0L
     private var droppedImuBatches = 0L
+    private var droppedMicrophoneChunks = 0L
+    private var touchOverflowEvents = 0L
+    private var microphoneTurn = true
     private var closed = false
 
     init {
         require(maximumImuBatches in 1..64) { "maximumImuBatches is outside its bound" }
+        require(maximumMicrophoneChunks in 1..64) { "maximumMicrophoneChunks is outside its bound" }
+        require(maximumTouchEvents in 1..256) { "maximumTouchEvents is outside its bound" }
     }
 
     @Synchronized
@@ -54,10 +69,58 @@ class LiveOutboundQueues(
     }
 
     @Synchronized
+    fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean {
+        check(!closed) { "outbound queues are closed" }
+        require(chunk.hasMicrophoneChunk() && !chunk.hasImuBatch()) { "only microphone chunks are accepted" }
+        require(chunk.sessionId.isNotBlank() && chunk.leaseId.isNotBlank()) { "microphone binding is missing" }
+        require(chunk.microphoneChunk.audioData.size() in 1..MAXIMUM_MICROPHONE_CHUNK_BYTES) {
+            "microphone chunk size is outside its bound"
+        }
+        if (pendingMicrophone.size == maximumMicrophoneChunks) {
+            droppedMicrophoneChunks = Math.addExact(droppedMicrophoneChunks, 1L)
+            return false
+        }
+        pendingMicrophone.addLast(chunk)
+        (this as java.lang.Object).notifyAll()
+        return true
+    }
+
+    /** Touch is never evicted or overwritten. A full queue is a surfaced transport fault. */
+    @Synchronized
+    fun offerTouch(event: SensorStreamEnvelope): Boolean {
+        check(!closed) { "outbound queues are closed" }
+        require(event.hasTouchEvent()) { "only touch events are accepted" }
+        require(event.sessionId.isNotBlank() && event.leaseId.isNotBlank()) { "touch binding is missing" }
+        if (pendingTouch.size == maximumTouchEvents) {
+            touchOverflowEvents = Math.addExact(touchOverflowEvents, 1L)
+            return false
+        }
+        pendingTouch.addLast(event)
+        (this as java.lang.Object).notifyAll()
+        return true
+    }
+
+    @Synchronized
     fun pollCameraFrame(): List<SensorStreamEnvelope>? = pendingCamera.also { pendingCamera = null }
 
     @Synchronized
     fun pollImu(): SensorStreamEnvelope? = if (pendingImu.isEmpty()) null else pendingImu.removeFirst()
+
+    @Synchronized
+    fun pollRealtime(): SensorStreamEnvelope? {
+        if (pendingTouch.isNotEmpty()) return pendingTouch.removeFirst()
+        val hasMicrophone = pendingMicrophone.isNotEmpty()
+        val hasImu = pendingImu.isNotEmpty()
+        if (hasMicrophone && (!hasImu || microphoneTurn)) {
+            microphoneTurn = false
+            return pendingMicrophone.removeFirst()
+        }
+        if (hasImu) {
+            microphoneTurn = true
+            return pendingImu.removeFirst()
+        }
+        return null
+    }
 
     @Synchronized
     fun awaitCameraFrame(timeoutMs: Long): List<SensorStreamEnvelope>? {
@@ -74,17 +137,33 @@ class LiveOutboundQueues(
     }
 
     @Synchronized
+    fun awaitRealtime(timeoutMs: Long): SensorStreamEnvelope? {
+        require(timeoutMs in 1..30_000) { "timeoutMs is outside its bound" }
+        if (pendingMicrophone.isEmpty() && pendingImu.isEmpty() && pendingTouch.isEmpty() && !closed) {
+            (this as java.lang.Object).wait(timeoutMs)
+        }
+        return pollRealtime()
+    }
+
+    @Synchronized
     fun snapshot(): LiveOutboundQueueSnapshot = LiveOutboundQueueSnapshot(
         pendingCameraFrames = if (pendingCamera == null) 0 else 1,
         pendingImuBatches = pendingImu.size,
+        pendingMicrophoneChunks = pendingMicrophone.size,
+        pendingTouchEvents = pendingTouch.size,
         droppedCameraFrames = droppedCameraFrames,
         droppedImuBatches = droppedImuBatches,
+        droppedMicrophoneChunks = droppedMicrophoneChunks,
+        touchOverflowEvents = touchOverflowEvents,
     )
 
     @Synchronized
     fun reset() {
         pendingCamera = null
         pendingImu.clear()
+        pendingMicrophone.clear()
+        pendingTouch.clear()
+        microphoneTurn = true
     }
 
     @Synchronized
@@ -127,5 +206,6 @@ class LiveOutboundQueues(
 
     companion object {
         private const val MAXIMUM_CAMERA_CHUNKS = 256
+        private const val MAXIMUM_MICROPHONE_CHUNK_BYTES = 64 * 1_024
     }
 }

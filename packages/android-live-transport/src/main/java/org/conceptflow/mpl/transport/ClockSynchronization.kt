@@ -34,6 +34,12 @@ enum class ClockSyncFailure {
     ROUND_FULL,
 }
 
+/** Quality failures that may retain an already authenticated session's previous good estimate. */
+internal fun ClockSyncFailure.isRecoverablePeriodicResyncFailure(): Boolean =
+    this == ClockSyncFailure.ROUND_TRIP_OUT_OF_BOUNDS ||
+        this == ClockSyncFailure.INSUFFICIENT_SAMPLES ||
+        this == ClockSyncFailure.OFFSET_JUMP
+
 class ClockSyncException(val failure: ClockSyncFailure) :
     IllegalArgumentException("clock synchronization rejected: $failure")
 
@@ -156,8 +162,12 @@ enum class RemoteClockStream {
     IMU_POSE,
     IMU_ANGULAR_VELOCITY,
     IMU_LINEAR_ACCELERATION,
+    MICROPHONE_CAPTURE,
+    TOUCH_OBSERVED,
     CAMERA_SEND,
     REALTIME_CONTROL_SEND,
+    MICROPHONE_INTENT_CREATED,
+    ROKID_GESTURE_OBSERVED,
     /** Compatibility key for non-lane transports. */
     REMOTE_SEND,
 }

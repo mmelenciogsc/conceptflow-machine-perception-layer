@@ -7,6 +7,9 @@ import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImuBatch
 import org.conceptflow.mpl.v1.MicrophoneChunk
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
+import org.conceptflow.mpl.v1.RokidTouchAction
+import org.conceptflow.mpl.v1.RokidTouchEvent
+import org.conceptflow.mpl.v1.RokidTouchKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -29,7 +32,7 @@ class LiveOutboundQueuesTest {
     }
 
     @Test
-    fun `IMU pressure drops oldest whole batch and microphone is structurally rejected`() {
+    fun `IMU pressure drops oldest whole batch and wrong lane payload is rejected`() {
         val queues = LiveOutboundQueues(maximumImuBatches = 2)
         queues.offerImu(imu(1))
         queues.offerImu(imu(2))
@@ -47,6 +50,37 @@ class LiveOutboundQueuesTest {
         ).build()
         assertThrows(IllegalArgumentException::class.java) { queues.offerImu(microphone) }
         assertFalse(microphone.hasImuBatch())
+    }
+
+    @Test
+    fun `microphone queue preserves continuity and is fair with IMU`() {
+        val queues = LiveOutboundQueues(maximumImuBatches = 2, maximumMicrophoneChunks = 2)
+        queues.offerImu(imu(1))
+        queues.offerMicrophone(microphone(1))
+        queues.offerMicrophone(microphone(2))
+
+        assertEquals(1L, queues.pollRealtime()!!.microphoneChunk.chunkId)
+        assertEquals(1L, queues.pollRealtime()!!.imuBatch.batchId)
+        assertEquals(2L, queues.pollRealtime()!!.microphoneChunk.chunkId)
+        assertEquals(0L, queues.snapshot().droppedMicrophoneChunks)
+        assertEquals(0, queues.snapshot().pendingMicrophoneChunks)
+    }
+
+    @Test
+    fun `microphone rejects newest on overflow and touch never evicts an accepted event`() {
+        val queues = LiveOutboundQueues(maximumMicrophoneChunks = 2, maximumTouchEvents = 2)
+        assertTrue(queues.offerMicrophone(microphone(1)))
+        assertTrue(queues.offerMicrophone(microphone(2)))
+        assertFalse(queues.offerMicrophone(microphone(3)))
+        assertTrue(queues.offerTouch(touch(1)))
+        assertTrue(queues.offerTouch(touch(2)))
+        assertFalse(queues.offerTouch(touch(3)))
+
+        assertEquals(1L, queues.pollRealtime()!!.touchEvent.eventId)
+        assertEquals(2L, queues.pollRealtime()!!.touchEvent.eventId)
+        assertEquals(1L, queues.pollRealtime()!!.microphoneChunk.chunkId)
+        assertEquals(1L, queues.snapshot().droppedMicrophoneChunks)
+        assertEquals(1L, queues.snapshot().touchOverflowEvents)
     }
 
     @Test
@@ -102,6 +136,26 @@ class LiveOutboundQueuesTest {
 
     private fun imu(batchId: Long): SensorStreamEnvelope = base().setImuBatch(
         ImuBatch.newBuilder().setLeaseId("lease").setBatchId(batchId).setCreatedMonotonicTimestampNs(batchId),
+    ).build()
+
+    private fun microphone(chunkId: Long): SensorStreamEnvelope = base().setMicrophoneChunk(
+        MicrophoneChunk.newBuilder()
+            .setLeaseId("lease")
+            .setChunkId(chunkId)
+            .setCaptureMonotonicTimestampNs(chunkId)
+            .setSampleRateHz(16_000)
+            .setChannelCount(1)
+            .setAudioData(ByteString.copyFrom(byteArrayOf(1, 2))),
+    ).build()
+
+    private fun touch(eventId: Long): SensorStreamEnvelope = base().setTouchEvent(
+        RokidTouchEvent.newBuilder()
+            .setEventId(eventId)
+            .setObservedMonotonicTimestampNs(eventId)
+            .setSourceUptimeMs(eventId)
+            .setKey(RokidTouchKey.ROKID_TOUCH_KEY_SINGLE_TAP)
+            .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_DOWN)
+            .setScanCode(148),
     ).build()
 
     private fun base(): SensorStreamEnvelope.Builder = SensorStreamEnvelope.newBuilder()

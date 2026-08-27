@@ -12,6 +12,35 @@ data class LiveLinkSession(
         "LiveLinkSession(binding=<redacted>,clockSynchronized=${clockEstimate != null})"
 }
 
+data class MicrophoneLeaseAuthorization(
+    val sessionId: String,
+    val leaseId: String,
+    val durationMillis: Int,
+    val expiresAtMonotonicNs: Long,
+) {
+    init {
+        require(sessionId.isNotBlank() && leaseId.isNotBlank())
+        require(durationMillis in 1..MAXIMUM_MICROPHONE_LEASE_MILLIS)
+        require(expiresAtMonotonicNs > 0L)
+    }
+
+    override fun toString(): String =
+        "MicrophoneLeaseAuthorization(binding=<redacted>,durationMillis=$durationMillis)"
+}
+
+enum class MicrophoneRequestDispatch {
+    REQUESTED,
+    NO_AUTHENTICATED_SESSION,
+    ALREADY_PENDING_OR_ACTIVE,
+}
+
+enum class LiveMicrophoneLeaseState {
+    REQUESTED,
+    ACTIVE,
+    REJECTED,
+    COMPLETE,
+}
+
 data class NegotiatedLiveLease(
     val expiresAtMonotonicNs: Long,
     val cameraRelaxedFps: Int,
@@ -40,6 +69,8 @@ data class LiveSensorDelivery(
     val normalizedCameraCapture: NormalizedMonotonicTimestamp?,
     val normalizedImuBatchCreated: NormalizedMonotonicTimestamp?,
     val normalizedImuSamples: List<NormalizedImuSampleTiming>,
+    val normalizedMicrophoneCapture: NormalizedMonotonicTimestamp?,
+    val normalizedTouchObserved: NormalizedMonotonicTimestamp?,
 ) {
     override fun toString(): String =
         "LiveSensorDelivery(payload=${sensor.payloadCase},receiveMonotonicNs=<redacted>,timestamps=<redacted>)"
@@ -87,14 +118,26 @@ data class LiveLinkCloseEvidence(
 interface PocoLiveLinkObserver {
     fun onSessionReady(session: LiveLinkSession)
     fun onSensor(delivery: LiveSensorDelivery)
+    fun onPeerTelemetry(telemetry: org.conceptflow.mpl.v1.LiveLinkTelemetry) = Unit
     fun onCloseEvidence(evidence: LiveLinkCloseEvidence) = Unit
     fun onDiagnostic(code: LiveLinkDiagnosticCode) = Unit
+    fun onMicrophoneLeaseState(state: LiveMicrophoneLeaseState, durationMillis: Int) = Unit
+    fun onRokidGesture(operation: org.conceptflow.mpl.v1.RokidGestureOperation) = Unit
+    fun onRokidNodeCommandResult(result: RokidNodeCommandDelivery) = Unit
     fun onDisconnected(reason: LiveLinkDisconnectReason)
 }
 
 interface RokidLiveLinkObserver {
     /** Capture must start only after this callback supplies the active session/lease binding. */
     fun onSessionReady(session: LiveLinkSession)
+    /** Permission and active-binding preflight; no microphone source may start here. */
+    fun mayGrantMicrophoneLease(authorization: MicrophoneLeaseAuthorization): Boolean = false
+    /** Called only after the corresponding authenticated grant has been written. */
+    fun onMicrophoneLeaseGranted(authorization: MicrophoneLeaseAuthorization) = Unit
+    /** Result for the latest locally generated, authenticated wearer gesture intent. */
+    fun onMicrophoneGestureResult(result: MicrophoneGestureResult) = Unit
+    /** Return true only after the command has been accepted onto the local execution queue. */
+    fun onRokidNodeCommand(command: org.conceptflow.mpl.v1.RokidNodeCommand): Boolean = false
     fun onDiagnostic(code: LiveLinkDiagnosticCode) = Unit
     fun onDisconnected(reason: LiveLinkDisconnectReason)
 }

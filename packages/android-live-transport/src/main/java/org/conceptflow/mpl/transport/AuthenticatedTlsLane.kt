@@ -2,6 +2,8 @@
 package org.conceptflow.mpl.transport
 
 import java.io.Closeable
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import javax.net.ssl.SSLSocket
 import org.conceptflow.mpl.v1.LiveLinkEnvelope
 import org.conceptflow.mpl.v1.LiveTransportLane
@@ -14,7 +16,8 @@ class AuthenticatedTlsLane internal constructor(
     private val maxFrameBytes = LiveLaneFrameLimits.forLane(lane)
     private val input = socket.inputStream
     private val output = socket.outputStream
-    private val reader = BoundedProtobufRecordReader(input, LiveLinkEnvelope.parser(), maxFrameBytes)
+    private val reader = VersionedLiveFrameReader(input, maxFrameBytes)
+    private val writeLock = ReentrantLock(true)
 
     init {
         if (lane == LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL) {
@@ -22,12 +25,14 @@ class AuthenticatedTlsLane internal constructor(
         }
     }
 
-    @Synchronized
-    fun write(envelope: LiveLinkEnvelope) {
+    fun write(envelope: LiveLinkEnvelope) = withWriteLock {
         if (envelope.lane != lane) throw LaneProtocolException(LaneProtocolFailure.PAYLOAD_LANE_MISMATCH)
-        BoundedProtobufFraming.write(envelope, output, maxFrameBytes)
+        VersionedLiveFraming.write(envelope, output, maxFrameBytes)
         output.flush()
     }
+
+    /** Serializes sequence allocation plus output using a fair lock so control cannot starve behind IMU. */
+    internal fun <T> withWriteLock(action: () -> T): T = writeLock.withLock(action)
 
     fun readOrNull(): LiveLinkEnvelope? {
         val envelope = reader.readOrNull() ?: return null

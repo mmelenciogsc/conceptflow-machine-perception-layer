@@ -2,10 +2,22 @@
 package org.conceptflow.mpl.transport
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClockSynchronizationTest {
+    @Test
+    fun `periodic resync retains a previous estimate only for transient quality failures`() {
+        assertTrue(ClockSyncFailure.ROUND_TRIP_OUT_OF_BOUNDS.isRecoverablePeriodicResyncFailure())
+        assertTrue(ClockSyncFailure.INSUFFICIENT_SAMPLES.isRecoverablePeriodicResyncFailure())
+        assertTrue(ClockSyncFailure.OFFSET_JUMP.isRecoverablePeriodicResyncFailure())
+        assertFalse(ClockSyncFailure.INVALID_TIMESTAMPS.isRecoverablePeriodicResyncFailure())
+        assertFalse(ClockSyncFailure.OFFSET_OUT_OF_RANGE.isRecoverablePeriodicResyncFailure())
+        assertFalse(ClockSyncFailure.ROUND_FULL.isRecoverablePeriodicResyncFailure())
+    }
+
     @Test
     fun `chooses minimum RTT and reports half RTT uncertainty`() {
         val synchronizer = MinRttClockSynchronizer(requiredSamples = 3, maxSamples = 3)

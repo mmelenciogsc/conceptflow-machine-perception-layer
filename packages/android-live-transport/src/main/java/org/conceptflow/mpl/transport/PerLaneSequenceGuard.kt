@@ -108,10 +108,14 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
                 }
             }
             LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL -> {
-                if (sensor.payloadCase != SensorStreamEnvelope.PayloadCase.IMU_BATCH ||
-                    sensor.imuBatch.leaseId != binding.leaseId
-                ) {
-                    throw LaneProtocolException(LaneProtocolFailure.PAYLOAD_LANE_MISMATCH)
+                when (sensor.payloadCase) {
+                    SensorStreamEnvelope.PayloadCase.IMU_BATCH ->
+                        if (sensor.imuBatch.leaseId != binding.leaseId) bindingMismatch()
+                    SensorStreamEnvelope.PayloadCase.MICROPHONE_CHUNK ->
+                        if (sensor.microphoneChunk.leaseId != binding.leaseId) bindingMismatch()
+                    SensorStreamEnvelope.PayloadCase.TOUCH_EVENT ->
+                        if (sensor.touchEvent.eventId == 0L) malformedControl()
+                    else -> throw LaneProtocolException(LaneProtocolFailure.PAYLOAD_LANE_MISMATCH)
                 }
             }
             else -> throw LaneProtocolException(LaneProtocolFailure.UNSUPPORTED_LANE)
@@ -165,6 +169,28 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
             LiveLinkControl.PayloadCase.KEEPALIVE -> {
                 if (control.keepalive.nonce == 0L) malformedControl()
             }
+            LiveLinkControl.PayloadCase.CAPABILITIES -> {
+                val capabilities = control.capabilities
+                if (capabilities.protocolVersion.major != LiveControlMessages.PROTOCOL_MAJOR ||
+                    capabilities.protocolVersion.minor > LiveControlMessages.PROTOCOL_MINOR ||
+                    capabilities.peerRole.number == 0 ||
+                    capabilities.maxCameraWidth == 0 || capabilities.maxCameraHeight == 0 ||
+                    capabilities.maxCameraFrameBytes == 0L ||
+                    capabilities.maxCameraFrameBytes > 8L * 1_024L * 1_024L ||
+                    capabilities.maxAudioBlockBytes !in 256..256 * 1_024 ||
+                    capabilities.maxImuSamplesPerBatch !in 1..64 ||
+                    capabilities.maxTouchEventsBuffered !in 1..512
+                ) malformedControl()
+            }
+            LiveLinkControl.PayloadCase.TELEMETRY -> {
+                val telemetry = control.telemetry
+                if (telemetry.sampledMonotonicTimestampNs == 0L ||
+                    telemetry.pendingCameraFrames > 1 ||
+                    telemetry.pendingImuBatches > 64 ||
+                    telemetry.pendingAudioBlocks > 64 ||
+                    telemetry.pendingTouchEvents > 256
+                ) malformedControl()
+            }
             LiveLinkControl.PayloadCase.LEASE_REQUEST -> {
                 val request = control.leaseRequest
                 if (request.sessionId != binding.sessionId || request.leaseId != binding.leaseId) {
@@ -184,6 +210,19 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
                     grant.validForMs == 0
                 ) malformedControl()
             }
+            // These payloads have operation-specific exact-binding, freshness and replay
+            // validation in the microphone control state machines.
+            LiveLinkControl.PayloadCase.MICROPHONE_CONTROL_INTENT,
+            LiveLinkControl.PayloadCase.MICROPHONE_CONTROL_RESULT,
+            LiveLinkControl.PayloadCase.ROKID_GESTURE_INTENT,
+            LiveLinkControl.PayloadCase.ROKID_NODE_COMMAND,
+            LiveLinkControl.PayloadCase.ROKID_NODE_COMMAND_RESULT,
+            LiveLinkControl.PayloadCase.SPOOL_MANIFEST_POLL,
+            LiveLinkControl.PayloadCase.SPOOL_MANIFEST_SNAPSHOT,
+            LiveLinkControl.PayloadCase.SPOOL_ARTIFACT_REQUEST,
+            LiveLinkControl.PayloadCase.SPOOL_ARTIFACT_CHUNK,
+            LiveLinkControl.PayloadCase.SPOOL_RECORDS_ACK,
+            -> Unit
             LiveLinkControl.PayloadCase.ERROR -> Unit
             LiveLinkControl.PayloadCase.LANE_OPEN_REQUEST,
             LiveLinkControl.PayloadCase.LANE_OPEN_RESPONSE,
@@ -195,4 +234,7 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
 
     private fun malformedControl(): Nothing =
         throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+
+    private fun bindingMismatch(): Nothing =
+        throw LaneProtocolException(LaneProtocolFailure.BINDING_MISMATCH)
 }

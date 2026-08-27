@@ -7,6 +7,15 @@ import org.junit.Test
 
 class LivenessMonitorTest {
     @Test
+    fun `default policy tolerates short radio stalls and times out at fifteen seconds`() {
+        val monitor = LivenessMonitor()
+        monitor.connect(1_000_000_000L)
+
+        assertEquals(LivenessStatus.KEEPALIVE_DUE, monitor.poll(15_999_999_999L))
+        assertEquals(LivenessStatus.TIMED_OUT, monitor.poll(16_000_000_000L))
+    }
+
+    @Test
     fun `keepalive is ordered and times out after bounded missed intervals`() {
         val monitor = LivenessMonitor(keepaliveIntervalNs = 100, missedIntervalsBeforeTimeout = 3)
         monitor.connect(1_000)

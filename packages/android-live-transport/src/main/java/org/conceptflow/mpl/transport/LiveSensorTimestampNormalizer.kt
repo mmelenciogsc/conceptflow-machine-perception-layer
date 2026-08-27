@@ -73,7 +73,31 @@ internal object LiveSensorTimestampNormalizer {
         } else {
             emptyList()
         }
-        return LiveSensorDelivery(sensor, receiveNs, normalizedSend, cameraCapture, imuBatchCreated, imu)
+        val microphoneCapture = if (sensor.hasMicrophoneChunk()) {
+            if (sensor.microphoneChunk.captureMonotonicTimestampNs <= 0L) {
+                reject(LiveLinkDiagnosticCode.SENSOR_SEND_TIMESTAMP_REJECTED)
+            }
+            state.normalize(
+                RemoteClockStream.MICROPHONE_CAPTURE,
+                sensor.microphoneChunk.captureMonotonicTimestampNs,
+            )
+        } else null
+        val touchObserved = if (sensor.hasTouchEvent()) {
+            if (sensor.touchEvent.observedMonotonicTimestampNs <= 0L) {
+                reject(LiveLinkDiagnosticCode.SENSOR_SEND_TIMESTAMP_REJECTED)
+            }
+            state.normalize(RemoteClockStream.TOUCH_OBSERVED, sensor.touchEvent.observedMonotonicTimestampNs)
+        } else null
+        return LiveSensorDelivery(
+            sensor,
+            receiveNs,
+            normalizedSend,
+            cameraCapture,
+            imuBatchCreated,
+            imu,
+            microphoneCapture,
+            touchObserved,
+        )
     }
 
     private fun reject(code: LiveLinkDiagnosticCode): Nothing =

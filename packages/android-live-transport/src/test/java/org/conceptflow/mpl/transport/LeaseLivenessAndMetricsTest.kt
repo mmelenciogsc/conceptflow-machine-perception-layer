@@ -93,7 +93,7 @@ class LeaseLivenessAndMetricsTest {
         assertEquals(LiveLinkFailureLane.REALTIME_CONTROL, realtimeTermination.failureLane())
 
         listOf(
-            FramingException(FramingFailure.TRUNCATED_RECORD) to LiveLinkDisconnectReason.PROTOCOL,
+            FramingException(FramingFailure.TRUNCATED_RECORD) to LiveLinkDisconnectReason.NETWORK,
             SocketTimeoutException("read timeout") to LiveLinkDisconnectReason.TIMEOUT,
             IOException("unrelated I/O") to LiveLinkDisconnectReason.NETWORK,
         ).forEach { (failure, expectedReason) ->
@@ -136,6 +136,7 @@ class LeaseLivenessAndMetricsTest {
             setOf(
                 org.conceptflow.mpl.v1.SensorStreamKind.SENSOR_STREAM_KIND_CAMERA,
                 org.conceptflow.mpl.v1.SensorStreamKind.SENSOR_STREAM_KIND_IMU,
+                org.conceptflow.mpl.v1.SensorStreamKind.SENSOR_STREAM_KIND_TOUCH,
             ),
             grant.grantedStreamsList.toSet(),
         )

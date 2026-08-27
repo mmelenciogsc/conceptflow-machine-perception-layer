@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.transport
 
+import android.util.Log
 import java.io.Closeable
 import java.net.SocketTimeoutException
 import java.security.SecureRandom
@@ -9,13 +10,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.v1.LiveLinkControl
 import org.conceptflow.mpl.v1.LiveLinkEnvelope
 import org.conceptflow.mpl.v1.LiveTransportLane
 import org.conceptflow.mpl.v1.LiveTransportPeerRole
+import org.conceptflow.mpl.v1.MicrophoneControlOperation
+import org.conceptflow.mpl.v1.RokidGestureOperation
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
-import org.conceptflow.mpl.v1.SensorStreamKind
 
 /** Direct private-WLAN glasses client. Camera and realtime/control use independent TLS sockets. */
 class RokidLiveLinkClient(
@@ -24,6 +27,8 @@ class RokidLiveLinkClient(
     private val clock: MonotonicTimeSource = AndroidMonotonicTimeSource,
     private val bindingFactory: () -> LiveSessionBinding = { EphemeralBindingFactory().create() },
     private val queues: LiveOutboundQueues = LiveOutboundQueues(),
+    private val spoolProvider: RokidSpoolProvider = EmptyRokidSpoolProvider,
+    private val endpointResolver: LiveLinkEndpointResolver = StaticLiveLinkEndpointResolver(config.address),
 ) : Closeable {
     private val running = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
@@ -36,6 +41,12 @@ class RokidLiveLinkClient(
     private val metricAccounting = EndpointMetricAccounting(metrics)
     private val activeAttempt = ActiveConnectionAttempt()
     private val activeShutdown = AtomicReference<ClientShutdownContext?>()
+    private val activeGestureBinding = AtomicReference<LiveSessionBinding?>()
+    private val pendingGestureControl = AtomicReference<LiveLinkControl?>()
+    private val gestureOutbox = RokidGestureOutbox()
+    private val microphoneIntentIds = AtomicLong(0L)
+    private val nodeGestureIds = AtomicLong(0L)
+    private val microphoneIntentTracker = GlassesMicrophoneIntentTracker()
     private val shutdownWorker = BoundedEndpointShutdownWorker<LiveLinkCloseEvidence>()
     private var shutdownCompletion: CompletableFuture<LiveLinkCloseEvidence>? = null
 
@@ -77,8 +88,66 @@ class RokidLiveLinkClient(
         return true
     }
 
-    /** Microphone remains structurally unavailable in this baseline. */
-    fun offerMicrophone(@Suppress("UNUSED_PARAMETER") chunk: SensorStreamEnvelope): Boolean = false
+    fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean {
+        if (!connected.get() || draining.get()) return false
+        val before = queues.snapshot().droppedMicrophoneChunks
+        val accepted = queues.offerMicrophone(chunk)
+        val snapshot = queues.snapshot()
+        if (snapshot.droppedMicrophoneChunks > before) {
+            metrics.recordDropped(
+                LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                snapshot.droppedMicrophoneChunks - before,
+            )
+        }
+        metrics.recordQueueDepth(
+            LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+            snapshot.pendingImuBatches + snapshot.pendingMicrophoneChunks + snapshot.pendingTouchEvents,
+        )
+        return accepted
+    }
+
+    fun offerTouch(event: SensorStreamEnvelope): Boolean {
+        if (!connected.get() || draining.get()) return false
+        val accepted = queues.offerTouch(event)
+        val snapshot = queues.snapshot()
+        if (!accepted) {
+            metrics.recordDropped(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL, 1L)
+        }
+        metrics.recordQueueDepth(
+            LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+            snapshot.pendingImuBatches + snapshot.pendingMicrophoneChunks + snapshot.pendingTouchEvents,
+        )
+        return accepted
+    }
+
+    fun requestMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
+        queueMicrophoneGesture(MicrophoneControlOperation.MICROPHONE_CONTROL_OPERATION_START)
+
+    fun stopMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
+        queueMicrophoneGesture(MicrophoneControlOperation.MICROPHONE_CONTROL_OPERATION_STOP)
+
+    fun requestRokidGesture(
+        operation: RokidGestureOperation,
+        observedMonotonicNs: Long = clock.nowNs(),
+    ): RokidGestureDispatch {
+        require(RokidGestureCommandPolicy.commandFor(operation) != null)
+        require(observedMonotonicNs > 0L)
+        if (!running.get() || draining.get()) return RokidGestureDispatch.TRANSPORT_STOPPED
+        val gestureId = nodeGestureIds.updateAndGet { previous -> Math.addExact(previous, 1L) }
+        gestureOutbox.replace(PendingRokidGesture(gestureId, observedMonotonicNs, operation))
+        return RokidGestureDispatch.QUEUED
+    }
+
+    private fun queueMicrophoneGesture(operation: MicrophoneControlOperation): MicrophoneGestureDispatch {
+        val binding = activeGestureBinding.get()
+            ?: return MicrophoneGestureDispatch.NO_AUTHENTICATED_SESSION
+        if (!connected.get() || draining.get()) return MicrophoneGestureDispatch.NO_AUTHENTICATED_SESSION
+        val intentId = microphoneIntentIds.updateAndGet { previous -> Math.addExact(previous, 1L) }
+        val control = LiveControlMessages.microphoneControlIntent(binding, intentId, clock.nowNs(), operation)
+        microphoneIntentTracker.record(intentId, operation)
+        pendingGestureControl.set(control)
+        return MicrophoneGestureDispatch.QUEUED
+    }
 
     fun metricsSnapshot(): TransportMetricsSnapshot = metrics.snapshot()
 
@@ -100,11 +169,13 @@ class RokidLiveLinkClient(
             var notified = false
             try {
                 queues.reset()
+                val endpointAddress = endpointResolver.awaitAddress(ENDPOINT_RESOLUTION_TIMEOUT_MS)
                 val binding = bindingFactory()
                 val realtime = attempt.own(
                     openClientLane(
                         tls,
                         config,
+                        endpointAddress,
                         config.realtimePort,
                         LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
                         onConnectedSocket = { attempt.own(it) },
@@ -117,6 +188,7 @@ class RokidLiveLinkClient(
                     openClientLane(
                         tls,
                         config,
+                        endpointAddress,
                         config.cameraPort,
                         LiveTransportLane.LIVE_TRANSPORT_LANE_CAMERA,
                         onConnectedSocket = { attempt.own(it) },
@@ -167,11 +239,20 @@ class RokidLiveLinkClient(
                     "a live-link graceful shutdown context is already active"
                 }
                 if (!running.get() || draining.get()) throw InterruptedException("live-link endpoint stopped")
+                activeGestureBinding.set(binding)
                 connected.set(true)
                 observer.onSessionReady(LiveLinkSession(binding, clockEstimate = null, handshake.lease))
                 notified = true
                 retryDelayMs = MINIMUM_RETRY_MS
-                receiveRealtime(realtime, state, binding, handshake.leaseDeadline, closeState)
+                receiveRealtime(
+                    realtime,
+                    state,
+                    binding,
+                    handshake.leaseDeadline,
+                    closeState,
+                    observer,
+                    GlassesRokidNodeCommandGuard(binding),
+                )
                 cameraFuture.get()
                 realtimeWriterFuture.get()
             } catch (error: Exception) {
@@ -189,6 +270,9 @@ class RokidLiveLinkClient(
                 }
             } finally {
                 connected.set(false)
+                activeGestureBinding.set(null)
+                pendingGestureControl.set(null)
+                microphoneIntentTracker.resetConnection()
                 cameraFuture?.cancel(true)
                 realtimeWriterFuture?.cancel(true)
                 attempt.close()
@@ -228,6 +312,24 @@ class RokidLiveLinkClient(
             ),
             metrics,
         )
+        writeTracked(
+            lane,
+            output.control(
+                LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                LiveControlMessages.capabilities(
+                    LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
+                    supportsDiagnosticSpool = spoolProvider !== EmptyRokidSpoolProvider,
+                ),
+            ),
+            metrics,
+        )
+        val capabilitiesEnvelope = receiveAccepted(lane, state)
+        runCatching {
+            LiveControlMessages.requireCompatibleCapabilities(
+                capabilitiesEnvelope.control,
+                LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST,
+            )
+        }.getOrElse { throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL) }
         val ticketEnvelope = receiveAccepted(lane, state)
         val ticketGrant = ticketEnvelope.control.takeIf {
             it.payloadCase == LiveLinkControl.PayloadCase.LANE_TICKET_GRANT &&
@@ -247,15 +349,8 @@ class RokidLiveLinkClient(
         val grantEnvelope = receiveAccepted(lane, state)
         val grant = grantEnvelope.control.takeIf {
             it.payloadCase == LiveLinkControl.PayloadCase.LEASE_GRANT &&
-                it.leaseGrant.sessionId == binding.sessionId &&
-                it.leaseGrant.leaseId == binding.leaseId &&
-                !it.leaseGrant.hasError() &&
-                it.leaseGrant.grantedStreamsList.toSet() == setOf(
-                    SensorStreamKind.SENSOR_STREAM_KIND_CAMERA,
-                    SensorStreamKind.SENSOR_STREAM_KIND_IMU,
-                )
+                it.leaseGrant.isAcceptedOpenGrant(binding)
         }?.leaseGrant ?: throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
-        require(grant.grantedDurationMs > 0) { "stream lease has no valid duration" }
 
         repeat(LiveControlMessages.CLOCK_PROBES) { index ->
             val requestEnvelope = receiveAccepted(lane, state)
@@ -306,6 +401,8 @@ class RokidLiveLinkClient(
         binding: LiveSessionBinding,
         leaseDeadline: MonotonicLeaseDeadline,
         closeState: GracefulSessionCloseState,
+        observer: RokidLiveLinkObserver,
+        nodeCommandGuard: GlassesRokidNodeCommandGuard,
     ) {
         val output = LiveEnvelopeFactory(binding, state, clock)
         while (running.get()) {
@@ -325,7 +422,7 @@ class RokidLiveLinkClient(
                 LiveLinkControl.PayloadCase.KEEPALIVE -> {
                     val keepalive = envelope.control.keepalive
                     if (keepalive.response) throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
-                    synchronized(lane) {
+                    lane.withWriteLock {
                         writeTracked(
                             lane,
                             output.control(
@@ -341,8 +438,9 @@ class RokidLiveLinkClient(
                     if (request.probeId <= 0L) {
                         throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
                     }
+                    Log.d(DIAGNOSTIC_TAG, "state=periodic_clock request=received")
                     val sendNs = clock.nowNs()
-                    synchronized(lane) {
+                    lane.withWriteLock {
                         writeTracked(
                             lane,
                             output.control(
@@ -352,6 +450,7 @@ class RokidLiveLinkClient(
                             metrics,
                         )
                     }
+                    Log.d(DIAGNOSTIC_TAG, "state=periodic_clock response=written")
                 }
                 LiveLinkControl.PayloadCase.LEASE_GRANT -> {
                     if (!closeState.acceptAcknowledgement(envelope.control)) {
@@ -359,21 +458,125 @@ class RokidLiveLinkClient(
                     }
                     return
                 }
-                LiveLinkControl.PayloadCase.LEASE_REQUEST -> {
-                    if (!closeState.acceptRemoteCloseRequest(envelope.control)) {
+                LiveLinkControl.PayloadCase.MICROPHONE_CONTROL_RESULT -> {
+                    if (!LiveControlMessages.isMicrophoneControlResult(envelope.control, binding)) {
                         throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
                     }
-                    synchronized(lane) {
+                    microphoneIntentTracker.acceptResult(envelope.control.microphoneControlResult)?.let {
+                        observer.onMicrophoneGestureResult(it)
+                    }
+                }
+                LiveLinkControl.PayloadCase.ROKID_NODE_COMMAND -> {
+                    val command = envelope.control.rokidNodeCommand
+                    val accepted = nodeCommandGuard.accept(command, envelope.sentMonotonicTimestampNs) == null &&
+                        runCatching { observer.onRokidNodeCommand(command) }.getOrDefault(false)
+                    lane.withWriteLock {
                         writeTracked(
                             lane,
                             output.control(
                                 LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
-                                LiveControlMessages.leaseCloseAcknowledged(binding),
+                                LiveControlMessages.rokidNodeCommandResult(binding, command, accepted),
                             ),
                             metrics,
                         )
                     }
-                    throw RemoteSessionCompletedException()
+                }
+                LiveLinkControl.PayloadCase.SPOOL_MANIFEST_POLL -> {
+                    val poll = envelope.control.spoolManifestPoll
+                    if (poll.maxRecords !in 1..HostSpoolPullCoordinator.MAXIMUM_PAGE_RECORDS) {
+                        throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+                    }
+                    val snapshot = spoolProvider.manifest(poll.maxRecords)
+                    lane.withWriteLock {
+                        writeTracked(
+                            lane,
+                            output.control(
+                                LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                                LiveLinkControl.newBuilder().setSpoolManifestSnapshot(snapshot).build(),
+                            ),
+                            metrics,
+                        )
+                    }
+                }
+                LiveLinkControl.PayloadCase.SPOOL_ARTIFACT_REQUEST -> {
+                    val request = envelope.control.spoolArtifactRequest
+                    if (request.recordId.isBlank() || request.offset < 0L ||
+                        request.maxBytes !in 1..HostSpoolPullCoordinator.ARTIFACT_CHUNK_BYTES
+                    ) {
+                        throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+                    }
+                    val chunk = spoolProvider.artifact(request.recordId, request.offset, request.maxBytes)
+                    lane.withWriteLock {
+                        writeTracked(
+                            lane,
+                            output.control(
+                                LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                                LiveLinkControl.newBuilder().setSpoolArtifactChunk(chunk).build(),
+                            ),
+                            metrics,
+                        )
+                    }
+                }
+                LiveLinkControl.PayloadCase.SPOOL_RECORDS_ACK -> {
+                    val acknowledgement = envelope.control.spoolRecordsAck
+                    if (acknowledgement.recordIdsCount !in 1..HostSpoolPullCoordinator.MAXIMUM_PAGE_RECORDS) {
+                        throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+                    }
+                    spoolProvider.acknowledge(
+                        acknowledgement.manifestRevision,
+                        acknowledgement.recordIdsList,
+                    )
+                }
+                LiveLinkControl.PayloadCase.LEASE_REQUEST -> {
+                    if (LiveControlMessages.isMicrophoneLeaseRequest(envelope.control, binding)) {
+                        val request = envelope.control.leaseRequest
+                        val nowNs = clock.nowNs()
+                        val requestedDeadline = MonotonicLeaseDeadline.fromDurationMillis(
+                            nowNs,
+                            request.requestedDurationMs,
+                        ).expiresAtNs
+                        val authorization = MicrophoneLeaseAuthorization(
+                            binding.sessionId,
+                            binding.leaseId,
+                            request.requestedDurationMs,
+                            minOf(requestedDeadline, leaseDeadline.expiresAtNs),
+                        )
+                        // A local permission/source preflight failure is an explicit rejection;
+                        // it must not tear down the already authenticated camera/IMU session.
+                        val accepted = microphoneIntentTracker.permitsLease(
+                            request.originatingMicrophoneIntentId,
+                        ) && runCatching {
+                            observer.mayGrantMicrophoneLease(authorization)
+                        }.getOrDefault(false)
+                        lane.withWriteLock {
+                            writeTracked(
+                                lane,
+                                output.control(
+                                    LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                                    LiveControlMessages.microphoneLeaseGrant(request, accepted),
+                                ),
+                                metrics,
+                            )
+                        }
+                        if (accepted) runCatching {
+                            observer.onMicrophoneLeaseGranted(authorization)
+                        }
+                    } else {
+                        if (!closeState.acceptRemoteCloseRequest(envelope.control)) {
+                            throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+                        }
+                        lane.withWriteLock {
+                            writeTracked(
+                                lane,
+                                output.control(
+                                    LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                                    LiveControlMessages.leaseCloseAcknowledged(binding),
+                                ),
+                                metrics,
+                            )
+                        }
+                        throw RemoteSessionCompletedException()
+                    }
                 }
                 else -> throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
             }
@@ -387,12 +590,59 @@ class RokidLiveLinkClient(
         leaseDeadline: MonotonicLeaseDeadline,
     ) {
         val output = LiveEnvelopeFactory(binding, state, clock)
+        var nextTelemetryNs = clock.nowNs()
         while (running.get() && !draining.get()) {
-            leaseDeadline.requireActive(clock.nowNs())
-            val sensor = queues.awaitImu(IMU_QUEUE_POLL_TIMEOUT_MS) ?: continue
+            val nowNs = clock.nowNs()
+            leaseDeadline.requireActive(nowNs)
+            if (nowNs >= nextTelemetryNs) {
+                lane.withWriteLock {
+                    writeTracked(
+                        lane,
+                        output.control(
+                            LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                            LiveControlMessages.telemetry(nowNs, queues.snapshot(), metrics.snapshot()),
+                        ),
+                        metrics,
+                    )
+                }
+                nextTelemetryNs = Math.addExact(nowNs, TELEMETRY_INTERVAL_NS)
+                continue
+            }
+            val nodeGesture = gestureOutbox.peekFresh(clock.nowNs())
+            if (nodeGesture != null) {
+                lane.withWriteLock {
+                    writeTracked(
+                        lane,
+                        output.control(
+                            LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
+                            LiveControlMessages.rokidGestureIntent(
+                                binding,
+                                nodeGesture.gestureId,
+                                nodeGesture.observedMonotonicNs,
+                                nodeGesture.operation,
+                            ),
+                        ),
+                        metrics,
+                    )
+                }
+                gestureOutbox.acknowledgeWritten(nodeGesture)
+                continue
+            }
+            val gestureControl = pendingGestureControl.getAndSet(null)
+            if (gestureControl != null) {
+                lane.withWriteLock {
+                    writeTracked(
+                        lane,
+                        output.control(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL, gestureControl),
+                        metrics,
+                    )
+                }
+                continue
+            }
+            val sensor = queues.awaitRealtime(IMU_QUEUE_POLL_TIMEOUT_MS) ?: continue
             if (draining.get()) break
             leaseDeadline.requireActive(clock.nowNs())
-            synchronized(lane) {
+            lane.withWriteLock {
                 writeTracked(
                     lane,
                     output.sensor(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL, sensor),
@@ -499,7 +749,7 @@ class RokidLiveLinkClient(
                     DRAIN_TIMEOUT_MS,
                     CLOSE_ACK_TIMEOUT_MS,
                 ) {
-                    synchronized(shutdown.realtime) {
+                    shutdown.realtime.withWriteLock {
                         writeTracked(
                             shutdown.realtime,
                             LiveEnvelopeFactory(shutdown.binding, shutdown.connectionState, clock).control(
@@ -521,6 +771,7 @@ class RokidLiveLinkClient(
     private fun forceCloseResources() {
         running.set(false)
         activeAttempt.closeCurrent()
+        endpointResolver.closeIfOwned()
         executor.shutdownNow()
         executor.awaitTerminationPreservingInterrupt(2, TimeUnit.SECONDS)
     }
@@ -529,15 +780,27 @@ class RokidLiveLinkClient(
     override fun close() = closeAsync {}
 
     companion object {
+        private const val DIAGNOSTIC_TAG = "ConceptFlowLiveLink"
         private const val MINIMUM_RETRY_MS = 250L
         private const val MAXIMUM_RETRY_MS = 4_000L
+        private const val ENDPOINT_RESOLUTION_TIMEOUT_MS = 180_000L
+        private val TELEMETRY_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1)
         private const val IMU_QUEUE_POLL_TIMEOUT_MS = 20L
         private const val WORKER_JOIN_TIMEOUT_MS = 1_000L
         private const val DRAIN_TIMEOUT_MS = 5_000L
         private const val CLOSE_ACK_TIMEOUT_MS = 2_000L
         private const val CLOSE_OPERATION_TIMEOUT_MS = 10_000L
 
-        fun fromConfig(config: LiveLinkPrivateConfig): RokidLiveLinkClient =
-            RokidLiveLinkClient(config, buildPinnedTls(config))
+        fun fromConfig(
+            config: LiveLinkPrivateConfig,
+            spoolProvider: RokidSpoolProvider = EmptyRokidSpoolProvider,
+            endpointResolver: LiveLinkEndpointResolver = StaticLiveLinkEndpointResolver(config.address),
+        ): RokidLiveLinkClient =
+            RokidLiveLinkClient(
+                config,
+                buildPinnedTls(config),
+                spoolProvider = spoolProvider,
+                endpointResolver = endpointResolver,
+            )
     }
 }

@@ -34,17 +34,18 @@ internal fun buildPinnedTls(config: LiveLinkPrivateConfig): PinnedMutualTls {
 internal fun openClientLane(
     tls: PinnedMutualTls,
     config: LiveLinkPrivateConfig,
+    address: java.net.InetAddress,
     port: Int,
     lane: LiveTransportLane,
     onConnectedSocket: ((Closeable) -> Unit)? = null,
 ): AuthenticatedTlsLane {
     val raw = Socket()
     return try {
-        raw.connect(InetSocketAddress(config.address, port), config.connectTimeoutMs)
+        raw.connect(InetSocketAddress(address, port), config.connectTimeoutMs)
         onConnectedSocket?.invoke(raw)
         raw.soTimeout = config.socketReadTimeoutMs
         raw.keepAlive = true
-        tls.openClientLane(raw, config.address.hostAddress ?: "", port, lane).also {
+        tls.openClientLane(raw, address.hostAddress ?: "", port, lane).also {
             it.socket.soTimeout = config.socketReadTimeoutMs
         }
     } catch (error: Exception) {
@@ -56,10 +57,11 @@ internal fun openClientLane(
 internal fun openServerSocket(
     tls: PinnedMutualTls,
     config: LiveLinkPrivateConfig,
+    address: java.net.InetAddress,
     port: Int,
 ): SSLServerSocket = tls.createUnboundServerSocket().apply {
     reuseAddress = true
-    bind(InetSocketAddress(config.address, port), 1)
+    bind(InetSocketAddress(address, port), 1)
     soTimeout = ACCEPT_POLL_TIMEOUT_MS
 }
 
@@ -439,9 +441,18 @@ internal fun classifyDisconnect(error: Throwable): LiveLinkDisconnectReason = wh
     is RemoteSessionCompletedException -> LiveLinkDisconnectReason.REMOTE_COMPLETED
     is LeaseExpiredException -> LiveLinkDisconnectReason.LEASE_EXPIRED
     is LaneProtocolException,
-    is FramingException,
     is IllegalArgumentException,
     -> LiveLinkDisconnectReason.PROTOCOL
+    is FramingException -> when (error.failure) {
+        // An authenticated peer process or radio can disappear between any two bytes. The next
+        // mTLS session starts with fresh framing/session state, so truncation is reconnectable.
+        FramingFailure.TRUNCATED_PREFIX,
+        FramingFailure.TRUNCATED_RECORD,
+        -> LiveLinkDisconnectReason.NETWORK
+        FramingFailure.INVALID_LENGTH,
+        FramingFailure.MALFORMED_PROTOBUF,
+        -> LiveLinkDisconnectReason.PROTOCOL
+    }
     is CameraTicketException -> LiveLinkDisconnectReason.AUTHENTICATION
     is javax.net.ssl.SSLException,
     is java.security.GeneralSecurityException,

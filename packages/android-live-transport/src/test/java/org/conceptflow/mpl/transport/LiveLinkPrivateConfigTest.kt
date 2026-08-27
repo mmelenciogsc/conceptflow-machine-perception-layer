@@ -10,6 +10,21 @@ import org.junit.Test
 
 class LiveLinkPrivateConfigTest {
     @Test
+    fun `network topology names are strict and backward compatible`() {
+        assertEquals(
+            LiveLinkNetworkTopology.PRIVATE_LAN,
+            LiveLinkNetworkTopology.parse("private_lan"),
+        )
+        assertEquals(
+            LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED,
+            LiveLinkNetworkTopology.parse("wifi_direct_required"),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            LiveLinkNetworkTopology.parse("wifi_direct_preferred")
+        }
+    }
+
+    @Test
     fun `accepts only private or link-local numeric addresses without DNS`() {
         assertEquals("10.4.3.2", LiveLinkPrivateConfig.parsePrivateIpLiteral("10.4.3.2").hostAddress)
         assertEquals("172.31.9.8", LiveLinkPrivateConfig.parsePrivateIpLiteral("172.31.9.8").hostAddress)

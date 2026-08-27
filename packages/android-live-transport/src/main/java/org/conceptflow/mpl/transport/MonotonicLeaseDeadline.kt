@@ -18,7 +18,9 @@ class MonotonicLeaseDeadline private constructor(val expiresAtNs: Long) {
     companion object {
         fun fromDurationMillis(startNs: Long, durationMs: Int): MonotonicLeaseDeadline {
             require(startNs >= 0) { "monotonic time must be non-negative" }
-            require(durationMs in 1..60_000) { "stream lease duration is outside its bound" }
+            require(durationMs in 1..MAXIMUM_LIVE_LEASE_MILLIS) {
+                "stream lease duration is outside its bound"
+            }
             val durationNs = TimeUnit.MILLISECONDS.toNanos(durationMs.toLong())
             return MonotonicLeaseDeadline(Math.addExact(startNs, durationNs))
         }
