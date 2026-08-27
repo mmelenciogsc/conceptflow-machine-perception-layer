@@ -118,6 +118,12 @@ ANDROID_NAMESPACE = "{http://schemas.android.com/apk/res/android}"
 ROKID_BUILD_FILE = Path("apps/rokid-client/build.gradle.kts")
 ROKID_MANIFEST = Path("apps/rokid-client/src/main/AndroidManifest.xml")
 ROKID_INSTALL_SCRIPT = Path("scripts/rokid-install")
+ROKID_COMMAND_ACTIVITY = Path("apps/rokid-client/src/main/java/org/conceptflow/mpl/rokid/RokidCommandActivity.kt")
+ROKID_RENDEZVOUS_WAKE_LEASE = Path(
+    "apps/rokid-client/src/main/java/org/conceptflow/mpl/rokid/hardware/BoundedRendezvousWakeLease.kt"
+)
+ANDROID_HOST_MAIN_ACTIVITY = Path("apps/android-host/src/main/java/org/conceptflow/mpl/host/MainActivity.kt")
+ANDROID_HOST_DEBUG_MANIFEST = Path("apps/android-host/src/debug/AndroidManifest.xml")
 HARDWARE_WORKFLOW = Path(".github/workflows/hardware-validation.yml")
 
 
@@ -159,6 +165,11 @@ def check_rokid_workflow_component() -> list[str]:
     application_id_match = re.search(r'(?m)^\s*applicationId\s*=\s*"([^"]+)"\s*$', build_text)
     install_package_match = re.search(r'(?m)^readonly PACKAGE_NAME="([^"]+)"$', install_text)
     control_text = read_text(Path("scripts/rokid-control")) or ""
+    command_activity_text = read_text(ROKID_COMMAND_ACTIVITY) or ""
+    runtime_service_text = (
+        read_text(Path("apps/rokid-client/src/main/java/org/conceptflow/mpl/rokid/RokidRuntimeService.kt")) or ""
+    )
+    wake_lease_text = read_text(ROKID_RENDEZVOUS_WAKE_LEASE) or ""
     control_package_match = re.search(r'(?m)^readonly PACKAGE_NAME="([^"]+)"$', control_text)
     control_activity_match = re.search(r'(?m)^readonly COMMAND_ACTIVITY_NAME="([^"]+)"$', control_text)
 
@@ -166,7 +177,6 @@ def check_rokid_workflow_component() -> list[str]:
         manifest = ET.parse(ROOT / ROKID_MANIFEST).getroot()
     except (ET.ParseError, OSError) as error:
         return [f"cannot parse Rokid manifest: {error}"]
-
     launcher_activities: list[str] = []
     for activity in manifest.findall("./application/activity"):
         for intent_filter in activity.findall("intent-filter"):
@@ -234,13 +244,105 @@ def check_rokid_workflow_component() -> list[str]:
             f"Rokid installer package mismatch: expected {application_id}, found {install_package_match.group(1)}"
         )
     if runtime_service.get(f"{ANDROID_NAMESPACE}exported") != "false":
-        failures.append("RokidRuntimeService must remain private to the application")
+        failures.append("RokidRuntimeService must remain private in the main/release manifest")
+    if runtime_service.findall("intent-filter"):
+        failures.append("RokidRuntimeService main/release manifest must not declare intent filters")
+    if runtime_service.get(f"{ANDROID_NAMESPACE}permission") is not None:
+        failures.append("RokidRuntimeService main/release manifest must not declare a component permission")
+    permissions = {permission.get(f"{ANDROID_NAMESPACE}name") for permission in manifest.findall("uses-permission")}
+    if "android.permission.WAKE_LOCK" not in permissions:
+        failures.append("Rokid bounded pre-authentication wake lease requires WAKE_LOCK")
+    if "android.permission.SCHEDULE_EXACT_ALARM" not in permissions:
+        failures.append("Rokid capability-gated exact cooldown scheduling requires SCHEDULE_EXACT_ALARM")
     if command_activity.get(f"{ANDROID_NAMESPACE}exported") != "true":
         failures.append("RokidCommandActivity must be exported for explicit authorized ADB control")
     if command_activity.get(f"{ANDROID_NAMESPACE}permission") != "android.permission.DUMP":
         failures.append("RokidCommandActivity must require the shell-held android.permission.DUMP permission")
     if command_activity.get(f"{ANDROID_NAMESPACE}theme") != "@style/Theme.ConceptFlow.Nonvisual":
         failures.append("RokidCommandActivity must retain the nonvisual compatibility theme")
+    for forbidden_key_hook in ("dispatchKeyEvent", "onKeyDown", "onKeyUp", "onKeyLongPress", "onKeyMultiple"):
+        if forbidden_key_hook in command_activity_text:
+            failures.append(
+                f"RokidCommandActivity must not intercept native Rokid controls: found {forbidden_key_hook}"
+            )
+    for legacy_path in (
+        "apps/rokid-client/src/main/java/org/conceptflow/mpl/rokid/WornTouchAndroidKeyMap.kt",
+        "apps/rokid-client/src/main/java/org/conceptflow/mpl/rokid/core/WornTouchLongPressRecognizer.kt",
+    ):
+        if (ROOT / legacy_path).exists():
+            failures.append(f"native Rokid control interception must remain removed: {legacy_path}")
+    polling_method = re.search(
+        r"private fun updateLiveLinkPolling\(.*?\n    }\n\n    private fun initializeLiveIdentity",
+        runtime_service_text,
+        re.DOTALL,
+    )
+    if polling_method is None:
+        failures.append("cannot inspect Rokid live-link polling implementation")
+    elif "rendezvousDeadline" in polling_method.group(0) or "preAuthenticationDeadline" in polling_method.group(0):
+        failures.append("generic live-link polling must not cancel the pre-authentication deadline")
+    idempotent_arm = re.search(
+        r"IdleControlArmDecision\.ALREADY_ARMED -> \{"
+        r"[^}]*return START_STICKY\s*}",
+        runtime_service_text,
+        re.DOTALL,
+    )
+    collision_rejection = re.search(
+        r"IdleControlArmDecision\.REJECT_LIVE_COLLISION -> \{"
+        r"[^}]*stopSelfResult\(startId\)[^}]*return START_NOT_STICKY\s*}",
+        runtime_service_text,
+        re.DOTALL,
+    )
+    if idempotent_arm is None:
+        failures.append("an already-armed Rokid standby must remain idempotently START_STICKY")
+    if collision_rejection is None:
+        failures.append("Rokid idle-arm collision must satisfy the foreground-service start request")
+    armed_method = re.search(
+        r"fun isIdleControlArmed\(\): Boolean =.*?\n\s*fun completeIdleControlEnable",
+        runtime_service_text,
+        re.DOTALL,
+    )
+    if armed_method is None or "IdleControlPolicy.isArmed" not in armed_method.group(0):
+        failures.append("Rokid binder armed state must use the tested idle-control policy")
+    elif "liveLinkRun" in armed_method.group(0) or "rendezvousRetry" in armed_method.group(0):
+        failures.append("Rokid armed state must survive sensor-off rendezvous cooldown")
+    for required_wakeup_token in (
+        "AlarmManager.ELAPSED_REALTIME_WAKEUP",
+        "setExactAndAllowWhileIdle",
+        "setAndAllowWhileIdle",
+        "canScheduleExactAlarms",
+        "MAXIMUM_WAKE_LEASE_MILLIS",
+    ):
+        if required_wakeup_token not in runtime_service_text:
+            failures.append(f"Rokid cable-free rendezvous lacks {required_wakeup_token}")
+    if (
+        "PowerManager.PARTIAL_WAKE_LOCK" not in wake_lease_text
+        or "wakeLock.acquire(timeoutMillis)" not in wake_lease_text
+    ):
+        failures.append("Rokid pre-authentication wake lease must be partial and timeout-bounded")
+    return failures
+
+
+def check_android_host_command_surface() -> list[str]:
+    failures: list[str] = []
+    main_activity = read_text(ANDROID_HOST_MAIN_ACTIVITY) or ""
+    for forbidden_action in ("START_LIVE_TEST", "STOP_LIVE_TEST", "handleDebugLiveAction"):
+        if forbidden_action in main_activity:
+            failures.append(
+                f"Android host MainActivity must not accept external debug control: found {forbidden_action}"
+            )
+    try:
+        manifest = ET.parse(ROOT / ANDROID_HOST_DEBUG_MANIFEST).getroot()
+    except (ET.ParseError, OSError) as error:
+        return failures + [f"cannot parse Android host debug manifest: {error}"]
+    receivers = [
+        receiver
+        for receiver in manifest.findall("./application/receiver")
+        if (receiver.get(f"{ANDROID_NAMESPACE}name") or "").endswith("LiveLinkDebugCommandReceiver")
+    ]
+    if len(receivers) != 1:
+        failures.append("expected one debug-only LiveLinkDebugCommandReceiver")
+    elif receivers[0].get(f"{ANDROID_NAMESPACE}permission") != "android.permission.DUMP":
+        failures.append("LiveLinkDebugCommandReceiver must require android.permission.DUMP")
     return failures
 
 
@@ -294,6 +396,7 @@ def main() -> int:
             failures.append(f"workflow weakens validation with continue-on-error: {workflow}")
 
     failures.extend(check_rokid_workflow_component())
+    failures.extend(check_android_host_command_surface())
 
     if failures:
         for failure in failures:
