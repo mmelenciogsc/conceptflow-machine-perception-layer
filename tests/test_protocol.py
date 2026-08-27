@@ -127,6 +127,28 @@ def test_live_link_wrapper_preserves_independent_lane_sequence_and_control() -> 
     assert decoded.sensor.WhichOneof("payload") == "imu_batch"
 
 
+def test_spool_manifest_contract_preserves_path_inline_imu_and_hash() -> None:
+    record = pb.SpoolRecord(
+        record_id="imu-1-100",
+        revision=1,
+        created_monotonic_timestamp_ns=100,
+        kind=pb.SPOOL_RECORD_KIND_IMU,
+        imu_batch=pb.ImuBatch(lease_id="lease", batch_id=1, created_monotonic_timestamp_ns=100),
+    )
+    snapshot = pb.SpoolManifestSnapshot(
+        revision=1,
+        manifest_json_utf8=b'{"schema_version":1}',
+        manifest_sha256=bytes(range(32)),
+        records=[record],
+    )
+
+    decoded = pb.SpoolManifestSnapshot.FromString(snapshot.SerializeToString(deterministic=True))
+
+    assert decoded.records[0].WhichOneof("metadata") == "imu_batch"
+    assert decoded.records[0].relative_path == ""
+    assert decoded.manifest_sha256 == bytes(range(32))
+
+
 def test_camera_intrinsics_do_not_imply_calibration_or_uncertainty_by_default() -> None:
     unknown = pb.CameraIntrinsics(focal_x_pixels=900.0, focal_y_pixels=900.0)
     calibrated = pb.CameraIntrinsics(
@@ -177,6 +199,72 @@ def test_microphone_request_is_explicit_and_camera_chunks_are_bounded() -> None:
     assert request.user_requested_microphone is True
     assert request.camera_relaxed_fps == 2
     assert len(chunk.chunk_data) <= 64 * 1024
+
+
+def test_microphone_gesture_control_round_trips_with_sublease_correlation() -> None:
+    intent = pb.MicrophoneControlIntent(
+        session_id="session-1",
+        lease_id="lease-1",
+        intent_id=7,
+        created_monotonic_timestamp_ns=123_000_000,
+        operation=pb.MICROPHONE_CONTROL_OPERATION_START,
+        user_requested=True,
+        requested_duration_ms=10_000,
+    )
+    envelope = pb.LiveLinkControl(microphone_control_intent=intent)
+    parsed = pb.LiveLinkControl.FromString(envelope.SerializeToString(deterministic=True))
+    request = pb.StreamLeaseRequest(
+        request_id="live-link-microphone-open",
+        session_id=intent.session_id,
+        lease_id=intent.lease_id,
+        operation=pb.STREAM_LEASE_OPERATION_OPEN,
+        requested_streams=[pb.SENSOR_STREAM_KIND_MICROPHONE],
+        requested_duration_ms=10_000,
+        user_requested_microphone=True,
+        originating_microphone_intent_id=intent.intent_id,
+    )
+
+    assert parsed.microphone_control_intent == intent
+    assert request.originating_microphone_intent_id == intent.intent_id
+
+
+def test_rokid_gesture_command_and_acknowledgement_round_trip() -> None:
+    gesture = pb.RokidGestureIntent(
+        session_id="session-1",
+        lease_id="lease-1",
+        gesture_id=17,
+        observed_monotonic_timestamp_ns=123_000_000,
+        operation=pb.ROKID_GESTURE_OPERATION_ENABLE_NODE,
+        user_initiated=True,
+    )
+    command = pb.RokidNodeCommand(
+        session_id=gesture.session_id,
+        lease_id=gesture.lease_id,
+        command_id=23,
+        originating_gesture_id=gesture.gesture_id,
+        issued_monotonic_timestamp_ns=456_000_000,
+        valid_for_ms=2_000,
+        operation=pb.ROKID_NODE_COMMAND_OPERATION_ACTIVATE_NODE,
+        user_authorized=True,
+    )
+    result = pb.RokidNodeCommandResult(
+        session_id=command.session_id,
+        lease_id=command.lease_id,
+        command_id=command.command_id,
+        originating_gesture_id=command.originating_gesture_id,
+        operation=command.operation,
+        accepted_for_execution=True,
+    )
+
+    for field, expected in (
+        ("rokid_gesture_intent", gesture),
+        ("rokid_node_command", command),
+        ("rokid_node_command_result", result),
+    ):
+        envelope = pb.LiveLinkControl(**{field: expected})
+        parsed = pb.LiveLinkControl.FromString(envelope.SerializeToString(deterministic=True))
+        assert parsed.WhichOneof("payload") == field
+        assert getattr(parsed, field) == expected
 
 
 def test_canonical_cross_language_vectors_round_trip_byte_exactly() -> None:

@@ -43,12 +43,20 @@ class CameraIntrinsicsProvenance(int, metaclass=_enum_type_wrapper.EnumTypeWrapp
     CAMERA_INTRINSICS_PROVENANCE_CALIBRATED: _ClassVar[CameraIntrinsicsProvenance]
     CAMERA_INTRINSICS_PROVENANCE_DERIVED: _ClassVar[CameraIntrinsicsProvenance]
 
+class CameraExtrinsicProvenance(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    CAMERA_EXTRINSIC_PROVENANCE_UNSPECIFIED: _ClassVar[CameraExtrinsicProvenance]
+    CAMERA_EXTRINSIC_PROVENANCE_UNKNOWN: _ClassVar[CameraExtrinsicProvenance]
+    CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES: _ClassVar[CameraExtrinsicProvenance]
+    CAMERA_EXTRINSIC_PROVENANCE_GUIDED_HAND_EYE: _ClassVar[CameraExtrinsicProvenance]
+
 class SensorStreamKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     SENSOR_STREAM_KIND_UNSPECIFIED: _ClassVar[SensorStreamKind]
     SENSOR_STREAM_KIND_CAMERA: _ClassVar[SensorStreamKind]
     SENSOR_STREAM_KIND_IMU: _ClassVar[SensorStreamKind]
     SENSOR_STREAM_KIND_MICROPHONE: _ClassVar[SensorStreamKind]
+    SENSOR_STREAM_KIND_TOUCH: _ClassVar[SensorStreamKind]
 
 class StreamLeaseOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -62,6 +70,23 @@ class AudioSampleEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AUDIO_SAMPLE_ENCODING_UNSPECIFIED: _ClassVar[AudioSampleEncoding]
     AUDIO_SAMPLE_ENCODING_PCM_S16LE: _ClassVar[AudioSampleEncoding]
 
+class RokidTouchKey(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ROKID_TOUCH_KEY_UNSPECIFIED: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_PREAMBLE: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_SWIPE_FORWARD: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_SWIPE_BACKWARD: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_SINGLE_TAP: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_DOUBLE_TAP: _ClassVar[RokidTouchKey]
+    ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS: _ClassVar[RokidTouchKey]
+
+class RokidTouchAction(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ROKID_TOUCH_ACTION_UNSPECIFIED: _ClassVar[RokidTouchAction]
+    ROKID_TOUCH_ACTION_DOWN: _ClassVar[RokidTouchAction]
+    ROKID_TOUCH_ACTION_UP: _ClassVar[RokidTouchAction]
+    ROKID_TOUCH_ACTION_TRIGGERED: _ClassVar[RokidTouchAction]
+
 class LiveTransportLane(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     LIVE_TRANSPORT_LANE_UNSPECIFIED: _ClassVar[LiveTransportLane]
@@ -73,6 +98,32 @@ class LiveTransportPeerRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: _ClassVar[LiveTransportPeerRole]
     LIVE_TRANSPORT_PEER_ROLE_GLASSES: _ClassVar[LiveTransportPeerRole]
     LIVE_TRANSPORT_PEER_ROLE_HOST: _ClassVar[LiveTransportPeerRole]
+
+class MicrophoneControlOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    MICROPHONE_CONTROL_OPERATION_UNSPECIFIED: _ClassVar[MicrophoneControlOperation]
+    MICROPHONE_CONTROL_OPERATION_START: _ClassVar[MicrophoneControlOperation]
+    MICROPHONE_CONTROL_OPERATION_STOP: _ClassVar[MicrophoneControlOperation]
+
+class RokidGestureOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ROKID_GESTURE_OPERATION_UNSPECIFIED: _ClassVar[RokidGestureOperation]
+    ROKID_GESTURE_OPERATION_ENABLE_NODE: _ClassVar[RokidGestureOperation]
+    ROKID_GESTURE_OPERATION_DISABLE_NODE: _ClassVar[RokidGestureOperation]
+
+class RokidNodeCommandOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ROKID_NODE_COMMAND_OPERATION_UNSPECIFIED: _ClassVar[RokidNodeCommandOperation]
+    ROKID_NODE_COMMAND_OPERATION_ACTIVATE_NODE: _ClassVar[RokidNodeCommandOperation]
+    ROKID_NODE_COMMAND_OPERATION_SLEEP_NODE: _ClassVar[RokidNodeCommandOperation]
+    ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE: _ClassVar[RokidNodeCommandOperation]
+
+class SpoolRecordKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    SPOOL_RECORD_KIND_UNSPECIFIED: _ClassVar[SpoolRecordKind]
+    SPOOL_RECORD_KIND_CAMERA: _ClassVar[SpoolRecordKind]
+    SPOOL_RECORD_KIND_IMU: _ClassVar[SpoolRecordKind]
+    SPOOL_RECORD_KIND_MICROPHONE: _ClassVar[SpoolRecordKind]
 
 class ErrorCode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -148,22 +199,52 @@ CAMERA_INTRINSICS_PROVENANCE_UNSPECIFIED: CameraIntrinsicsProvenance
 CAMERA_INTRINSICS_PROVENANCE_UNKNOWN: CameraIntrinsicsProvenance
 CAMERA_INTRINSICS_PROVENANCE_CALIBRATED: CameraIntrinsicsProvenance
 CAMERA_INTRINSICS_PROVENANCE_DERIVED: CameraIntrinsicsProvenance
+CAMERA_EXTRINSIC_PROVENANCE_UNSPECIFIED: CameraExtrinsicProvenance
+CAMERA_EXTRINSIC_PROVENANCE_UNKNOWN: CameraExtrinsicProvenance
+CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES: CameraExtrinsicProvenance
+CAMERA_EXTRINSIC_PROVENANCE_GUIDED_HAND_EYE: CameraExtrinsicProvenance
 SENSOR_STREAM_KIND_UNSPECIFIED: SensorStreamKind
 SENSOR_STREAM_KIND_CAMERA: SensorStreamKind
 SENSOR_STREAM_KIND_IMU: SensorStreamKind
 SENSOR_STREAM_KIND_MICROPHONE: SensorStreamKind
+SENSOR_STREAM_KIND_TOUCH: SensorStreamKind
 STREAM_LEASE_OPERATION_UNSPECIFIED: StreamLeaseOperation
 STREAM_LEASE_OPERATION_OPEN: StreamLeaseOperation
 STREAM_LEASE_OPERATION_RENEW: StreamLeaseOperation
 STREAM_LEASE_OPERATION_CLOSE: StreamLeaseOperation
 AUDIO_SAMPLE_ENCODING_UNSPECIFIED: AudioSampleEncoding
 AUDIO_SAMPLE_ENCODING_PCM_S16LE: AudioSampleEncoding
+ROKID_TOUCH_KEY_UNSPECIFIED: RokidTouchKey
+ROKID_TOUCH_KEY_PREAMBLE: RokidTouchKey
+ROKID_TOUCH_KEY_SWIPE_FORWARD: RokidTouchKey
+ROKID_TOUCH_KEY_SWIPE_BACKWARD: RokidTouchKey
+ROKID_TOUCH_KEY_SINGLE_TAP: RokidTouchKey
+ROKID_TOUCH_KEY_DOUBLE_TAP: RokidTouchKey
+ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS: RokidTouchKey
+ROKID_TOUCH_ACTION_UNSPECIFIED: RokidTouchAction
+ROKID_TOUCH_ACTION_DOWN: RokidTouchAction
+ROKID_TOUCH_ACTION_UP: RokidTouchAction
+ROKID_TOUCH_ACTION_TRIGGERED: RokidTouchAction
 LIVE_TRANSPORT_LANE_UNSPECIFIED: LiveTransportLane
 LIVE_TRANSPORT_LANE_REALTIME_CONTROL: LiveTransportLane
 LIVE_TRANSPORT_LANE_CAMERA: LiveTransportLane
 LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: LiveTransportPeerRole
 LIVE_TRANSPORT_PEER_ROLE_GLASSES: LiveTransportPeerRole
 LIVE_TRANSPORT_PEER_ROLE_HOST: LiveTransportPeerRole
+MICROPHONE_CONTROL_OPERATION_UNSPECIFIED: MicrophoneControlOperation
+MICROPHONE_CONTROL_OPERATION_START: MicrophoneControlOperation
+MICROPHONE_CONTROL_OPERATION_STOP: MicrophoneControlOperation
+ROKID_GESTURE_OPERATION_UNSPECIFIED: RokidGestureOperation
+ROKID_GESTURE_OPERATION_ENABLE_NODE: RokidGestureOperation
+ROKID_GESTURE_OPERATION_DISABLE_NODE: RokidGestureOperation
+ROKID_NODE_COMMAND_OPERATION_UNSPECIFIED: RokidNodeCommandOperation
+ROKID_NODE_COMMAND_OPERATION_ACTIVATE_NODE: RokidNodeCommandOperation
+ROKID_NODE_COMMAND_OPERATION_SLEEP_NODE: RokidNodeCommandOperation
+ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE: RokidNodeCommandOperation
+SPOOL_RECORD_KIND_UNSPECIFIED: SpoolRecordKind
+SPOOL_RECORD_KIND_CAMERA: SpoolRecordKind
+SPOOL_RECORD_KIND_IMU: SpoolRecordKind
+SPOOL_RECORD_KIND_MICROPHONE: SpoolRecordKind
 ERROR_CODE_UNSPECIFIED: ErrorCode
 ERROR_CODE_INVALID_ARGUMENT: ErrorCode
 ERROR_CODE_UNSUPPORTED_VERSION: ErrorCode
@@ -306,7 +387,7 @@ class ImageDescriptor(_message.Message):
     def __init__(self, width: _Optional[int] = ..., height: _Optional[int] = ..., row_stride_bytes: _Optional[int] = ..., encoding: _Optional[_Union[ImageEncoding, str]] = ..., media_type: _Optional[str] = ..., payload_bytes: _Optional[int] = ..., sha256: _Optional[bytes] = ...) -> None: ...
 
 class CameraIntrinsics(_message.Message):
-    __slots__ = ("focal_x_pixels", "focal_y_pixels", "principal_x_pixels", "principal_y_pixels", "distortion_coefficients", "calibrated_width", "calibrated_height", "provenance", "uncertainty")
+    __slots__ = ("focal_x_pixels", "focal_y_pixels", "principal_x_pixels", "principal_y_pixels", "distortion_coefficients", "calibrated_width", "calibrated_height", "provenance", "uncertainty", "head_from_camera_extrinsic")
     FOCAL_X_PIXELS_FIELD_NUMBER: _ClassVar[int]
     FOCAL_Y_PIXELS_FIELD_NUMBER: _ClassVar[int]
     PRINCIPAL_X_PIXELS_FIELD_NUMBER: _ClassVar[int]
@@ -316,6 +397,7 @@ class CameraIntrinsics(_message.Message):
     CALIBRATED_HEIGHT_FIELD_NUMBER: _ClassVar[int]
     PROVENANCE_FIELD_NUMBER: _ClassVar[int]
     UNCERTAINTY_FIELD_NUMBER: _ClassVar[int]
+    HEAD_FROM_CAMERA_EXTRINSIC_FIELD_NUMBER: _ClassVar[int]
     focal_x_pixels: float
     focal_y_pixels: float
     principal_x_pixels: float
@@ -325,7 +407,8 @@ class CameraIntrinsics(_message.Message):
     calibrated_height: int
     provenance: CameraIntrinsicsProvenance
     uncertainty: CameraIntrinsicsUncertainty
-    def __init__(self, focal_x_pixels: _Optional[float] = ..., focal_y_pixels: _Optional[float] = ..., principal_x_pixels: _Optional[float] = ..., principal_y_pixels: _Optional[float] = ..., distortion_coefficients: _Optional[_Iterable[float]] = ..., calibrated_width: _Optional[int] = ..., calibrated_height: _Optional[int] = ..., provenance: _Optional[_Union[CameraIntrinsicsProvenance, str]] = ..., uncertainty: _Optional[_Union[CameraIntrinsicsUncertainty, _Mapping]] = ...) -> None: ...
+    head_from_camera_extrinsic: CameraHeadExtrinsic
+    def __init__(self, focal_x_pixels: _Optional[float] = ..., focal_y_pixels: _Optional[float] = ..., principal_x_pixels: _Optional[float] = ..., principal_y_pixels: _Optional[float] = ..., distortion_coefficients: _Optional[_Iterable[float]] = ..., calibrated_width: _Optional[int] = ..., calibrated_height: _Optional[int] = ..., provenance: _Optional[_Union[CameraIntrinsicsProvenance, str]] = ..., uncertainty: _Optional[_Union[CameraIntrinsicsUncertainty, _Mapping]] = ..., head_from_camera_extrinsic: _Optional[_Union[CameraHeadExtrinsic, _Mapping]] = ...) -> None: ...
 
 class CameraIntrinsicsUncertainty(_message.Message):
     __slots__ = ("focal_x_stddev_pixels", "focal_y_stddev_pixels", "principal_x_stddev_pixels", "principal_y_stddev_pixels")
@@ -338,6 +421,24 @@ class CameraIntrinsicsUncertainty(_message.Message):
     principal_x_stddev_pixels: float
     principal_y_stddev_pixels: float
     def __init__(self, focal_x_stddev_pixels: _Optional[float] = ..., focal_y_stddev_pixels: _Optional[float] = ..., principal_x_stddev_pixels: _Optional[float] = ..., principal_y_stddev_pixels: _Optional[float] = ...) -> None: ...
+
+class CameraHeadExtrinsic(_message.Message):
+    __slots__ = ("head_from_camera_rotation", "head_from_camera_translation_meters", "translation_available", "provenance", "verification_sha256", "rotation_uncertainty_degrees", "translation_uncertainty_meters")
+    HEAD_FROM_CAMERA_ROTATION_FIELD_NUMBER: _ClassVar[int]
+    HEAD_FROM_CAMERA_TRANSLATION_METERS_FIELD_NUMBER: _ClassVar[int]
+    TRANSLATION_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    PROVENANCE_FIELD_NUMBER: _ClassVar[int]
+    VERIFICATION_SHA256_FIELD_NUMBER: _ClassVar[int]
+    ROTATION_UNCERTAINTY_DEGREES_FIELD_NUMBER: _ClassVar[int]
+    TRANSLATION_UNCERTAINTY_METERS_FIELD_NUMBER: _ClassVar[int]
+    head_from_camera_rotation: Quaternion
+    head_from_camera_translation_meters: Vector3
+    translation_available: bool
+    provenance: CameraExtrinsicProvenance
+    verification_sha256: bytes
+    rotation_uncertainty_degrees: float
+    translation_uncertainty_meters: float
+    def __init__(self, head_from_camera_rotation: _Optional[_Union[Quaternion, _Mapping]] = ..., head_from_camera_translation_meters: _Optional[_Union[Vector3, _Mapping]] = ..., translation_available: bool = ..., provenance: _Optional[_Union[CameraExtrinsicProvenance, str]] = ..., verification_sha256: _Optional[bytes] = ..., rotation_uncertainty_degrees: _Optional[float] = ..., translation_uncertainty_meters: _Optional[float] = ...) -> None: ...
 
 class Vector3(_message.Message):
     __slots__ = ("x", "y", "z")
@@ -402,7 +503,7 @@ class FramePayload(_message.Message):
     def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., frame_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., capture_wall_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., image: _Optional[_Union[ImageDescriptor, _Mapping]] = ..., intrinsics: _Optional[_Union[CameraIntrinsics, _Mapping]] = ..., pose: _Optional[_Union[Pose, _Mapping]] = ..., frame_data: _Optional[bytes] = ..., processing_deadline: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., synthetic: bool = ...) -> None: ...
 
 class StreamLeaseRequest(_message.Message):
-    __slots__ = ("request_id", "session_id", "lease_id", "operation", "requested_streams", "requested_duration_ms", "user_requested_microphone", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms")
+    __slots__ = ("request_id", "session_id", "lease_id", "operation", "requested_streams", "requested_duration_ms", "user_requested_microphone", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "originating_microphone_intent_id")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -414,6 +515,7 @@ class StreamLeaseRequest(_message.Message):
     CAMERA_MOTION_FPS_FIELD_NUMBER: _ClassVar[int]
     IMU_MAX_BATCH_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
     IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
+    ORIGINATING_MICROPHONE_INTENT_ID_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     session_id: str
     lease_id: str
@@ -425,10 +527,11 @@ class StreamLeaseRequest(_message.Message):
     camera_motion_fps: int
     imu_max_batch_delay_ms: int
     imu_max_silence_ms: int
-    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., operation: _Optional[_Union[StreamLeaseOperation, str]] = ..., requested_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., requested_duration_ms: _Optional[int] = ..., user_requested_microphone: bool = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ...) -> None: ...
+    originating_microphone_intent_id: int
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., operation: _Optional[_Union[StreamLeaseOperation, str]] = ..., requested_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., requested_duration_ms: _Optional[int] = ..., user_requested_microphone: bool = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., originating_microphone_intent_id: _Optional[int] = ...) -> None: ...
 
 class StreamLeaseGrant(_message.Message):
-    __slots__ = ("request_id", "session_id", "lease_id", "granted_streams", "granted_duration_ms", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "error")
+    __slots__ = ("request_id", "session_id", "lease_id", "granted_streams", "granted_duration_ms", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "error", "originating_microphone_intent_id")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -439,6 +542,7 @@ class StreamLeaseGrant(_message.Message):
     IMU_MAX_BATCH_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
     IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    ORIGINATING_MICROPHONE_INTENT_ID_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     session_id: str
     lease_id: str
@@ -449,7 +553,8 @@ class StreamLeaseGrant(_message.Message):
     imu_max_batch_delay_ms: int
     imu_max_silence_ms: int
     error: ErrorStatus
-    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., granted_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., granted_duration_ms: _Optional[int] = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+    originating_microphone_intent_id: int
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., granted_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., granted_duration_ms: _Optional[int] = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., originating_microphone_intent_id: _Optional[int] = ...) -> None: ...
 
 class ImuReading(_message.Message):
     __slots__ = ("sequence_id", "pose", "angular_velocity_radians_per_second", "linear_acceleration_meters_per_second_squared", "orientation_accuracy", "angular_velocity_monotonic_timestamp_ns", "linear_acceleration_monotonic_timestamp_ns")
@@ -482,20 +587,22 @@ class ImuBatch(_message.Message):
     def __init__(self, lease_id: _Optional[str] = ..., batch_id: _Optional[int] = ..., created_monotonic_timestamp_ns: _Optional[int] = ..., samples: _Optional[_Iterable[_Union[ImuReading, _Mapping]]] = ...) -> None: ...
 
 class CameraFrameChunk(_message.Message):
-    __slots__ = ("frame_metadata", "frame_id", "chunk_index", "chunk_count", "total_payload_bytes", "chunk_data")
+    __slots__ = ("frame_metadata", "frame_id", "chunk_index", "chunk_count", "total_payload_bytes", "chunk_data", "capture_monotonic_timestamp_ns")
     FRAME_METADATA_FIELD_NUMBER: _ClassVar[int]
     FRAME_ID_FIELD_NUMBER: _ClassVar[int]
     CHUNK_INDEX_FIELD_NUMBER: _ClassVar[int]
     CHUNK_COUNT_FIELD_NUMBER: _ClassVar[int]
     TOTAL_PAYLOAD_BYTES_FIELD_NUMBER: _ClassVar[int]
     CHUNK_DATA_FIELD_NUMBER: _ClassVar[int]
+    CAPTURE_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
     frame_metadata: FramePayload
     frame_id: int
     chunk_index: int
     chunk_count: int
     total_payload_bytes: int
     chunk_data: bytes
-    def __init__(self, frame_metadata: _Optional[_Union[FramePayload, _Mapping]] = ..., frame_id: _Optional[int] = ..., chunk_index: _Optional[int] = ..., chunk_count: _Optional[int] = ..., total_payload_bytes: _Optional[int] = ..., chunk_data: _Optional[bytes] = ...) -> None: ...
+    capture_monotonic_timestamp_ns: int
+    def __init__(self, frame_metadata: _Optional[_Union[FramePayload, _Mapping]] = ..., frame_id: _Optional[int] = ..., chunk_index: _Optional[int] = ..., chunk_count: _Optional[int] = ..., total_payload_bytes: _Optional[int] = ..., chunk_data: _Optional[bytes] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ...) -> None: ...
 
 class MicrophoneChunk(_message.Message):
     __slots__ = ("lease_id", "chunk_id", "capture_monotonic_timestamp_ns", "sample_rate_hz", "channel_count", "encoding", "audio_data")
@@ -515,6 +622,28 @@ class MicrophoneChunk(_message.Message):
     audio_data: bytes
     def __init__(self, lease_id: _Optional[str] = ..., chunk_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., sample_rate_hz: _Optional[int] = ..., channel_count: _Optional[int] = ..., encoding: _Optional[_Union[AudioSampleEncoding, str]] = ..., audio_data: _Optional[bytes] = ...) -> None: ...
 
+class RokidTouchEvent(_message.Message):
+    __slots__ = ("event_id", "observed_monotonic_timestamp_ns", "source_uptime_ms", "key", "action", "repeat_count", "canceled", "long_press", "scan_code")
+    EVENT_ID_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_UPTIME_MS_FIELD_NUMBER: _ClassVar[int]
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    ACTION_FIELD_NUMBER: _ClassVar[int]
+    REPEAT_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CANCELED_FIELD_NUMBER: _ClassVar[int]
+    LONG_PRESS_FIELD_NUMBER: _ClassVar[int]
+    SCAN_CODE_FIELD_NUMBER: _ClassVar[int]
+    event_id: int
+    observed_monotonic_timestamp_ns: int
+    source_uptime_ms: int
+    key: RokidTouchKey
+    action: RokidTouchAction
+    repeat_count: int
+    canceled: bool
+    long_press: bool
+    scan_code: int
+    def __init__(self, event_id: _Optional[int] = ..., observed_monotonic_timestamp_ns: _Optional[int] = ..., source_uptime_ms: _Optional[int] = ..., key: _Optional[_Union[RokidTouchKey, str]] = ..., action: _Optional[_Union[RokidTouchAction, str]] = ..., repeat_count: _Optional[int] = ..., canceled: bool = ..., long_press: bool = ..., scan_code: _Optional[int] = ...) -> None: ...
+
 class LiveLinkHello(_message.Message):
     __slots__ = ("protocol_version", "peer_role", "connection_nonce")
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
@@ -524,6 +653,62 @@ class LiveLinkHello(_message.Message):
     peer_role: LiveTransportPeerRole
     connection_nonce: bytes
     def __init__(self, protocol_version: _Optional[_Union[ProtocolVersion, _Mapping]] = ..., peer_role: _Optional[_Union[LiveTransportPeerRole, str]] = ..., connection_nonce: _Optional[bytes] = ...) -> None: ...
+
+class LiveLinkCapabilities(_message.Message):
+    __slots__ = ("protocol_version", "peer_role", "supported_streams", "camera_encodings", "max_camera_width", "max_camera_height", "max_camera_frame_bytes", "max_audio_block_bytes", "max_imu_samples_per_batch", "max_touch_events_buffered", "supports_clock_sync", "supports_camera_latest_frame", "supports_diagnostic_spool")
+    PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
+    PEER_ROLE_FIELD_NUMBER: _ClassVar[int]
+    SUPPORTED_STREAMS_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_ENCODINGS_FIELD_NUMBER: _ClassVar[int]
+    MAX_CAMERA_WIDTH_FIELD_NUMBER: _ClassVar[int]
+    MAX_CAMERA_HEIGHT_FIELD_NUMBER: _ClassVar[int]
+    MAX_CAMERA_FRAME_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MAX_AUDIO_BLOCK_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MAX_IMU_SAMPLES_PER_BATCH_FIELD_NUMBER: _ClassVar[int]
+    MAX_TOUCH_EVENTS_BUFFERED_FIELD_NUMBER: _ClassVar[int]
+    SUPPORTS_CLOCK_SYNC_FIELD_NUMBER: _ClassVar[int]
+    SUPPORTS_CAMERA_LATEST_FRAME_FIELD_NUMBER: _ClassVar[int]
+    SUPPORTS_DIAGNOSTIC_SPOOL_FIELD_NUMBER: _ClassVar[int]
+    protocol_version: ProtocolVersion
+    peer_role: LiveTransportPeerRole
+    supported_streams: _containers.RepeatedScalarFieldContainer[SensorStreamKind]
+    camera_encodings: _containers.RepeatedScalarFieldContainer[ImageEncoding]
+    max_camera_width: int
+    max_camera_height: int
+    max_camera_frame_bytes: int
+    max_audio_block_bytes: int
+    max_imu_samples_per_batch: int
+    max_touch_events_buffered: int
+    supports_clock_sync: bool
+    supports_camera_latest_frame: bool
+    supports_diagnostic_spool: bool
+    def __init__(self, protocol_version: _Optional[_Union[ProtocolVersion, _Mapping]] = ..., peer_role: _Optional[_Union[LiveTransportPeerRole, str]] = ..., supported_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., camera_encodings: _Optional[_Iterable[_Union[ImageEncoding, str]]] = ..., max_camera_width: _Optional[int] = ..., max_camera_height: _Optional[int] = ..., max_camera_frame_bytes: _Optional[int] = ..., max_audio_block_bytes: _Optional[int] = ..., max_imu_samples_per_batch: _Optional[int] = ..., max_touch_events_buffered: _Optional[int] = ..., supports_clock_sync: bool = ..., supports_camera_latest_frame: bool = ..., supports_diagnostic_spool: bool = ...) -> None: ...
+
+class LiveLinkTelemetry(_message.Message):
+    __slots__ = ("sampled_monotonic_timestamp_ns", "pending_camera_frames", "pending_imu_batches", "pending_audio_blocks", "pending_touch_events", "dropped_camera_frames", "dropped_imu_batches", "dropped_audio_blocks", "touch_overflow_events", "sent_realtime_messages", "sent_camera_messages")
+    SAMPLED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_CAMERA_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    PENDING_IMU_BATCHES_FIELD_NUMBER: _ClassVar[int]
+    PENDING_AUDIO_BLOCKS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_TOUCH_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_CAMERA_FRAMES_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_IMU_BATCHES_FIELD_NUMBER: _ClassVar[int]
+    DROPPED_AUDIO_BLOCKS_FIELD_NUMBER: _ClassVar[int]
+    TOUCH_OVERFLOW_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    SENT_REALTIME_MESSAGES_FIELD_NUMBER: _ClassVar[int]
+    SENT_CAMERA_MESSAGES_FIELD_NUMBER: _ClassVar[int]
+    sampled_monotonic_timestamp_ns: int
+    pending_camera_frames: int
+    pending_imu_batches: int
+    pending_audio_blocks: int
+    pending_touch_events: int
+    dropped_camera_frames: int
+    dropped_imu_batches: int
+    dropped_audio_blocks: int
+    touch_overflow_events: int
+    sent_realtime_messages: int
+    sent_camera_messages: int
+    def __init__(self, sampled_monotonic_timestamp_ns: _Optional[int] = ..., pending_camera_frames: _Optional[int] = ..., pending_imu_batches: _Optional[int] = ..., pending_audio_blocks: _Optional[int] = ..., pending_touch_events: _Optional[int] = ..., dropped_camera_frames: _Optional[int] = ..., dropped_imu_batches: _Optional[int] = ..., dropped_audio_blocks: _Optional[int] = ..., touch_overflow_events: _Optional[int] = ..., sent_realtime_messages: _Optional[int] = ..., sent_camera_messages: _Optional[int] = ...) -> None: ...
 
 class LiveLaneOpenRequest(_message.Message):
     __slots__ = ("lane", "session_id", "lease_id", "connection_nonce", "lane_ticket")
@@ -589,8 +774,174 @@ class LiveLinkKeepalive(_message.Message):
     response: bool
     def __init__(self, nonce: _Optional[int] = ..., sent_monotonic_ns: _Optional[int] = ..., response: bool = ...) -> None: ...
 
+class MicrophoneControlIntent(_message.Message):
+    __slots__ = ("session_id", "lease_id", "intent_id", "created_monotonic_timestamp_ns", "operation", "user_requested", "requested_duration_ms")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    INTENT_ID_FIELD_NUMBER: _ClassVar[int]
+    CREATED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    USER_REQUESTED_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    intent_id: int
+    created_monotonic_timestamp_ns: int
+    operation: MicrophoneControlOperation
+    user_requested: bool
+    requested_duration_ms: int
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., intent_id: _Optional[int] = ..., created_monotonic_timestamp_ns: _Optional[int] = ..., operation: _Optional[_Union[MicrophoneControlOperation, str]] = ..., user_requested: bool = ..., requested_duration_ms: _Optional[int] = ...) -> None: ...
+
+class MicrophoneControlResult(_message.Message):
+    __slots__ = ("session_id", "lease_id", "intent_id", "operation", "accepted", "error")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    INTENT_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    intent_id: int
+    operation: MicrophoneControlOperation
+    accepted: bool
+    error: ErrorStatus
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., intent_id: _Optional[int] = ..., operation: _Optional[_Union[MicrophoneControlOperation, str]] = ..., accepted: bool = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+
+class RokidGestureIntent(_message.Message):
+    __slots__ = ("session_id", "lease_id", "gesture_id", "observed_monotonic_timestamp_ns", "operation", "user_initiated")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    GESTURE_ID_FIELD_NUMBER: _ClassVar[int]
+    OBSERVED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    USER_INITIATED_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    gesture_id: int
+    observed_monotonic_timestamp_ns: int
+    operation: RokidGestureOperation
+    user_initiated: bool
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., gesture_id: _Optional[int] = ..., observed_monotonic_timestamp_ns: _Optional[int] = ..., operation: _Optional[_Union[RokidGestureOperation, str]] = ..., user_initiated: bool = ...) -> None: ...
+
+class RokidNodeCommand(_message.Message):
+    __slots__ = ("session_id", "lease_id", "command_id", "originating_gesture_id", "issued_monotonic_timestamp_ns", "valid_for_ms", "operation", "user_authorized")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_ID_FIELD_NUMBER: _ClassVar[int]
+    ORIGINATING_GESTURE_ID_FIELD_NUMBER: _ClassVar[int]
+    ISSUED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    VALID_FOR_MS_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    USER_AUTHORIZED_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    command_id: int
+    originating_gesture_id: int
+    issued_monotonic_timestamp_ns: int
+    valid_for_ms: int
+    operation: RokidNodeCommandOperation
+    user_authorized: bool
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., command_id: _Optional[int] = ..., originating_gesture_id: _Optional[int] = ..., issued_monotonic_timestamp_ns: _Optional[int] = ..., valid_for_ms: _Optional[int] = ..., operation: _Optional[_Union[RokidNodeCommandOperation, str]] = ..., user_authorized: bool = ...) -> None: ...
+
+class RokidNodeCommandResult(_message.Message):
+    __slots__ = ("session_id", "lease_id", "command_id", "originating_gesture_id", "operation", "accepted_for_execution", "error")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    LEASE_ID_FIELD_NUMBER: _ClassVar[int]
+    COMMAND_ID_FIELD_NUMBER: _ClassVar[int]
+    ORIGINATING_GESTURE_ID_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    ACCEPTED_FOR_EXECUTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    lease_id: str
+    command_id: int
+    originating_gesture_id: int
+    operation: RokidNodeCommandOperation
+    accepted_for_execution: bool
+    error: ErrorStatus
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., command_id: _Optional[int] = ..., originating_gesture_id: _Optional[int] = ..., operation: _Optional[_Union[RokidNodeCommandOperation, str]] = ..., accepted_for_execution: bool = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+
+class SpoolRecord(_message.Message):
+    __slots__ = ("record_id", "revision", "created_monotonic_timestamp_ns", "kind", "relative_path", "artifact_bytes", "artifact_sha256", "camera_metadata", "imu_batch", "microphone_metadata")
+    RECORD_ID_FIELD_NUMBER: _ClassVar[int]
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    CREATED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    RELATIVE_PATH_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_BYTES_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_SHA256_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_METADATA_FIELD_NUMBER: _ClassVar[int]
+    IMU_BATCH_FIELD_NUMBER: _ClassVar[int]
+    MICROPHONE_METADATA_FIELD_NUMBER: _ClassVar[int]
+    record_id: str
+    revision: int
+    created_monotonic_timestamp_ns: int
+    kind: SpoolRecordKind
+    relative_path: str
+    artifact_bytes: int
+    artifact_sha256: bytes
+    camera_metadata: FramePayload
+    imu_batch: ImuBatch
+    microphone_metadata: MicrophoneChunk
+    def __init__(self, record_id: _Optional[str] = ..., revision: _Optional[int] = ..., created_monotonic_timestamp_ns: _Optional[int] = ..., kind: _Optional[_Union[SpoolRecordKind, str]] = ..., relative_path: _Optional[str] = ..., artifact_bytes: _Optional[int] = ..., artifact_sha256: _Optional[bytes] = ..., camera_metadata: _Optional[_Union[FramePayload, _Mapping]] = ..., imu_batch: _Optional[_Union[ImuBatch, _Mapping]] = ..., microphone_metadata: _Optional[_Union[MicrophoneChunk, _Mapping]] = ...) -> None: ...
+
+class SpoolManifestPoll(_message.Message):
+    __slots__ = ("known_revision", "max_records")
+    KNOWN_REVISION_FIELD_NUMBER: _ClassVar[int]
+    MAX_RECORDS_FIELD_NUMBER: _ClassVar[int]
+    known_revision: int
+    max_records: int
+    def __init__(self, known_revision: _Optional[int] = ..., max_records: _Optional[int] = ...) -> None: ...
+
+class SpoolManifestSnapshot(_message.Message):
+    __slots__ = ("revision", "manifest_json_utf8", "manifest_sha256", "records")
+    REVISION_FIELD_NUMBER: _ClassVar[int]
+    MANIFEST_JSON_UTF8_FIELD_NUMBER: _ClassVar[int]
+    MANIFEST_SHA256_FIELD_NUMBER: _ClassVar[int]
+    RECORDS_FIELD_NUMBER: _ClassVar[int]
+    revision: int
+    manifest_json_utf8: bytes
+    manifest_sha256: bytes
+    records: _containers.RepeatedCompositeFieldContainer[SpoolRecord]
+    def __init__(self, revision: _Optional[int] = ..., manifest_json_utf8: _Optional[bytes] = ..., manifest_sha256: _Optional[bytes] = ..., records: _Optional[_Iterable[_Union[SpoolRecord, _Mapping]]] = ...) -> None: ...
+
+class SpoolArtifactRequest(_message.Message):
+    __slots__ = ("record_id", "offset", "max_bytes")
+    RECORD_ID_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    record_id: str
+    offset: int
+    max_bytes: int
+    def __init__(self, record_id: _Optional[str] = ..., offset: _Optional[int] = ..., max_bytes: _Optional[int] = ...) -> None: ...
+
+class SpoolArtifactChunk(_message.Message):
+    __slots__ = ("record_id", "offset", "total_bytes", "data", "artifact_sha256", "end_of_file")
+    RECORD_ID_FIELD_NUMBER: _ClassVar[int]
+    OFFSET_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    ARTIFACT_SHA256_FIELD_NUMBER: _ClassVar[int]
+    END_OF_FILE_FIELD_NUMBER: _ClassVar[int]
+    record_id: str
+    offset: int
+    total_bytes: int
+    data: bytes
+    artifact_sha256: bytes
+    end_of_file: bool
+    def __init__(self, record_id: _Optional[str] = ..., offset: _Optional[int] = ..., total_bytes: _Optional[int] = ..., data: _Optional[bytes] = ..., artifact_sha256: _Optional[bytes] = ..., end_of_file: bool = ...) -> None: ...
+
+class SpoolRecordsAck(_message.Message):
+    __slots__ = ("manifest_revision", "record_ids")
+    MANIFEST_REVISION_FIELD_NUMBER: _ClassVar[int]
+    RECORD_IDS_FIELD_NUMBER: _ClassVar[int]
+    manifest_revision: int
+    record_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, manifest_revision: _Optional[int] = ..., record_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class LiveLinkControl(_message.Message):
-    __slots__ = ("hello", "lane_open_request", "lane_open_response", "clock_sync_request", "clock_sync_response", "keepalive", "lease_request", "lease_grant", "error", "lane_ticket_grant")
+    __slots__ = ("hello", "lane_open_request", "lane_open_response", "clock_sync_request", "clock_sync_response", "keepalive", "lease_request", "lease_grant", "error", "lane_ticket_grant", "microphone_control_intent", "microphone_control_result", "rokid_gesture_intent", "rokid_node_command", "rokid_node_command_result", "spool_manifest_poll", "spool_manifest_snapshot", "spool_artifact_request", "spool_artifact_chunk", "spool_records_ack", "capabilities", "telemetry")
     HELLO_FIELD_NUMBER: _ClassVar[int]
     LANE_OPEN_REQUEST_FIELD_NUMBER: _ClassVar[int]
     LANE_OPEN_RESPONSE_FIELD_NUMBER: _ClassVar[int]
@@ -601,6 +952,18 @@ class LiveLinkControl(_message.Message):
     LEASE_GRANT_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     LANE_TICKET_GRANT_FIELD_NUMBER: _ClassVar[int]
+    MICROPHONE_CONTROL_INTENT_FIELD_NUMBER: _ClassVar[int]
+    MICROPHONE_CONTROL_RESULT_FIELD_NUMBER: _ClassVar[int]
+    ROKID_GESTURE_INTENT_FIELD_NUMBER: _ClassVar[int]
+    ROKID_NODE_COMMAND_FIELD_NUMBER: _ClassVar[int]
+    ROKID_NODE_COMMAND_RESULT_FIELD_NUMBER: _ClassVar[int]
+    SPOOL_MANIFEST_POLL_FIELD_NUMBER: _ClassVar[int]
+    SPOOL_MANIFEST_SNAPSHOT_FIELD_NUMBER: _ClassVar[int]
+    SPOOL_ARTIFACT_REQUEST_FIELD_NUMBER: _ClassVar[int]
+    SPOOL_ARTIFACT_CHUNK_FIELD_NUMBER: _ClassVar[int]
+    SPOOL_RECORDS_ACK_FIELD_NUMBER: _ClassVar[int]
+    CAPABILITIES_FIELD_NUMBER: _ClassVar[int]
+    TELEMETRY_FIELD_NUMBER: _ClassVar[int]
     hello: LiveLinkHello
     lane_open_request: LiveLaneOpenRequest
     lane_open_response: LiveLaneOpenResponse
@@ -611,7 +974,19 @@ class LiveLinkControl(_message.Message):
     lease_grant: StreamLeaseGrant
     error: ErrorStatus
     lane_ticket_grant: LiveLaneTicketGrant
-    def __init__(self, hello: _Optional[_Union[LiveLinkHello, _Mapping]] = ..., lane_open_request: _Optional[_Union[LiveLaneOpenRequest, _Mapping]] = ..., lane_open_response: _Optional[_Union[LiveLaneOpenResponse, _Mapping]] = ..., clock_sync_request: _Optional[_Union[ClockSyncRequest, _Mapping]] = ..., clock_sync_response: _Optional[_Union[ClockSyncResponse, _Mapping]] = ..., keepalive: _Optional[_Union[LiveLinkKeepalive, _Mapping]] = ..., lease_request: _Optional[_Union[StreamLeaseRequest, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., lane_ticket_grant: _Optional[_Union[LiveLaneTicketGrant, _Mapping]] = ...) -> None: ...
+    microphone_control_intent: MicrophoneControlIntent
+    microphone_control_result: MicrophoneControlResult
+    rokid_gesture_intent: RokidGestureIntent
+    rokid_node_command: RokidNodeCommand
+    rokid_node_command_result: RokidNodeCommandResult
+    spool_manifest_poll: SpoolManifestPoll
+    spool_manifest_snapshot: SpoolManifestSnapshot
+    spool_artifact_request: SpoolArtifactRequest
+    spool_artifact_chunk: SpoolArtifactChunk
+    spool_records_ack: SpoolRecordsAck
+    capabilities: LiveLinkCapabilities
+    telemetry: LiveLinkTelemetry
+    def __init__(self, hello: _Optional[_Union[LiveLinkHello, _Mapping]] = ..., lane_open_request: _Optional[_Union[LiveLaneOpenRequest, _Mapping]] = ..., lane_open_response: _Optional[_Union[LiveLaneOpenResponse, _Mapping]] = ..., clock_sync_request: _Optional[_Union[ClockSyncRequest, _Mapping]] = ..., clock_sync_response: _Optional[_Union[ClockSyncResponse, _Mapping]] = ..., keepalive: _Optional[_Union[LiveLinkKeepalive, _Mapping]] = ..., lease_request: _Optional[_Union[StreamLeaseRequest, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., lane_ticket_grant: _Optional[_Union[LiveLaneTicketGrant, _Mapping]] = ..., microphone_control_intent: _Optional[_Union[MicrophoneControlIntent, _Mapping]] = ..., microphone_control_result: _Optional[_Union[MicrophoneControlResult, _Mapping]] = ..., rokid_gesture_intent: _Optional[_Union[RokidGestureIntent, _Mapping]] = ..., rokid_node_command: _Optional[_Union[RokidNodeCommand, _Mapping]] = ..., rokid_node_command_result: _Optional[_Union[RokidNodeCommandResult, _Mapping]] = ..., spool_manifest_poll: _Optional[_Union[SpoolManifestPoll, _Mapping]] = ..., spool_manifest_snapshot: _Optional[_Union[SpoolManifestSnapshot, _Mapping]] = ..., spool_artifact_request: _Optional[_Union[SpoolArtifactRequest, _Mapping]] = ..., spool_artifact_chunk: _Optional[_Union[SpoolArtifactChunk, _Mapping]] = ..., spool_records_ack: _Optional[_Union[SpoolRecordsAck, _Mapping]] = ..., capabilities: _Optional[_Union[LiveLinkCapabilities, _Mapping]] = ..., telemetry: _Optional[_Union[LiveLinkTelemetry, _Mapping]] = ...) -> None: ...
 
 class LiveLinkEnvelope(_message.Message):
     __slots__ = ("session_id", "lease_id", "lane", "lane_sequence_id", "sent_monotonic_timestamp_ns", "control", "sensor")
@@ -632,7 +1007,7 @@ class LiveLinkEnvelope(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., lane: _Optional[_Union[LiveTransportLane, str]] = ..., lane_sequence_id: _Optional[int] = ..., sent_monotonic_timestamp_ns: _Optional[int] = ..., control: _Optional[_Union[LiveLinkControl, _Mapping]] = ..., sensor: _Optional[_Union[SensorStreamEnvelope, _Mapping]] = ...) -> None: ...
 
 class SensorStreamEnvelope(_message.Message):
-    __slots__ = ("session_id", "lease_id", "sequence_id", "sent_monotonic_timestamp_ns", "camera_chunk", "imu_batch", "microphone_chunk", "lease_grant", "error")
+    __slots__ = ("session_id", "lease_id", "sequence_id", "sent_monotonic_timestamp_ns", "camera_chunk", "imu_batch", "microphone_chunk", "lease_grant", "error", "touch_event")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_ID_FIELD_NUMBER: _ClassVar[int]
     SEQUENCE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -642,6 +1017,7 @@ class SensorStreamEnvelope(_message.Message):
     MICROPHONE_CHUNK_FIELD_NUMBER: _ClassVar[int]
     LEASE_GRANT_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    TOUCH_EVENT_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     lease_id: str
     sequence_id: int
@@ -651,7 +1027,8 @@ class SensorStreamEnvelope(_message.Message):
     microphone_chunk: MicrophoneChunk
     lease_grant: StreamLeaseGrant
     error: ErrorStatus
-    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., sequence_id: _Optional[int] = ..., sent_monotonic_timestamp_ns: _Optional[int] = ..., camera_chunk: _Optional[_Union[CameraFrameChunk, _Mapping]] = ..., imu_batch: _Optional[_Union[ImuBatch, _Mapping]] = ..., microphone_chunk: _Optional[_Union[MicrophoneChunk, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ...) -> None: ...
+    touch_event: RokidTouchEvent
+    def __init__(self, session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., sequence_id: _Optional[int] = ..., sent_monotonic_timestamp_ns: _Optional[int] = ..., camera_chunk: _Optional[_Union[CameraFrameChunk, _Mapping]] = ..., imu_batch: _Optional[_Union[ImuBatch, _Mapping]] = ..., microphone_chunk: _Optional[_Union[MicrophoneChunk, _Mapping]] = ..., lease_grant: _Optional[_Union[StreamLeaseGrant, _Mapping]] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., touch_event: _Optional[_Union[RokidTouchEvent, _Mapping]] = ...) -> None: ...
 
 class ErrorStatus(_message.Message):
     __slots__ = ("code", "message", "retryable", "retry_after_ms", "correlation_id")

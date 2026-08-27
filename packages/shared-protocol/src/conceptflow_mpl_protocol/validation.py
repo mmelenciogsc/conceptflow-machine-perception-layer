@@ -43,6 +43,7 @@ REQUIRED_STREAM_ENVELOPE_PAYLOADS = (
     "microphone_chunk",
     "lease_grant",
     "error",
+    "touch_event",
 )
 REQUIRED_LIVE_CONTROL_PAYLOADS = (
     "hello",
@@ -55,6 +56,18 @@ REQUIRED_LIVE_CONTROL_PAYLOADS = (
     "lease_grant",
     "error",
     "lane_ticket_grant",
+    "microphone_control_intent",
+    "microphone_control_result",
+    "rokid_gesture_intent",
+    "rokid_node_command",
+    "rokid_node_command_result",
+    "spool_manifest_poll",
+    "spool_manifest_snapshot",
+    "spool_artifact_request",
+    "spool_artifact_chunk",
+    "spool_records_ack",
+    "capabilities",
+    "telemetry",
 )
 
 
@@ -86,6 +99,33 @@ def validate_descriptor() -> None:
         or tuple(field.name for field in control_payload.fields) != REQUIRED_LIVE_CONTROL_PAYLOADS
     ):
         raise AssertionError("LiveLinkControl payload contract differs")
+    microphone_intent = descriptor.message_types_by_name["MicrophoneControlIntent"]
+    if tuple(field.name for field in microphone_intent.fields) != (
+        "session_id",
+        "lease_id",
+        "intent_id",
+        "created_monotonic_timestamp_ns",
+        "operation",
+        "user_requested",
+        "requested_duration_ms",
+    ):
+        raise AssertionError("MicrophoneControlIntent fields differ")
+    microphone_result = descriptor.message_types_by_name["MicrophoneControlResult"]
+    if tuple(field.name for field in microphone_result.fields) != (
+        "session_id",
+        "lease_id",
+        "intent_id",
+        "operation",
+        "accepted",
+        "error",
+    ):
+        raise AssertionError("MicrophoneControlResult fields differ")
+    lease_request = descriptor.message_types_by_name["StreamLeaseRequest"]
+    lease_grant = descriptor.message_types_by_name["StreamLeaseGrant"]
+    if lease_request.fields_by_name["originating_microphone_intent_id"].number != 12:
+        raise AssertionError("StreamLeaseRequest gesture correlation field differs")
+    if lease_grant.fields_by_name["originating_microphone_intent_id"].number != 11:
+        raise AssertionError("StreamLeaseGrant gesture correlation field differs")
     live_envelope = descriptor.message_types_by_name["LiveLinkEnvelope"]
     if tuple(field.name for field in live_envelope.fields) != (
         "session_id",

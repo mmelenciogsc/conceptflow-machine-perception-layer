@@ -103,6 +103,7 @@ message CameraIntrinsics {
   uint32 calibrated_height = 7;
   CameraIntrinsicsProvenance provenance = 8;
   CameraIntrinsicsUncertainty uncertainty = 9;
+  CameraHeadExtrinsic head_from_camera_extrinsic = 10;
 }
 
 enum CameraIntrinsicsProvenance {
@@ -119,6 +120,26 @@ message CameraIntrinsicsUncertainty {
   double focal_y_stddev_pixels = 2;
   double principal_x_stddev_pixels = 3;
   double principal_y_stddev_pixels = 4;
+}
+
+// Rotation maps camera-optical vectors into the rigid glasses/head sensor
+// frame used by Pose. Translation is optional because Camera2 PRIMARY_CAMERA
+// pose data does not establish the camera-to-gyroscope/head origin.
+message CameraHeadExtrinsic {
+  Quaternion head_from_camera_rotation = 1;
+  Vector3 head_from_camera_translation_meters = 2;
+  bool translation_available = 3;
+  CameraExtrinsicProvenance provenance = 4;
+  bytes verification_sha256 = 5;
+  optional double rotation_uncertainty_degrees = 6;
+  optional double translation_uncertainty_meters = 7;
+}
+
+enum CameraExtrinsicProvenance {
+  CAMERA_EXTRINSIC_PROVENANCE_UNSPECIFIED = 0;
+  CAMERA_EXTRINSIC_PROVENANCE_UNKNOWN = 1;
+  CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES = 2;
+  CAMERA_EXTRINSIC_PROVENANCE_GUIDED_HAND_EYE = 3;
 }
 
 message Vector3 {
@@ -164,6 +185,7 @@ enum SensorStreamKind {
   SENSOR_STREAM_KIND_CAMERA = 1;
   SENSOR_STREAM_KIND_IMU = 2;
   SENSOR_STREAM_KIND_MICROPHONE = 3;
+  SENSOR_STREAM_KIND_TOUCH = 4;
 }
 
 enum StreamLeaseOperation {
@@ -185,6 +207,9 @@ message StreamLeaseRequest {
   uint32 camera_motion_fps = 9;
   uint32 imu_max_batch_delay_ms = 10;
   uint32 imu_max_silence_ms = 11;
+  // Zero for phone-originated requests; otherwise binds a glasses gesture
+  // START to the resulting microphone sublease without exposing identity.
+  uint64 originating_microphone_intent_id = 12;
 }
 
 message StreamLeaseGrant {
@@ -198,6 +223,7 @@ message StreamLeaseGrant {
   uint32 imu_max_batch_delay_ms = 8;
   uint32 imu_max_silence_ms = 9;
   ErrorStatus error = 10;
+  uint64 originating_microphone_intent_id = 11;
 }
 
 message ImuReading {
@@ -226,6 +252,7 @@ message CameraFrameChunk {
   uint32 chunk_count = 4;
   uint64 total_payload_bytes = 5;
   bytes chunk_data = 6;
+  uint64 capture_monotonic_timestamp_ns = 7;
 }
 
 enum AudioSampleEncoding {
@@ -241,6 +268,44 @@ message MicrophoneChunk {
   uint32 channel_count = 5;
   AudioSampleEncoding encoding = 6;
   bytes audio_data = 7;
+}
+
+// Raw, allowlisted events from the validated Rokid touch hardware. Gesture
+// recognition remains a separate layer; retaining DOWN/UP preserves future
+// gameplay semantics without making Unity depend on Android key codes.
+enum RokidTouchKey {
+  ROKID_TOUCH_KEY_UNSPECIFIED = 0;
+  ROKID_TOUCH_KEY_PREAMBLE = 1;
+  ROKID_TOUCH_KEY_SWIPE_FORWARD = 2;
+  ROKID_TOUCH_KEY_SWIPE_BACKWARD = 3;
+  ROKID_TOUCH_KEY_SINGLE_TAP = 4;
+  ROKID_TOUCH_KEY_DOUBLE_TAP = 5;
+  // Semantically recognized by YodaOS from raw KEY_PROG2. The raw key is not
+  // delivered to an ordinary AccessibilityService on the validated RV203.
+  ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS = 6;
+}
+
+enum RokidTouchAction {
+  ROKID_TOUCH_ACTION_UNSPECIFIED = 0;
+  ROKID_TOUCH_ACTION_DOWN = 1;
+  ROKID_TOUCH_ACTION_UP = 2;
+  // A complete semantic gesture delivered as one system broadcast.
+  ROKID_TOUCH_ACTION_TRIGGERED = 3;
+}
+
+message RokidTouchEvent {
+  uint64 event_id = 1;
+  uint64 observed_monotonic_timestamp_ns = 2;
+  // Android KeyEvent time is uptime-based. For a semantic system broadcast,
+  // this is the glasses-side broadcast-receipt uptime. It is retained for
+  // deterministic replay; real-time fusion uses observed_monotonic_timestamp_ns.
+  uint64 source_uptime_ms = 3;
+  RokidTouchKey key = 4;
+  RokidTouchAction action = 5;
+  uint32 repeat_count = 6;
+  bool canceled = 7;
+  bool long_press = 8;
+  int32 scan_code = 9;
 }
 
 // A live glasses link uses two separately authenticated, ordered TLS lanes.
@@ -264,6 +329,41 @@ message LiveLinkHello {
   LiveTransportPeerRole peer_role = 2;
   // A fresh 32-byte value for every connection. It is not a credential.
   bytes connection_nonce = 3;
+}
+
+// Explicitly negotiated bounds for the direct Rokid Node <-> Android Node
+// transport. These are transport capabilities, not promises that a modality
+// is active; the separately authenticated lease remains authoritative.
+message LiveLinkCapabilities {
+  ProtocolVersion protocol_version = 1;
+  LiveTransportPeerRole peer_role = 2;
+  repeated SensorStreamKind supported_streams = 3;
+  repeated ImageEncoding camera_encodings = 4;
+  uint32 max_camera_width = 5;
+  uint32 max_camera_height = 6;
+  uint64 max_camera_frame_bytes = 7;
+  uint32 max_audio_block_bytes = 8;
+  uint32 max_imu_samples_per_batch = 9;
+  uint32 max_touch_events_buffered = 10;
+  bool supports_clock_sync = 11;
+  bool supports_camera_latest_frame = 12;
+  bool supports_diagnostic_spool = 13;
+}
+
+// Privacy-safe aggregate pressure telemetry. It deliberately contains no
+// image/audio content, labels, addresses, identifiers, or raw sensor values.
+message LiveLinkTelemetry {
+  uint64 sampled_monotonic_timestamp_ns = 1;
+  uint32 pending_camera_frames = 2;
+  uint32 pending_imu_batches = 3;
+  uint32 pending_audio_blocks = 4;
+  uint32 pending_touch_events = 5;
+  uint64 dropped_camera_frames = 6;
+  uint64 dropped_imu_batches = 7;
+  uint64 dropped_audio_blocks = 8;
+  uint64 touch_overflow_events = 9;
+  uint64 sent_realtime_messages = 10;
+  uint64 sent_camera_messages = 11;
 }
 
 message LiveLaneOpenRequest {
@@ -309,6 +409,139 @@ message LiveLinkKeepalive {
   bool response = 3;
 }
 
+// An explicit wearer action observed on the glasses. This intent is not a
+// lease: the authenticated host remains responsible for granting a bounded
+// microphone sublease before samples can be transmitted.
+enum MicrophoneControlOperation {
+  MICROPHONE_CONTROL_OPERATION_UNSPECIFIED = 0;
+  MICROPHONE_CONTROL_OPERATION_START = 1;
+  MICROPHONE_CONTROL_OPERATION_STOP = 2;
+}
+
+message MicrophoneControlIntent {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 intent_id = 3;
+  uint64 created_monotonic_timestamp_ns = 4;
+  MicrophoneControlOperation operation = 5;
+  bool user_requested = 6;
+  // Required and bounded for START; exactly zero for STOP.
+  uint32 requested_duration_ms = 7;
+}
+
+message MicrophoneControlResult {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 intent_id = 3;
+  MicrophoneControlOperation operation = 4;
+  bool accepted = 5;
+  ErrorStatus error = 6;
+}
+
+// A physical input sequence observed by Rokid Node. Recognition alone never
+// grants sensor access; Android Node returns a separately typed command.
+enum RokidGestureOperation {
+  ROKID_GESTURE_OPERATION_UNSPECIFIED = 0;
+  ROKID_GESTURE_OPERATION_ENABLE_NODE = 1;
+  ROKID_GESTURE_OPERATION_DISABLE_NODE = 2;
+}
+
+message RokidGestureIntent {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 gesture_id = 3;
+  uint64 observed_monotonic_timestamp_ns = 4;
+  RokidGestureOperation operation = 5;
+  bool user_initiated = 6;
+}
+
+enum RokidNodeCommandOperation {
+  ROKID_NODE_COMMAND_OPERATION_UNSPECIFIED = 0;
+  ROKID_NODE_COMMAND_OPERATION_ACTIVATE_NODE = 1;
+  ROKID_NODE_COMMAND_OPERATION_SLEEP_NODE = 2;
+  ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE = 3;
+}
+
+message RokidNodeCommand {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 command_id = 3;
+  // Zero for an explicit Android Node control; otherwise correlates a gesture.
+  uint64 originating_gesture_id = 4;
+  uint64 issued_monotonic_timestamp_ns = 5;
+  uint32 valid_for_ms = 6;
+  RokidNodeCommandOperation operation = 7;
+  bool user_authorized = 8;
+}
+
+message RokidNodeCommandResult {
+  string session_id = 1;
+  string lease_id = 2;
+  uint64 command_id = 3;
+  uint64 originating_gesture_id = 4;
+  RokidNodeCommandOperation operation = 5;
+  bool accepted_for_execution = 6;
+  ErrorStatus error = 7;
+}
+
+// Android Node polls this bounded manifest over the already-authenticated
+// realtime/control lane. The JSON bytes are the exact public-safe projection
+// of the same records persisted in Rokid Node's app-private spool.
+enum SpoolRecordKind {
+  SPOOL_RECORD_KIND_UNSPECIFIED = 0;
+  SPOOL_RECORD_KIND_CAMERA = 1;
+  SPOOL_RECORD_KIND_IMU = 2;
+  SPOOL_RECORD_KIND_MICROPHONE = 3;
+}
+
+message SpoolRecord {
+  string record_id = 1;
+  uint64 revision = 2;
+  uint64 created_monotonic_timestamp_ns = 3;
+  SpoolRecordKind kind = 4;
+  // Relative to the private spool root. Empty for inline IMU records.
+  string relative_path = 5;
+  uint64 artifact_bytes = 6;
+  bytes artifact_sha256 = 7;
+  oneof metadata {
+    FramePayload camera_metadata = 8;
+    ImuBatch imu_batch = 9;
+    MicrophoneChunk microphone_metadata = 10;
+  }
+}
+
+message SpoolManifestPoll {
+  uint64 known_revision = 1;
+  uint32 max_records = 2;
+}
+
+message SpoolManifestSnapshot {
+  uint64 revision = 1;
+  bytes manifest_json_utf8 = 2;
+  bytes manifest_sha256 = 3;
+  repeated SpoolRecord records = 4;
+}
+
+message SpoolArtifactRequest {
+  string record_id = 1;
+  uint64 offset = 2;
+  uint32 max_bytes = 3;
+}
+
+message SpoolArtifactChunk {
+  string record_id = 1;
+  uint64 offset = 2;
+  uint64 total_bytes = 3;
+  bytes data = 4;
+  bytes artifact_sha256 = 5;
+  bool end_of_file = 6;
+}
+
+message SpoolRecordsAck {
+  uint64 manifest_revision = 1;
+  repeated string record_ids = 2;
+}
+
 message LiveLinkControl {
   oneof payload {
     LiveLinkHello hello = 1;
@@ -321,6 +554,18 @@ message LiveLinkControl {
     StreamLeaseGrant lease_grant = 8;
     ErrorStatus error = 9;
     LiveLaneTicketGrant lane_ticket_grant = 10;
+    MicrophoneControlIntent microphone_control_intent = 11;
+    MicrophoneControlResult microphone_control_result = 12;
+    RokidGestureIntent rokid_gesture_intent = 13;
+    RokidNodeCommand rokid_node_command = 14;
+    RokidNodeCommandResult rokid_node_command_result = 15;
+    SpoolManifestPoll spool_manifest_poll = 16;
+    SpoolManifestSnapshot spool_manifest_snapshot = 17;
+    SpoolArtifactRequest spool_artifact_request = 18;
+    SpoolArtifactChunk spool_artifact_chunk = 19;
+    SpoolRecordsAck spool_records_ack = 20;
+    LiveLinkCapabilities capabilities = 21;
+    LiveLinkTelemetry telemetry = 22;
   }
 }
 
@@ -353,6 +598,7 @@ message SensorStreamEnvelope {
     MicrophoneChunk microphone_chunk = 7;
     StreamLeaseGrant lease_grant = 8;
     ErrorStatus error = 9;
+    RokidTouchEvent touch_event = 10;
   }
 }
 
