@@ -11,6 +11,8 @@ class QnnLiveFrameExecutorTest {
     @Test
     fun `packed RGB frame bypasses JPEG decoding and preserves correlation`() {
         var decoderCalls = 0
+        var observedGeneration = 0L
+        val observed = mutableListOf<Pair<VisionFrame, RgbImage>>()
         val executor = QnnLiveFrameExecutor(
             QnnModelSessionFactory { profile -> FakeSession(profile, mutableListOf()) },
             JpegFrameDecoder {
@@ -18,16 +20,46 @@ class QnnLiveFrameExecutorTest {
                 error("raw frame must not enter JPEG decoder")
             },
             System::nanoTime,
+            { generation, frame, image ->
+                observedGeneration = generation
+                observed += frame to image
+            },
         )
         val raw = RawRgbFrame(1L, 10L, 1, 1, 3, byteArrayOf(10, 20, 30))
         val vision = VisionFrame(1L, 10L, 1, 1, synthetic = false)
 
-        val result = requireNotNull(executor.process(raw, vision) {
+        val result = requireNotNull(executor.process(raw, vision, 7L) {
             MachineVisionModelProfiles.depthIndoorBalanced
         })
 
         assertEquals(0, decoderCalls)
+        assertEquals(7L, observedGeneration)
         assertEquals(1L, result.frameId)
+        assertEquals(listOf(vision to RgbImage(1, 1, raw.rgb)), observed)
+        executor.close()
+    }
+
+    @Test
+    fun `decoded JPEG source is observed as RGB without a second encoding step`() {
+        var observerCalls = 0
+        val decoded = RgbImage(1, 1, byteArrayOf(4, 5, 6))
+        val encoded = encoded(1L)
+        val executor = QnnLiveFrameExecutor(
+            QnnModelSessionFactory { profile -> FakeSession(profile, mutableListOf()) },
+            JpegFrameDecoder { decoded },
+            System::nanoTime,
+            { _, frame, image ->
+                observerCalls += 1
+                assertEquals(encoded.frameId, frame.frameId)
+                assertEquals(decoded, image)
+            },
+        )
+
+        requireNotNull(executor.process(encoded, visionFrame(encoded)) {
+            MachineVisionModelProfiles.depthIndoorBalanced
+        })
+
+        assertEquals(1, observerCalls)
         executor.close()
     }
 

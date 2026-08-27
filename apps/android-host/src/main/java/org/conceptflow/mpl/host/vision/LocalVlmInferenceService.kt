@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -50,14 +51,14 @@ import kotlinx.coroutines.withTimeout
  */
 class LocalVlmInferenceService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val pending = AtomicReference<InferenceRequest?>(null)
+    private val activeRequest = AtomicReference<InferenceRequest?>(null)
     private val workGate = GenerationScopedVlmWorkGate()
     private val prewarmWaiters = ConcurrentHashMap<Long, Messenger>()
     private val prewarmJob = AtomicReference<Job?>(null)
     private val drainJob = AtomicReference<Job?>(null)
     private var handlerThread: HandlerThread? = null
     private var messenger: Messenger? = null
-    private var engine: GenieXEnvironmentEngine? = null
+    private var engine: GenieXLocalVlmEngine? = null
     private lateinit var htpExecutionLease: HtpExecutionLease
 
     override fun onCreate() {
@@ -88,6 +89,10 @@ class LocalVlmInferenceService : Service() {
             cancelAll("client_session_invalidated", notify = false)
             return true
         }
+        if (message.what == LocalVlmIpc.REQUEST_CANCEL) {
+            cancelRequest(message.data)
+            return true
+        }
         if (message.what == LocalVlmIpc.REQUEST_PREWARM) {
             val requestId = message.data?.getLong(LocalVlmIpc.KEY_REQUEST_ID, 0L) ?: 0L
             val replyTo = message.replyTo
@@ -95,22 +100,35 @@ class LocalVlmInferenceService : Service() {
             prewarm(requestId, replyTo)
             return true
         }
-        if (message.what != LocalVlmIpc.REQUEST_CLASSIFY) return false
-        val request = decodeRequest(message) ?: return true
-        pending.getAndSet(request)?.let { superseded ->
-            superseded.image.delete()
-            replyFailure(superseded, "superseded_before_execution")
+        if (message.what != LocalVlmIpc.REQUEST_INFER) return false
+        val request = decodeRequest(message)
+        if (request == null) {
+            deleteOwnedImage(message.data?.getString(LocalVlmIpc.KEY_IMAGE_PATH)?.let(::File))
+            replyMalformed(message)
+            return true
         }
-        drain()
+        if (!activeRequest.compareAndSet(null, request)) {
+            deleteOwnedImage(request.image)
+            replyBusy(request)
+            return true
+        }
+        startInference(request)
         return true
     }
 
     private fun prewarm(requestId: Long, replyTo: Messenger) {
         prewarmWaiters[requestId] = replyTo
-        val generation = workGate.begin(LocalVlmWorkLane.PREWARM) ?: return
+        val generation = workGate.begin(LocalVlmWorkLane.PREWARM)
+        if (generation == null) {
+            if (!workGate.isActive(LocalVlmWorkLane.PREWARM)) {
+                prewarmWaiters.remove(requestId, replyTo)
+                sendPrewarmResponse(requestId, replyTo, LocalVlmIpc.RESPONSE_BUSY, "vlm_busy")
+            }
+            return
+        }
         val job = scope.launch(start = CoroutineStart.LAZY) {
             val response = try {
-                val runtime = engine ?: GenieXEnvironmentEngine(applicationContext).also { engine = it }
+                val runtime = engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
                 val warmupImage = createWarmupImage()
                 try {
                     val owner = currentCoroutineContext()[Job] ?: error("prewarm job unavailable")
@@ -166,14 +184,23 @@ class LocalVlmInferenceService : Service() {
         val waiters = prewarmWaiters.entries.toList()
         waiters.forEach { (waitingRequestId, waitingReply) ->
             prewarmWaiters.remove(waitingRequestId, waitingReply)
-            runCatching {
-                waitingReply.send(Message.obtain(null, response).apply {
-                    data = Bundle().apply {
-                        putLong(LocalVlmIpc.KEY_REQUEST_ID, waitingRequestId)
-                        reason?.let { putString(LocalVlmIpc.KEY_FAILURE, it) }
-                    }
-                })
-            }
+            sendPrewarmResponse(waitingRequestId, waitingReply, response, reason)
+        }
+    }
+
+    private fun sendPrewarmResponse(
+        requestId: Long,
+        replyTo: Messenger,
+        response: Int,
+        reason: String? = null,
+    ) {
+        runCatching {
+            replyTo.send(Message.obtain(null, response).apply {
+                data = Bundle().apply {
+                    putLong(LocalVlmIpc.KEY_REQUEST_ID, requestId)
+                    reason?.let { putString(LocalVlmIpc.KEY_FAILURE, it) }
+                }
+            })
         }
     }
 
@@ -198,18 +225,21 @@ class LocalVlmInferenceService : Service() {
         return destination
     }
 
-    private fun drain() {
-        val generation = workGate.begin(LocalVlmWorkLane.DRAIN) ?: return
+    private fun startInference(request: InferenceRequest) {
+        val generation = workGate.begin(LocalVlmWorkLane.DRAIN)
+        if (generation == null) {
+            activeRequest.compareAndSet(request, null)
+            deleteOwnedImage(request.image)
+            replyBusy(request)
+            return
+        }
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                while (true) {
-                    val request = pending.getAndSet(null) ?: break
-                    process(request)
-                }
+                process(request)
             } finally {
+                activeRequest.compareAndSet(request, null)
                 if (workGate.finish(LocalVlmWorkLane.DRAIN, generation)) {
                     drainJob.set(null)
-                    if (pending.get() != null) drain()
                 }
             }
         }
@@ -224,8 +254,8 @@ class LocalVlmInferenceService : Service() {
 
     private suspend fun process(request: InferenceRequest) {
         try {
-            validateImage(request)
-            val runtime = engine ?: GenieXEnvironmentEngine(applicationContext).also { engine = it }
+            val image = validateImage(request)
+            val runtime = engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
             val startedNanos = SystemClock.elapsedRealtimeNanos()
             val owner = currentCoroutineContext()[Job] ?: error("VLM request job unavailable")
             val acquisition = htpExecutionLease.tryAcquire(
@@ -235,30 +265,51 @@ class LocalVlmInferenceService : Service() {
             val acquired = acquisition as? HtpLeaseAcquisition.Acquired
             if (acquired == null) {
                 val refusal = acquisition as HtpLeaseAcquisition.Refused
-                replyDeferred(request, refusal.reason.name.lowercase(), refusal.waitNanos)
+                if (activeRequest.get() === request) {
+                    replyDeferred(request, refusal.reason.name.lowercase(), refusal.waitNanos)
+                }
                 return
             }
             val monitor = monitorQnnPriority(owner)
-            val label = try {
-                acquired.handle.use { runtime.classify(request.image) }
+            val result = try {
+                acquired.handle.use {
+                    when (request.task) {
+                        LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1 ->
+                            InferenceResult.Environment(runtime.classify(image))
+                        LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 ->
+                            InferenceResult.FocusedAnswer(runtime.answerFocusedObject(image, requireNotNull(request.question)))
+                    }
+                }
             } finally {
                 monitor.cancel()
             }
+            if (activeRequest.get() !== request || !owner.isActive) return
             Log.i(
                 LOG_TAG,
-                "classified frame=${request.frameId} label=${label.name} " +
+                "completed task=${request.task.name} " +
                     "serviceMs=${(SystemClock.elapsedRealtimeNanos() - startedNanos) / 1_000_000L}",
             )
-            reply(
-                request,
-                LocalVlmIpc.RESPONSE_CLASSIFIED,
-                Bundle().apply {
-                    putString(LocalVlmIpc.KEY_LABEL, label.name)
-                    putLong(LocalVlmIpc.KEY_COMPLETED_NANOS, SystemClock.elapsedRealtimeNanos())
-                },
-            )
+            val completedNanos = SystemClock.elapsedRealtimeNanos()
+            when (result) {
+                is InferenceResult.Environment -> reply(
+                    request,
+                    LocalVlmIpc.RESPONSE_CLASSIFIED,
+                    Bundle().apply {
+                        putString(LocalVlmIpc.KEY_LABEL, result.label.name)
+                        putLong(LocalVlmIpc.KEY_COMPLETED_NANOS, completedNanos)
+                    },
+                )
+                is InferenceResult.FocusedAnswer -> reply(
+                    request,
+                    LocalVlmIpc.RESPONSE_VQA_ANSWERED,
+                    Bundle().apply {
+                        putString(LocalVlmIpc.KEY_ANSWER, result.answer)
+                        putLong(LocalVlmIpc.KEY_COMPLETED_NANOS, completedNanos)
+                    },
+                )
+            }
         } catch (error: QnnPriorityCancellation) {
-            replyDeferred(request, "qnn_priority_requested")
+            if (activeRequest.get() === request) replyDeferred(request, "qnn_priority_requested")
             throw error
         } catch (error: CancellationException) {
             throw error
@@ -266,9 +317,9 @@ class LocalVlmInferenceService : Service() {
             Log.e(LOG_TAG, "local VLM execution failed: ${error.javaClass.simpleName}")
             runCatching { engine?.close() }
             engine = null
-            replyFailure(request, "vlm_inference_failed")
+            if (activeRequest.get() === request) replyFailure(request, "vlm_inference_failed")
         } finally {
-            request.image.delete()
+            deleteOwnedImage(request.image)
         }
     }
 
@@ -284,38 +335,82 @@ class LocalVlmInferenceService : Service() {
 
     private fun cancelAll(reason: String, notify: Boolean) {
         workGate.cancelAll()
-        val queued = pending.getAndSet(null)
-        if (queued != null) {
-            queued.image.delete()
-            if (notify) replyDeferred(queued, reason)
+        val active = activeRequest.getAndSet(null)
+        if (active != null) {
+            deleteOwnedImage(active.image)
+            if (notify) replyDeferred(active, reason)
         }
         prewarmWaiters.clear()
         prewarmJob.getAndSet(null)?.cancel(CancellationException(reason))
         drainJob.getAndSet(null)?.cancel(CancellationException(reason))
     }
 
+    private fun cancelRequest(data: Bundle?) {
+        val request = activeRequest.get() ?: return
+        if (!request.matchesCancellation(data)) return
+        workGate.cancelAll()
+        if (activeRequest.compareAndSet(request, null)) deleteOwnedImage(request.image)
+        drainJob.getAndSet(null)?.cancel(CancellationException("focused_request_cancelled"))
+    }
+
     private fun decodeRequest(message: Message): InferenceRequest? {
         val data = message.data ?: return null
         val replyTo = message.replyTo ?: return null
-        if (data.getString(LocalVlmIpc.KEY_TASK) != LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1.name) {
-            return null
-        }
+        val task = LocalVlmTaskKind.parse(data.getString(LocalVlmIpc.KEY_TASK)) ?: return null
         val requestId = data.getLong(LocalVlmIpc.KEY_REQUEST_ID, 0L)
         val frameId = data.getLong(LocalVlmIpc.KEY_FRAME_ID, 0L)
         val captureNanos = data.getLong(LocalVlmIpc.KEY_CAPTURE_NANOS, -1L)
         val imagePath = data.getString(LocalVlmIpc.KEY_IMAGE_PATH) ?: return null
         val digest = data.getString(LocalVlmIpc.KEY_IMAGE_SHA256) ?: return null
         if (requestId <= 0L || frameId <= 0L || captureNanos < 0L || !SHA256.matches(digest)) return null
-        return InferenceRequest(requestId, frameId, captureNanos, File(imagePath), digest, replyTo)
+        val correlation = if (task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+            runCatching {
+                LocalVlmFocusedObjectCorrelation(
+                    data.getLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, 0L),
+                    data.getLong(LocalVlmIpc.KEY_SESSION_GENERATION, 0L),
+                    data.getLong(LocalVlmIpc.KEY_SNAPSHOT_ID, 0L),
+                    data.getLong(LocalVlmIpc.KEY_FOCUS_GENERATION, 0L),
+                    data.getString(LocalVlmIpc.KEY_TRACK_ID).orEmpty(),
+                    frameId,
+                    captureNanos,
+                )
+            }.getOrNull() ?: return null
+        } else {
+            null
+        }
+        val requestedNanos = if (correlation != null) {
+            data.getLong(LocalVlmIpc.KEY_REQUESTED_NANOS, -1L)
+        } else {
+            -1L
+        }
+        val question = if (correlation != null) {
+            LocalVlmFocusedObjectQuestionSanitizer.sanitize(
+                data.getString(LocalVlmIpc.KEY_QUESTION).orEmpty(),
+            ) ?: return null
+        } else {
+            null
+        }
+        if (correlation != null) {
+            val nowNanos = SystemClock.elapsedRealtimeNanos()
+            if (requestedNanos < captureNanos ||
+                nowNanos < requestedNanos ||
+                nowNanos - requestedNanos > MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS
+            ) return null
+        }
+        return InferenceRequest(
+            requestId, frameId, captureNanos, File(imagePath), digest, replyTo,
+            task, correlation, requestedNanos, question,
+        )
     }
 
-    private fun validateImage(request: InferenceRequest) {
+    private fun validateImage(request: InferenceRequest): File {
         val inbox = inboxDirectory().canonicalFile
         val image = request.image.canonicalFile
         require(image.parentFile == inbox && IMAGE_NAME.matches(image.name))
         require(image.isFile && image.length() in MIN_JPEG_BYTES..MAX_JPEG_BYTES)
         require(FileInputStream(image).use { it.read() == 0xff && it.read() == 0xd8 })
         require(sha256(image) == request.sha256)
+        return image
     }
 
     private fun replyFailure(request: InferenceRequest, failure: String) = reply(
@@ -339,6 +434,12 @@ class LocalVlmInferenceService : Service() {
         },
     )
 
+    private fun replyBusy(request: InferenceRequest) = reply(
+        request,
+        LocalVlmIpc.RESPONSE_BUSY,
+        Bundle().apply { putString(LocalVlmIpc.KEY_FAILURE, "vlm_busy") },
+    )
+
     private fun logLeaseTelemetry(event: HtpLeaseTelemetry) {
         Log.i(
             LOG_TAG,
@@ -352,15 +453,72 @@ class LocalVlmInferenceService : Service() {
         payload.putLong(LocalVlmIpc.KEY_REQUEST_ID, request.requestId)
         payload.putLong(LocalVlmIpc.KEY_FRAME_ID, request.frameId)
         payload.putLong(LocalVlmIpc.KEY_CAPTURE_NANOS, request.captureNanos)
+        payload.putString(LocalVlmIpc.KEY_TASK, request.task.name)
+        request.correlation?.let { correlation ->
+            payload.putLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, correlation.focusRequestId)
+            payload.putLong(LocalVlmIpc.KEY_SESSION_GENERATION, correlation.sessionGeneration)
+            payload.putLong(LocalVlmIpc.KEY_SNAPSHOT_ID, correlation.snapshotId)
+            payload.putLong(LocalVlmIpc.KEY_FOCUS_GENERATION, correlation.focusGeneration)
+            payload.putString(LocalVlmIpc.KEY_TRACK_ID, correlation.stableTrackId)
+            payload.putLong(LocalVlmIpc.KEY_REQUESTED_NANOS, request.requestedNanos)
+        }
         runCatching { request.replyTo.send(Message.obtain(null, type).apply { data = payload }) }
+    }
+
+    private fun replyMalformed(message: Message) {
+        val replyTo = message.replyTo ?: return
+        val request = message.data ?: Bundle.EMPTY
+        runCatching {
+            replyTo.send(Message.obtain(null, LocalVlmIpc.RESPONSE_FAILED).apply {
+                data = Bundle().apply {
+                    putLong(LocalVlmIpc.KEY_REQUEST_ID, request.getLong(LocalVlmIpc.KEY_REQUEST_ID, 0L))
+                    putLong(LocalVlmIpc.KEY_FRAME_ID, request.getLong(LocalVlmIpc.KEY_FRAME_ID, 0L))
+                    putLong(LocalVlmIpc.KEY_CAPTURE_NANOS, request.getLong(LocalVlmIpc.KEY_CAPTURE_NANOS, -1L))
+                    putString(LocalVlmIpc.KEY_TASK, request.getString(LocalVlmIpc.KEY_TASK))
+                    putLong(
+                        LocalVlmIpc.KEY_FOCUS_REQUEST_ID,
+                        request.getLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, 0L),
+                    )
+                    putLong(
+                        LocalVlmIpc.KEY_SESSION_GENERATION,
+                        request.getLong(LocalVlmIpc.KEY_SESSION_GENERATION, 0L),
+                    )
+                    putLong(LocalVlmIpc.KEY_SNAPSHOT_ID, request.getLong(LocalVlmIpc.KEY_SNAPSHOT_ID, 0L))
+                    putLong(
+                        LocalVlmIpc.KEY_FOCUS_GENERATION,
+                        request.getLong(LocalVlmIpc.KEY_FOCUS_GENERATION, 0L),
+                    )
+                    putString(LocalVlmIpc.KEY_TRACK_ID, request.getString(LocalVlmIpc.KEY_TRACK_ID))
+                    putLong(
+                        LocalVlmIpc.KEY_REQUESTED_NANOS,
+                        request.getLong(LocalVlmIpc.KEY_REQUESTED_NANOS, -1L),
+                    )
+                    putString(LocalVlmIpc.KEY_FAILURE, "invalid_request")
+                }
+            })
+        }
     }
 
     private fun cleanupInbox() {
         val inbox = inboxDirectory()
         if (inbox.exists()) {
-            inbox.listFiles()?.filter { it.isFile && IMAGE_NAME.matches(it.name) }?.forEach(File::delete)
+            inbox.listFiles()
+                ?.filter { it.isFile && (IMAGE_NAME.matches(it.name) || TEMP_IMAGE_NAME.matches(it.name)) }
+                ?.forEach(File::delete)
         }
         File(cacheDir, PREWARM_IMAGE_NAME).delete()
+    }
+
+    private fun deleteOwnedImage(candidate: File?) {
+        if (candidate == null) return
+        runCatching {
+            val image = candidate.canonicalFile
+            if (image.parentFile == inboxDirectory().canonicalFile &&
+                (IMAGE_NAME.matches(image.name) || TEMP_IMAGE_NAME.matches(image.name))
+            ) {
+                image.delete()
+            }
+        }
     }
 
     private fun inboxDirectory() = File(cacheDir, INBOX_DIRECTORY).apply { mkdirs() }
@@ -385,7 +543,29 @@ class LocalVlmInferenceService : Service() {
         val image: File,
         val sha256: String,
         val replyTo: Messenger,
-    )
+        val task: LocalVlmTaskKind,
+        val correlation: LocalVlmFocusedObjectCorrelation?,
+        val requestedNanos: Long,
+        val question: String?,
+    ) {
+        fun matchesCancellation(data: Bundle?): Boolean {
+            val expected = correlation ?: return false
+            if (data == null) return false
+            return data.getLong(LocalVlmIpc.KEY_REQUEST_ID, 0L) == requestId &&
+                data.getLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, 0L) == expected.focusRequestId &&
+                data.getLong(LocalVlmIpc.KEY_SESSION_GENERATION, 0L) == expected.sessionGeneration &&
+                data.getLong(LocalVlmIpc.KEY_SNAPSHOT_ID, 0L) == expected.snapshotId &&
+                data.getLong(LocalVlmIpc.KEY_FOCUS_GENERATION, 0L) == expected.focusGeneration &&
+                data.getString(LocalVlmIpc.KEY_TRACK_ID) == expected.stableTrackId &&
+                data.getLong(LocalVlmIpc.KEY_FRAME_ID, 0L) == expected.sourceFrameId &&
+                data.getLong(LocalVlmIpc.KEY_CAPTURE_NANOS, -1L) == expected.sourceCaptureTimestampNanos
+        }
+    }
+
+    private sealed interface InferenceResult {
+        data class Environment(val label: LocalVlmEnvironmentLabel) : InferenceResult
+        data class FocusedAnswer(val answer: String) : InferenceResult
+    }
 
     private data class PrewarmResponse(val type: Int, val reason: String? = null)
 
@@ -399,14 +579,16 @@ class LocalVlmInferenceService : Service() {
         const val PREWARM_JPEG_QUALITY = 82
         const val VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS = 25L
         const val QNN_PRIORITY_POLL_MILLIS = 20L
+        const val MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS = 1_500_000_000L
         val SHA256 = Regex("[a-f0-9]{64}")
         val IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg")
+        val TEMP_IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg\\.tmp")
     }
 }
 
 private class QnnPriorityCancellation : CancellationException("qnn_priority_requested")
 
-private class GenieXEnvironmentEngine(
+private class GenieXLocalVlmEngine(
     context: android.content.Context,
     private val artifactVerifier: LocalVlmArtifactVerifier = LocalVlmArtifactVerifier(),
 ) : AutoCloseable {
@@ -416,44 +598,88 @@ private class GenieXEnvironmentEngine(
 
     suspend fun classify(image: File): LocalVlmEnvironmentLabel = lock.withLock {
         val runtime = wrapper ?: open().also { wrapper = it }
-        generate(runtime, image)
+        LocalVlmEnvironmentOutputParser.parse(
+            generate(
+                runtime,
+                image,
+                LocalVlmModelProfile.ENVIRONMENT_PROMPT,
+                ENVIRONMENT_MAX_OUTPUT_TOKENS,
+                ENVIRONMENT_MAX_OUTPUT_CHARACTERS,
+                LocalVlmEnvironmentOutputParser.GRAMMAR,
+                ENVIRONMENT_INFERENCE_TIMEOUT_MILLIS,
+            ),
+        ) ?: error("VLM returned an invalid environment label")
+    }
+
+    suspend fun answerFocusedObject(image: File, question: String): String = lock.withLock {
+        val sanitized = requireNotNull(LocalVlmFocusedObjectQuestionSanitizer.sanitize(question))
+        val runtime = wrapper ?: open().also { wrapper = it }
+        LocalVlmFocusedObjectAnswerParser.parse(
+            generate(
+                runtime,
+                image,
+                "$FOCUSED_OBJECT_PROMPT\n$sanitized",
+                FOCUSED_VQA_MAX_OUTPUT_TOKENS,
+                LocalVlmFocusedObjectAnswerParser.MAXIMUM_CHARACTERS,
+                grammar = null,
+                timeoutMillis = FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS,
+            ),
+        ) ?: error("VLM returned an invalid focused-object answer")
     }
 
     /** Executes the same vision/token path as a real request using a generated, non-user image. */
     suspend fun prewarm(image: File) = lock.withLock {
         val runtime = wrapper ?: open().also { wrapper = it }
-        generate(runtime, image)
+        LocalVlmEnvironmentOutputParser.parse(
+            generate(
+                runtime,
+                image,
+                LocalVlmModelProfile.ENVIRONMENT_PROMPT,
+                ENVIRONMENT_MAX_OUTPUT_TOKENS,
+                ENVIRONMENT_MAX_OUTPUT_CHARACTERS,
+                LocalVlmEnvironmentOutputParser.GRAMMAR,
+                ENVIRONMENT_INFERENCE_TIMEOUT_MILLIS,
+            ),
+        ) ?: error("VLM prewarm output was invalid")
     }
 
-    private suspend fun generate(runtime: VlmWrapper, image: File): LocalVlmEnvironmentLabel {
+    private suspend fun generate(
+        runtime: VlmWrapper,
+        image: File,
+        prompt: String,
+        maximumOutputTokens: Int,
+        maximumOutputCharacters: Int,
+        grammar: String?,
+        timeoutMillis: Long,
+    ): String {
         val message = VlmChatMessage(
             "user",
             listOf(
                 VlmContent("image", image.absolutePath),
-                VlmContent("text", LocalVlmModelProfile.ENVIRONMENT_PROMPT),
+                VlmContent("text", prompt),
             ),
         )
         val template = runtime.applyChatTemplate(arrayOf(message), null, false).getOrThrow()
         val generation = runtime.injectMediaPathsToConfig(
             arrayOf(message),
             GenerationConfig(
-                maxTokens = MAX_OUTPUT_TOKENS,
+                maxTokens = maximumOutputTokens,
                 samplerConfig = SamplerConfig(
                     temperature = 0.0f,
                     topP = 1.0f,
                     topK = 1,
                     seed = DETERMINISTIC_SEED,
-                    grammarString = LocalVlmEnvironmentOutputParser.GRAMMAR,
+                    grammarString = grammar,
                 ),
             ),
         )
         val output = StringBuilder()
         return try {
-            withTimeout(INFERENCE_TIMEOUT_MILLIS) {
+            withTimeout(timeoutMillis) {
                 runtime.generateStreamFlow(template.formattedText, generation).collect { event ->
                     when (event) {
                         is LlmStreamResult.Token -> {
-                            require(output.length + event.text.length <= MAX_OUTPUT_CHARACTERS)
+                            require(output.length + event.text.length <= maximumOutputCharacters)
                             output.append(event.text)
                         }
                         is LlmStreamResult.Completed -> Unit
@@ -461,12 +687,12 @@ private class GenieXEnvironmentEngine(
                     }
                 }
             }
-            LocalVlmEnvironmentOutputParser.parse(output.toString())
-                ?: error("VLM returned an invalid environment label")
+            output.toString()
         } catch (error: Throwable) {
             withContext(NonCancellable + Dispatchers.IO) { runCatching { runtime.stopStream() } }
             runtime.destroy()
             wrapper = null
+            if (error is TimeoutCancellationException) throw LocalVlmInferenceTimeout()
             throw error
         } finally {
             if (wrapper === runtime) runCatching { runtime.reset() }
@@ -520,10 +746,17 @@ private class GenieXEnvironmentEngine(
         const val MODEL_DIRECTORY = "local-vlm"
         const val CONTEXT_TOKENS = 4_096
         const val WORKER_THREADS = 4
-        const val MAX_OUTPUT_TOKENS = 6
-        const val MAX_OUTPUT_CHARACTERS = 32
+        const val ENVIRONMENT_MAX_OUTPUT_TOKENS = 6
+        const val ENVIRONMENT_MAX_OUTPUT_CHARACTERS = 32
+        const val FOCUSED_VQA_MAX_OUTPUT_TOKENS = 48
         const val DETERMINISTIC_SEED = 2_603
-        const val INFERENCE_TIMEOUT_MILLIS = 8_000L
+        const val ENVIRONMENT_INFERENCE_TIMEOUT_MILLIS = 8_000L
+        const val FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS = 8_000L
         const val MAX_INITIALIZATION_ERROR_CHARACTERS = 256
+        const val FOCUSED_OBJECT_PROMPT = "Answer only the supplied question about the selected " +
+            "visible object. Use visible evidence only; do not infer identity, intent, safety, " +
+            "or unseen details. Reply with one brief plain-text sentence of at most 20 words."
     }
 }
+
+private class LocalVlmInferenceTimeout : IllegalStateException("vlm_inference_timeout")

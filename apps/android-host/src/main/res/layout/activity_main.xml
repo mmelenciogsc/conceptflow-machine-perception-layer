@@ -78,6 +78,54 @@
             android:text="@string/environment_checking"
             android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
 
+        <TextView
+            android:id="@+id/spatial_focus_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:focusable="true"
+            android:text="@string/spatial_focus_inactive"
+            android:textAppearance="@style/TextAppearance.AppCompat.Body1" />
+
+        <Button
+            android:id="@+id/focus_previous"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/focus_next"
+            android:text="@string/spatial_focus_previous" />
+
+        <Button
+            android:id="@+id/focus_next"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/focus_activate"
+            android:nextFocusUp="@id/focus_previous"
+            android:text="@string/spatial_focus_next" />
+
+        <Button
+            android:id="@+id/focus_activate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/focus_back"
+            android:nextFocusUp="@id/focus_next"
+            android:text="@string/spatial_focus_activate" />
+
+        <Button
+            android:id="@+id/focus_back"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/connect"
+            android:nextFocusUp="@id/focus_activate"
+            android:text="@string/spatial_focus_back" />
+
         <Button
             android:id="@+id/connect"
             android:layout_width="match_parent"
@@ -85,6 +133,7 @@
             android:layout_marginTop="24dp"
             android:minHeight="48dp"
             android:nextFocusDown="@id/process_frame"
+            android:nextFocusUp="@id/focus_back"
             android:text="@string/connect" />
 
         <Button

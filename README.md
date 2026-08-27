@@ -514,6 +514,9 @@ creation only. Each product must remain independently operable. See
   physical validation boundary.
 - [Accessibility](docs/ACCESSIBILITY.md) — release gates and TalkBack,
   keyboard, JAWS, and NVDA procedures.
+- [Accessible reality interaction](docs/ACCESSIBLE_REALITY_INTERACTION.md) —
+  linear focused-object browsing, TalkBack ownership, Binder/Unity/FMOD
+  boundaries, VQA, beacon, and physical-input validation limits.
 - [Privacy architecture](docs/PRIVACY_ARCHITECTURE.md) — data inventory,
   minimization, consent, transport, logs, and retention.
 - [Brand architecture](docs/BRAND_ARCHITECTURE.md) — canonical external source

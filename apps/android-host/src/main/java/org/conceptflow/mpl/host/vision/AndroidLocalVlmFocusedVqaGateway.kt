@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.host.vision
+
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import org.conceptflow.mpl.host.focus.FocusedVqaCorrelation
+import org.conceptflow.mpl.host.focus.FocusedVqaGateway
+import org.conceptflow.mpl.host.focus.FocusedVqaRequest
+
+interface LocalFocusedVqaClient {
+    /** Must synchronously consume or copy [frame]; its JPEG buffer is wiped when this call returns. */
+    fun submitFocusedObjectVqa(
+        request: LocalVlmFocusedObjectRequest,
+        frame: EncodedJpegFrame,
+        callback: LocalVlmFocusedObjectCallback,
+    ): LocalVlmSubmissionResult
+
+    fun cancelFocusedObjectVqa(correlation: LocalVlmFocusedObjectCorrelation): Boolean
+}
+
+/**
+ * Non-blocking integration between Spatial Focus and the isolated local VLM.
+ *
+ * The caller performs only validation plus one bounded queue offer. Exact frame lookup, optional
+ * object crop, and JPEG encoding execute on the single worker. One active request is enforced both
+ * here and by [AndroidLocalVlmEnvironmentClient].
+ */
+class AndroidLocalVlmFocusedVqaGateway(
+    private val client: LocalFocusedVqaClient,
+    private val frameProvider: FocusedVqaFrameProvider,
+    private val callback: LocalVlmFocusedObjectCallback,
+    private val executor: ExecutorService = newWorker(),
+) : FocusedVqaGateway, AutoCloseable {
+    private val active = AtomicReference<GatewayRequest?>(null)
+    private val closed = AtomicBoolean(false)
+
+    override fun submit(request: FocusedVqaRequest): Boolean =
+        submitDetailed(request) == LocalVlmSubmissionResult.ACCEPTED
+
+    /** ACCEPTED means admitted to the bounded preparation worker, not that inference completed. */
+    fun submitDetailed(request: FocusedVqaRequest): LocalVlmSubmissionResult {
+        if (closed.get()) return LocalVlmSubmissionResult.UNAVAILABLE
+        val localRequest = request.toLocalVlmRequest() ?: return LocalVlmSubmissionResult.INVALID_REQUEST
+        val gatewayRequest = GatewayRequest(request.correlation, localRequest.correlation)
+        if (!active.compareAndSet(null, gatewayRequest)) return LocalVlmSubmissionResult.BUSY
+        return try {
+            gatewayRequest.future = executor.submit { dispatch(gatewayRequest, request, localRequest) }
+            LocalVlmSubmissionResult.ACCEPTED
+        } catch (_: RejectedExecutionException) {
+            active.compareAndSet(gatewayRequest, null)
+            LocalVlmSubmissionResult.BUSY
+        } catch (_: RuntimeException) {
+            active.compareAndSet(gatewayRequest, null)
+            LocalVlmSubmissionResult.UNAVAILABLE
+        }
+    }
+
+    override fun cancel(correlation: FocusedVqaCorrelation) {
+        val current = active.get() ?: return
+        if (current.focusCorrelation != correlation || !active.compareAndSet(current, null)) return
+        current.future?.cancel(true)
+        if (current.clientSubmitted.get()) client.cancelFocusedObjectVqa(current.localCorrelation)
+    }
+
+    fun reset() {
+        val current = active.getAndSet(null) ?: return
+        current.future?.cancel(true)
+        if (current.clientSubmitted.get()) client.cancelFocusedObjectVqa(current.localCorrelation)
+    }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        reset()
+        executor.shutdownNow()
+    }
+
+    private fun dispatch(
+        gatewayRequest: GatewayRequest,
+        focusRequest: FocusedVqaRequest,
+        localRequest: LocalVlmFocusedObjectRequest,
+    ) {
+        if (closed.get() || active.get() !== gatewayRequest) return
+        val frame = try {
+            frameProvider.prepare(focusRequest)
+        } catch (_: RuntimeException) {
+            reject(gatewayRequest, LocalVlmFocusedObjectFailure.UNAVAILABLE)
+            return
+        }
+        if (frame == null) {
+            reject(gatewayRequest, LocalVlmFocusedObjectFailure.INVALID_REQUEST)
+            return
+        }
+        if (closed.get() || active.get() !== gatewayRequest || Thread.currentThread().isInterrupted) {
+            frame.jpeg.fill(0)
+            return
+        }
+        val result = try {
+            client.submitFocusedObjectVqa(localRequest, frame) { outcome ->
+                finishFromClient(gatewayRequest, outcome)
+            }
+        } catch (_: RuntimeException) {
+            LocalVlmSubmissionResult.UNAVAILABLE
+        } finally {
+            // The IPC client has synchronously copied/persisted the explicit request by this point.
+            // Do not retain a second in-process JPEG after dispatch.
+            frame.jpeg.fill(0)
+        }
+        if (result == LocalVlmSubmissionResult.ACCEPTED) {
+            gatewayRequest.clientSubmitted.set(true)
+            if ((closed.get() || active.get() !== gatewayRequest) &&
+                !gatewayRequest.terminalCallbackReceived.get()
+            ) {
+                client.cancelFocusedObjectVqa(gatewayRequest.localCorrelation)
+            }
+            return
+        }
+        reject(gatewayRequest, result.toFailure())
+    }
+
+    private fun finishFromClient(
+        gatewayRequest: GatewayRequest,
+        outcome: LocalVlmFocusedObjectOutcome,
+    ) {
+        gatewayRequest.terminalCallbackReceived.set(true)
+        if (!active.compareAndSet(gatewayRequest, null)) return
+        val delivered = if (outcome.correlation() == gatewayRequest.localCorrelation) {
+            outcome
+        } else {
+            LocalVlmFocusedObjectOutcome.Rejected(
+                gatewayRequest.localCorrelation,
+                LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED,
+            )
+        }
+        runCatching { callback.onOutcome(delivered) }
+    }
+
+    private fun reject(gatewayRequest: GatewayRequest, reason: LocalVlmFocusedObjectFailure) {
+        if (!active.compareAndSet(gatewayRequest, null)) return
+        runCatching {
+            callback.onOutcome(LocalVlmFocusedObjectOutcome.Rejected(gatewayRequest.localCorrelation, reason))
+        }
+    }
+
+    private class GatewayRequest(
+        val focusCorrelation: FocusedVqaCorrelation,
+        val localCorrelation: LocalVlmFocusedObjectCorrelation,
+    ) {
+        @Volatile var future: Future<*>? = null
+        val clientSubmitted = AtomicBoolean(false)
+        val terminalCallbackReceived = AtomicBoolean(false)
+    }
+
+    private companion object {
+        fun newWorker(): ExecutorService = ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue(1),
+            { runnable -> Thread(runnable, "mpl-focused-vqa").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+    }
+}
+
+internal fun FocusedVqaRequest.toLocalVlmRequest(): LocalVlmFocusedObjectRequest? {
+    val sanitizedQuestion = LocalVlmFocusedObjectQuestionSanitizer.sanitize(question) ?: return null
+    return runCatching {
+        LocalVlmFocusedObjectRequest(
+            LocalVlmFocusedObjectCorrelation(
+                focusRequestId = correlation.requestId,
+                sessionGeneration = correlation.sessionGeneration,
+                snapshotId = correlation.snapshotId,
+                focusGeneration = correlation.focusGeneration,
+                stableTrackId = correlation.stableTrackId,
+                sourceFrameId = correlation.sourceFrameId,
+                sourceCaptureTimestampNanos = sourceCaptureTimestampNanos,
+            ),
+            requestedMonotonicTimestampNanos = requestedTimestampNanos,
+            question = sanitizedQuestion,
+        )
+    }.getOrNull()
+}
+
+private fun LocalVlmSubmissionResult.toFailure(): LocalVlmFocusedObjectFailure = when (this) {
+    LocalVlmSubmissionResult.ACCEPTED -> error("accepted submission is not a failure")
+    LocalVlmSubmissionResult.BUSY -> LocalVlmFocusedObjectFailure.BUSY
+    LocalVlmSubmissionResult.INVALID_REQUEST -> LocalVlmFocusedObjectFailure.INVALID_REQUEST
+    LocalVlmSubmissionResult.UNAVAILABLE -> LocalVlmFocusedObjectFailure.UNAVAILABLE
+}
+
+private fun LocalVlmFocusedObjectOutcome.correlation(): LocalVlmFocusedObjectCorrelation = when (this) {
+    is LocalVlmFocusedObjectOutcome.Answered -> value.correlation
+    is LocalVlmFocusedObjectOutcome.Rejected -> correlation
+}

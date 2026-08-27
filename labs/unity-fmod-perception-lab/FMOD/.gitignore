@@ -1,4 +1,6 @@
 .cache/
 .user/
 Assets/SoundBubble/*.wav
+Assets/AuditoryIcons/*.wav
+Assets/Interface/*.wav
 Build/

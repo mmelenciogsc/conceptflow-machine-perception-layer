@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="ParameterPreset" id="{3e7e57af-cf95-409c-a49e-78e5e8bc69a8}">
+		<property name="name">
+			<value>DwellSpeechActive</value>
+		</property>
+		<relationship name="folder">
+			<destination>{a418e0de-c7d0-05c9-280a-b529dc02e12e}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{bfdcd937-3778-45dc-881b-5d6c3ab6384b}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{bfdcd937-3778-45dc-881b-5d6c3ab6384b}" />
+</objects>

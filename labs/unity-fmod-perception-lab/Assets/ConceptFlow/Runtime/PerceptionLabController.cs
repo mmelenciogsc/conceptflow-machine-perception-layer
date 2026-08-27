@@ -23,7 +23,13 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private CanonicalConfig config = null!;
         private BodySurfaceField body = null!;
         private VirtualSpeakerField speakers = null!;
-        private readonly InspectableFmodBackend audioBackend = new();
+        private IPerceptionAudioBackend audioBackend = null!;
+        private IPerceptionSnapshotSource perceptionSource;
+        private IPerceptionCoordinateFrameAdapterV1 coordinateAdapter = null!;
+        private bool ownsPerceptionSource;
+        private bool ownsAudioBackend;
+        private FocusedObjectSonification focusedObject = null!;
+        private NonvisualInteractionPresenter interactionPresenter = null!;
         private Transform bodyFrame = null!;
         private Transform headFrame = null!;
         private Vector3 nearestGeometry;
@@ -42,6 +48,10 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public string Status => status;
         public int LastAudioCommandCount { get; private set; }
         public string LastHapticState { get; private set; } = "none";
+        public string ActiveFocusedTrackId => focusedObject?.ActiveTrackId??string.Empty;
+        public int ActiveFocusedIconCount => focusedObject?.IsActive==true?1:0;
+        public int PendingNonvisualAnnouncements => interactionPresenter?.PendingAnnouncementCount??0;
+        public string CoordinateMappingId => focusedObject?.CoordinateMappingId??string.Empty;
 
         private void Awake()
         {
@@ -52,9 +62,39 @@ namespace ConceptFlow.Mpl.PerceptionLab
             headFrame = new GameObject("HEAD/listener frame").transform;
             headFrame.SetParent(bodyFrame, false);
             headFrame.localPosition = new Vector3(0, 1.60f, 0);
+            coordinateAdapter=UnverifiedCoordinateFrameAdapterV1.Instance;
+#if CONCEPTFLOW_FMOD_UNITY
+            audioBackend=new FmodStudioPerceptionAudioBackend(); ownsAudioBackend=true;
+#else
+            audioBackend=new InspectableFmodBackend();
+#endif
+#if UNITY_ANDROID && !UNITY_EDITOR
+            perceptionSource=new AndroidPerceptionBridgeClient(); ownsPerceptionSource=true;
+#endif
+            RebuildPresenters();
             BuildScenario((LabScenario)scenarioIndex);
             AnnounceControls();
         }
+
+        // Ordering, Android polling, focus selection, and raw touch interpretation stay
+        // outside this lab controller. A host injects already-decoded snapshots explicitly.
+        public void ApplyWorldSnapshot(PerceptionWorldSnapshot snapshot) => focusedObject.AcceptWorld(snapshot);
+        public void ApplyFocusSnapshot(PerceptionFocusSnapshot snapshot) => focusedObject.AcceptFocus(snapshot);
+        public void ApplyHeadPoseSnapshot(PerceptionHeadPoseSnapshot snapshot)
+        {
+            focusedObject.ListenerPosition=headFrame.position;
+            focusedObject.AcceptHeadPose(snapshot);
+        }
+        public bool RenderFocusedObject(long nowNs)
+        {
+            focusedObject.ListenerPosition=headFrame.position;
+            return focusedObject.Render(nowNs);
+        }
+        public void ApplyInteractionState(NonvisualInteractionState next,long nowNs) => interactionPresenter.Apply(next,nowNs);
+        public void TickInteractionPresenter(long nowNs) => interactionPresenter.Tick(nowNs);
+        public bool TryTakeNonvisualAnnouncement(out NonvisualAnnouncement announcement) =>
+            interactionPresenter.TryTakeAnnouncement(out announcement);
+        public void CompleteDwellSpeech(long generation) => interactionPresenter.CompleteDwellSpeech(generation);
 
         private void Update()
         {
@@ -69,6 +109,37 @@ namespace ConceptFlow.Mpl.PerceptionLab
             if (!paused) scenarioTime += Time.deltaTime;
             AnimateScenario((LabScenario)scenarioIndex, scenarioTime);
             QueryGeometry();
+            PollPerceptionBridge();
+        }
+
+        public void ConfigurePerceptionRuntime(IPerceptionSnapshotSource source,
+            IPerceptionAudioBackend backend,IPerceptionCoordinateFrameAdapterV1 frameAdapter,
+            bool takeSourceOwnership=false,bool takeBackendOwnership=false)
+        {
+            focusedObject?.Clear("runtime-reconfigured");
+            interactionPresenter?.Clear();
+            if(ownsPerceptionSource) perceptionSource?.Dispose();
+            if(ownsAudioBackend && audioBackend is IDisposable disposableBackend) disposableBackend.Dispose();
+            perceptionSource=source; audioBackend=backend??throw new ArgumentNullException(nameof(backend));
+            coordinateAdapter=frameAdapter??throw new ArgumentNullException(nameof(frameAdapter));
+            ownsPerceptionSource=takeSourceOwnership; ownsAudioBackend=takeBackendOwnership;
+            RebuildPresenters();
+        }
+
+        private void RebuildPresenters()
+        {
+            focusedObject=new FocusedObjectSonification(audioBackend,coordinateAdapter:coordinateAdapter)
+                { ListenerPosition=headFrame.position };
+            interactionPresenter=new NonvisualInteractionPresenter(audioBackend);
+        }
+
+        private void PollPerceptionBridge()
+        {
+            if(perceptionSource==null) return;
+            if(perceptionSource.TryPollHeadPose(out PerceptionHeadPoseSnapshot head)) ApplyHeadPoseSnapshot(head);
+            if(perceptionSource.TryPoll(out PerceptionWorldSnapshot world)) ApplyWorldSnapshot(world);
+            if(perceptionSource.TryPollFocus(out PerceptionFocusSnapshot focus)) ApplyFocusSnapshot(focus);
+            if(perceptionSource.TryGetMonotonicTimestampNs(out long nowNs)) RenderFocusedObject(nowNs);
         }
 
         private void QueryGeometry()
@@ -230,6 +301,14 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 Gizmos.DrawLine(bodyFrame.TransformPoint(segment.Start),bodyFrame.TransformPoint(segment.End));
             }
             Gizmos.DrawLine(bodyFrame.TransformPoint(nearestClearance.SurfacePoint),nearestGeometry);
+        }
+
+        private void OnDestroy()
+        {
+            focusedObject?.Clear("controller-destroyed");
+            interactionPresenter?.Clear();
+            if(ownsPerceptionSource) perceptionSource?.Dispose();
+            if(ownsAudioBackend && audioBackend is IDisposable disposableBackend) disposableBackend.Dispose();
         }
     }
 }

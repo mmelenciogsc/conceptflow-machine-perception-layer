@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="ParameterPreset" id="{795d7a2c-3f96-4121-a63c-710e8e36b7f4}">
+		<property name="name">
+			<value>IconSalience</value>
+		</property>
+		<relationship name="folder">
+			<destination>{a418e0de-c7d0-05c9-280a-b529dc02e12e}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{b80f963c-3532-47cd-b78d-edb8721a0ec6}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{b80f963c-3532-47cd-b78d-edb8721a0ec6}" />
+</objects>

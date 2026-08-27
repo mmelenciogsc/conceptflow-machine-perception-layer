@@ -13,6 +13,15 @@ import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.core.ElapsedHostClock
 import org.conceptflow.mpl.host.core.GlassesStreamIngress
 import org.conceptflow.mpl.host.core.StreamIngressDisposition
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
+import org.conceptflow.mpl.host.focus.SpatialFocusDwell
+import org.conceptflow.mpl.host.focus.FocusedVqaCorrelation
+import org.conceptflow.mpl.host.focus.FocusedVqaRejection
+import org.conceptflow.mpl.host.focus.ReplaceableFocusedVqaGateway
+import org.conceptflow.mpl.host.focus.SpatialFocusManager
+import org.conceptflow.mpl.host.focus.SpatialFocusState
+import org.conceptflow.mpl.host.focus.SpatialFocusTouchAdmission
+import org.conceptflow.mpl.host.focus.DisabledSpatialFocusTouchAdmission
 import org.conceptflow.mpl.host.realtime.SensorTimeline
 import org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge
 import org.conceptflow.mpl.host.realtime.PerceptionBus
@@ -26,6 +35,10 @@ import org.conceptflow.mpl.host.vision.EncodedJpegFrame
 import org.conceptflow.mpl.host.vision.EnvironmentDepthCoordinator
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.AndroidLocalVlmEnvironmentClient
+import org.conceptflow.mpl.host.vision.AndroidLocalVlmFocusedVqaGateway
+import org.conceptflow.mpl.host.vision.AndroidFocusedVqaJpegEncoder
+import org.conceptflow.mpl.host.vision.BoundedFocusedVqaFrameStore
+import org.conceptflow.mpl.host.vision.StoredFocusedVqaFrameProvider
 import org.conceptflow.mpl.host.vision.GnssQualitySample
 import org.conceptflow.mpl.host.vision.HeadCameraExtrinsicProvenance
 import org.conceptflow.mpl.host.vision.HtpLeaseAcquisition
@@ -38,6 +51,9 @@ import org.conceptflow.mpl.host.vision.LiveMetricFusionResult
 import org.conceptflow.mpl.host.vision.LiveMetricTemporalFusion
 import org.conceptflow.mpl.host.vision.LiveVlmHtpAdmissionGate
 import org.conceptflow.mpl.host.vision.LiveVlmQnnAdmissionDecision
+import org.conceptflow.mpl.host.vision.LocalVlmFocusedObjectCorrelation
+import org.conceptflow.mpl.host.vision.LocalVlmFocusedObjectFailure
+import org.conceptflow.mpl.host.vision.LocalVlmFocusedObjectOutcome
 import org.conceptflow.mpl.host.vision.LiveImuPoseMapper
 import org.conceptflow.mpl.host.vision.LightweightTrackMaintainer
 import org.conceptflow.mpl.host.vision.LightweightTrackState
@@ -81,6 +97,27 @@ import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImageEncoding
 import org.conceptflow.mpl.v1.LiveLinkTelemetry
 import org.conceptflow.mpl.v1.RokidNodeCommandOperation
+
+internal fun LocalVlmFocusedObjectFailure.toFocusRejection(): FocusedVqaRejection = when (this) {
+    LocalVlmFocusedObjectFailure.BUSY -> FocusedVqaRejection.BUSY
+    LocalVlmFocusedObjectFailure.INVALID_REQUEST -> FocusedVqaRejection.INVALID_REQUEST
+    LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED -> FocusedVqaRejection.STALE_FRAME
+    LocalVlmFocusedObjectFailure.DEFERRED_FOR_QNN,
+    LocalVlmFocusedObjectFailure.INFERENCE_FAILED,
+    LocalVlmFocusedObjectFailure.UNAVAILABLE,
+    -> FocusedVqaRejection.UNAVAILABLE
+}
+
+internal fun SpatialFocusState.matchesFocusedVqaSource(
+    correlation: LocalVlmFocusedObjectCorrelation,
+): Boolean = target?.let { focused ->
+    sessionGeneration == correlation.sessionGeneration &&
+        snapshotId == correlation.snapshotId &&
+        focusGeneration == correlation.focusGeneration &&
+        focused.stableTrackId == correlation.stableTrackId &&
+        focused.sourceFrameId == correlation.sourceFrameId &&
+        focused.sourceCaptureTimestampNanos == correlation.sourceCaptureTimestampNanos
+} == true
 
 /** Maps only explicitly calibrated or derived protocol intrinsics without upgrading provenance. */
 internal fun validatedCameraIntrinsics(frame: FramePayload): CameraIntrinsics? {
@@ -845,6 +882,8 @@ class LiveMachineVisionController(
     private val onNodeCommandResult: (RokidNodeCommandDelivery) -> Unit = {},
     private val perceptionBus: PerceptionBus = AndroidPerceptionBridge.runtimeBus,
     private val resultFreshnessGate: LivePerceptionResultFreshnessGate = LivePerceptionResultFreshnessGate(),
+    private val onFocusState: (SpatialFocusState) -> Unit = {},
+    private val focusTouchAdmission: SpatialFocusTouchAdmission = DisabledSpatialFocusTouchAdmission,
     private val onStatus: (LiveMachineVisionStatus) -> Unit,
 ) : AutoCloseable {
     private val active = AtomicBoolean(false)
@@ -864,12 +903,16 @@ class LiveMachineVisionController(
         ::logHtpLeaseTelemetry,
     )
     private val sensorTimeline = SensorTimeline()
+    private val focusedVqaRouter = ReplaceableFocusedVqaGateway()
+    private val focusedVqaFrames = BoundedFocusedVqaFrameStore(ElapsedHostClock::nowNanos)
+    private val spatialFocus = SpatialFocusManager(vqaGateway = focusedVqaRouter)
     private var executor: ScheduledExecutorService? = null
     private var startupExecutor: ExecutorService? = null
     private var startupFuture: Future<*>? = null
     private var server: PocoLiveLinkServer? = null
     private var qnn: QnnLiveFrameExecutor? = null
     private var environmentVlm: AndroidLocalVlmEnvironmentClient? = null
+    private var focusedVqaGateway: AndroidLocalVlmFocusedVqaGateway? = null
     @Volatile private var cameraIngress: GlassesStreamIngress? = null
     @Volatile private var imuIngress: GlassesStreamIngress? = null
     @Volatile private var microphoneIngress: GlassesStreamIngress? = null
@@ -882,6 +925,7 @@ class LiveMachineVisionController(
     private var currentCameraUncertaintyNs = 0L
     private var currentIngressGeneration = 0L
     private var microphoneWindowGeneration = 0L
+    private var scheduledDwellGeneration = 0L
     private var lastPublishedNs = 0L
     private var lastEnvironmentDecisionDiagnostic: String? = null
     @Volatile private var latestDepthProfileId = ""
@@ -983,25 +1027,43 @@ class LiveMachineVisionController(
                     QnnRuntimeBundle(context.filesDir.resolve("qnn-runtime")),
                     context.filesDir.resolve("models"),
                 )
-                QnnLiveFrameExecutor(sessionFactory, AndroidJpegDecoder(), ElapsedHostClock::nowNanos)
+                QnnLiveFrameExecutor(
+                    sessionFactory,
+                    AndroidJpegDecoder(),
+                    ElapsedHostClock::nowNanos,
+                ) { generation, frame, image ->
+                    if (active.get()) {
+                        focusedVqaFrames.offer(generation, frame, image)
+                    }
+                }
             }.getOrElse { error ->
                 accumulator.perceptionUnavailable(failureCode(error))
                 publish(force = true)
                 null
             }
-            if (spec.environmentMode == EnvironmentSelectionMode.AUTOMATIC) {
-                openedVlm = runCatching {
-                    AndroidLocalVlmEnvironmentClient(context, ElapsedHostClock::nowNanos).also { it.start() }
-                }.getOrElse {
+            openedVlm = runCatching {
+                AndroidLocalVlmEnvironmentClient(context, ElapsedHostClock::nowNanos).also { it.start() }
+            }.getOrElse {
+                if (spec.environmentMode == EnvironmentSelectionMode.AUTOMATIC) {
                     accumulator.perceptionUnavailable("LOCAL_VLM_UNAVAILABLE")
                     publish(force = true)
-                    null
                 }
+                null
             }
             synchronized(this) {
                 if (!active.get() || !startupGate.mayPublish(startupToken)) return
                 qnn = openedQnn
                 environmentVlm = openedVlm
+                focusedVqaGateway = openedVlm?.let { client ->
+                    AndroidLocalVlmFocusedVqaGateway(
+                        client,
+                        StoredFocusedVqaFrameProvider(
+                            focusedVqaFrames,
+                            AndroidFocusedVqaJpegEncoder(),
+                        ),
+                        ::handleFocusedVqaOutcome,
+                    ).also(focusedVqaRouter::install)
+                }
                 openedQnn = null
                 openedVlm = null
             }
@@ -1029,6 +1091,11 @@ class LiveMachineVisionController(
             publish(force = true)
         }
         return dispatch
+    }
+
+    fun handleFocusCommand(command: SpatialFocusCommand): SpatialFocusState? {
+        if (!active.get() || currentIngressGeneration <= 0L) return null
+        return publishFocusTransition(spatialFocus.command(command, ElapsedHostClock.nowNanos()).state)
     }
 
     fun playRokidBrandSequence(): RokidNodeCommandDispatch {
@@ -1187,6 +1254,7 @@ class LiveMachineVisionController(
             }
         }
         status?.sessionReady()
+        focusedVqaGateway?.reset()
         environmentVlm?.cancelOutstanding()
         metricFusion.reset()
         trackMaintainer.reset()
@@ -1198,7 +1266,12 @@ class LiveMachineVisionController(
         sensorTimeline.reset()
         qnn?.resetTracking()
         currentIngressGeneration = sessionGeneration.advance()
-        perceptionBus.beginSession(currentIngressGeneration, ElapsedHostClock.nowNanos())
+        focusedVqaFrames.beginSession(currentIngressGeneration)
+        val sessionNow = ElapsedHostClock.nowNanos()
+        perceptionBus.beginSession(currentIngressGeneration, sessionNow)
+        publishFocusTransition(
+            spatialFocus.reset(currentIngressGeneration, sessionNow, perceptionBus.stats().latestRevision),
+        )
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
         currentSessionBinding = session.binding
         status?.microphoneState(LiveMicrophonePhase.IDLE)
@@ -1222,7 +1295,9 @@ class LiveMachineVisionController(
         currentIngressGeneration = 0L
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
         pendingFrame.set(null)
+        focusedVqaGateway?.reset()
         environmentVlm?.cancelOutstanding()
+        focusedVqaFrames.reset()
         cameraIngress = null
         imuIngress = null
         microphoneIngress = null
@@ -1235,7 +1310,11 @@ class LiveMachineVisionController(
         automaticEnvironmentVlmBootstrapPending =
             environmentCoordinator.mode() == EnvironmentSelectionMode.AUTOMATIC
         sensorTimeline.reset()
-        perceptionBus.invalidate(PerceptionValidityReason.DISCONNECTED, ElapsedHostClock.nowNanos())
+        val disconnectedNow = ElapsedHostClock.nowNanos()
+        perceptionBus.invalidate(PerceptionValidityReason.DISCONNECTED, disconnectedNow)
+        publishFocusTransition(
+            spatialFocus.reset(0L, disconnectedNow, perceptionBus.stats().latestRevision),
+        )
         qnn?.resetTracking()
         clearCameraCorrelation()
         status?.phase(LiveMachineVisionPhase.LISTENING)
@@ -1276,11 +1355,11 @@ class LiveMachineVisionController(
             }
             maintainedTracks?.let { tracks ->
                 val now = ElapsedHostClock.nowNanos()
-                perceptionBus.publishTrackedPerception(
+                publishTrackedState(
                     sourceFrameId = tracks.maxOfOrNull(LightweightTrackState::sourceFrameId) ?: 0L,
-                    sourceCaptureTimestampNs = tracks.maxOfOrNull(
-                        LightweightTrackState::sourceCaptureTimestampNanos,
-                    ) ?: now,
+                    sourceCaptureTimestampNs = tracks.maxOfOrNull {
+                        it.sourceCaptureTimestampNanos
+                    } ?: now,
                     publishedTimestampNs = now,
                     depthProfileId = latestDepthProfileId,
                     reason = "orientation_propagated_no_visual_correction",
@@ -1415,15 +1494,24 @@ class LiveMachineVisionController(
         if (!active.get()) return
         val ingress = imuIngress ?: return
         if (ingress.acceptAuthenticatedLane(delivery.sensor) != StreamIngressDisposition.TOUCH_READY) return
-        val timed = sensorTimeline.acceptTouch(delivery) ?: return
+        if (sensorTimeline.acceptTouch(delivery) == null) return
         val events = ingress.takeTouchEvents()
-        if (events.isNotEmpty()) {
-            if (!perceptionBus.publishTouch(timed)) {
+        val normalizedEvents = sensorTimeline.drainTouch()
+        if (events.isEmpty() || events.size != normalizedEvents.size ||
+            events.indices.any { events[it].eventId != normalizedEvents[it].event.eventId }
+        ) {
+            status?.linkDiagnostic(LiveLinkDiagnosticCode.SENSOR_TOUCH_OVERFLOW)
+            publish(force = true)
+            return
+        }
+        normalizedEvents.forEach { normalized ->
+            if (!perceptionBus.publishTouch(normalized)) {
                 status?.linkDiagnostic(LiveLinkDiagnosticCode.SENSOR_TOUCH_OVERFLOW)
             }
-            status?.touchReceived(events.size)
-            publish()
+            focusTouchAdmission.commandFor(normalized)?.let(::handleFocusCommand)
         }
+        status?.touchReceived(events.size)
+        publish()
     }
 
     private fun scheduleDrain() {
@@ -1493,10 +1581,12 @@ class LiveMachineVisionController(
                     status?.inferenceStarted()
                     when (metadata.image.encoding) {
                         ImageEncoding.IMAGE_ENCODING_JPEG -> activeQnn.process(
-                            requireNotNull(prepared.encoded), visionFrame, prepared.selectDepthProfile,
+                            requireNotNull(prepared.encoded), visionFrame, pending.generation,
+                            prepared.selectDepthProfile,
                         )
                         ImageEncoding.IMAGE_ENCODING_RGB8 -> activeQnn.process(
-                            requireNotNull(prepared.raw), visionFrame, prepared.selectDepthProfile,
+                            requireNotNull(prepared.raw), visionFrame, pending.generation,
+                            prepared.selectDepthProfile,
                         )
                         else -> throw IllegalArgumentException("unsupported live camera encoding")
                     }
@@ -1574,7 +1664,7 @@ class LiveMachineVisionController(
                 null
             }
             val maintainedTracks = maintained?.tracks ?: trackMaintainer.snapshot(now)
-            perceptionBus.publishTrackedPerception(
+            publishTrackedState(
                 sourceFrameId = visionFrame.frameId,
                 sourceCaptureTimestampNs = visionFrame.captureMonotonicTimestampNanos,
                 publishedTimestampNs = now,
@@ -1660,7 +1750,7 @@ class LiveMachineVisionController(
         tracks: List<LightweightTrackState>,
         reason: String,
     ) {
-        perceptionBus.publishTrackedPerception(
+        publishTrackedState(
             sourceFrameId = triggerFrame.frameId,
             sourceCaptureTimestampNs = triggerFrame.captureMonotonicTimestampNanos,
             publishedTimestampNs = nowNanos,
@@ -1668,6 +1758,102 @@ class LiveMachineVisionController(
             reason = reason,
             tracks = tracks,
         )
+    }
+
+    private fun publishTrackedState(
+        sourceFrameId: Long,
+        sourceCaptureTimestampNs: Long,
+        publishedTimestampNs: Long,
+        depthProfileId: String,
+        reason: String,
+        tracks: List<LightweightTrackState>,
+        validity: PerceptionValidityReason = if (tracks.isEmpty()) {
+            PerceptionValidityReason.SENSOR_STREAM_ACTIVE
+        } else {
+            PerceptionValidityReason.PERCEPTION_READY
+        },
+    ) {
+        val world = perceptionBus.publishTrackedPerception(
+            sourceFrameId,
+            sourceCaptureTimestampNs,
+            publishedTimestampNs,
+            depthProfileId,
+            reason,
+            tracks,
+            validity,
+        )
+        publishFocusTransition(
+            spatialFocus.updateTracks(
+                currentIngressGeneration,
+                world.revision,
+                publishedTimestampNs,
+                tracks,
+            ),
+        )
+    }
+
+    @Synchronized
+    private fun publishFocusTransition(state: SpatialFocusState): SpatialFocusState {
+        val published = perceptionBus.publishFocus(state)
+        onFocusState(published)
+        if (published.dwell == SpatialFocusDwell.PENDING) {
+            val expectedGeneration = published.focusGeneration
+            if (scheduledDwellGeneration == expectedGeneration) return published
+            scheduledDwellGeneration = expectedGeneration
+            val delay = (published.dwellDeadlineTimestampNanos - ElapsedHostClock.nowNanos()).coerceAtLeast(0L)
+            executor?.schedule(
+                {
+                    val current = spatialFocus.current()
+                    if (current?.focusGeneration == expectedGeneration &&
+                        current.dwell == SpatialFocusDwell.PENDING
+                    ) {
+                        publishFocusTransition(spatialFocus.advance(ElapsedHostClock.nowNanos()))
+                    }
+                    if (scheduledDwellGeneration == expectedGeneration) scheduledDwellGeneration = 0L
+                },
+                delay,
+                TimeUnit.NANOSECONDS,
+            )
+        }
+        return published
+    }
+
+    /** Accepts only the exact still-current focus request; late IPC answers are intentionally silent. */
+    @Synchronized
+    private fun handleFocusedVqaOutcome(outcome: LocalVlmFocusedObjectOutcome) {
+        if (!active.get()) return
+        val local = when (outcome) {
+            is LocalVlmFocusedObjectOutcome.Answered -> outcome.value.correlation
+            is LocalVlmFocusedObjectOutcome.Rejected -> outcome.correlation
+        }
+        val state = spatialFocus.current() ?: return
+        val correlation = FocusedVqaCorrelation(
+            requestId = local.focusRequestId,
+            sessionGeneration = local.sessionGeneration,
+            snapshotId = local.snapshotId,
+            focusGeneration = local.focusGeneration,
+            stableTrackId = local.stableTrackId,
+            sourceFrameId = local.sourceFrameId,
+        )
+        if (!state.matchesFocusedVqaSource(local)) {
+            if (spatialFocus.failVqa(correlation, FocusedVqaRejection.STALE_FRAME, ElapsedHostClock.nowNanos())) {
+                spatialFocus.current()?.let(::publishFocusTransition)
+            }
+            return
+        }
+        val changed = when (outcome) {
+            is LocalVlmFocusedObjectOutcome.Answered -> spatialFocus.completeVqa(
+                correlation,
+                outcome.value.answer,
+                ElapsedHostClock.nowNanos(),
+            )
+            is LocalVlmFocusedObjectOutcome.Rejected -> spatialFocus.failVqa(
+                correlation,
+                outcome.reason.toFocusRejection(),
+                ElapsedHostClock.nowNanos(),
+            )
+        }
+        if (changed) spatialFocus.current()?.let(::publishFocusTransition)
     }
 
     private fun clearCameraCorrelation() {
@@ -1712,13 +1898,19 @@ class LiveMachineVisionController(
         startupFuture?.cancel(true)
         startupFuture = null
         runCatching { server?.closeAsync {} }
+        focusedVqaGateway?.let { gateway ->
+            runCatching { gateway.close() }
+            focusedVqaRouter.clear(gateway)
+        }
         environmentVlm?.cancelOutstanding()
+        focusedVqaFrames.reset()
         qnn?.resetTracking()
         runCatching { qnn?.close() }
         runCatching { environmentVlm?.close() }
         server = null
         qnn = null
         environmentVlm = null
+        focusedVqaGateway = null
         cameraIngress = null
         imuIngress = null
         microphoneIngress = null
@@ -1731,7 +1923,9 @@ class LiveMachineVisionController(
         latestDepthProfileId = ""
         automaticEnvironmentVlmBootstrapPending = false
         sensorTimeline.reset()
-        perceptionBus.invalidate(PerceptionValidityReason.STOPPED, ElapsedHostClock.nowNanos())
+        val stoppedNow = ElapsedHostClock.nowNanos()
+        perceptionBus.invalidate(PerceptionValidityReason.STOPPED, stoppedNow)
+        publishFocusTransition(spatialFocus.reset(0L, stoppedNow, perceptionBus.stats().latestRevision))
         currentIngressGeneration = 0L
         clearCameraCorrelation()
         executor?.shutdownNow()

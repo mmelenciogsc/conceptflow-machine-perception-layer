@@ -3,6 +3,7 @@ package org.conceptflow.mpl.host.vision
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -61,6 +62,20 @@ class LiveVlmHtpAdmissionTest {
             )
             assertFalse(gate.hasActiveWork())
         }
+    }
+
+    @Test
+    fun focusedVqaGetsTheSameBoundedWindowAndUrgentQnnCancellation() {
+        val gate = LiveVlmHtpAdmissionGate(maximumVlmWindowNanos = 8_500_000_000L)
+        gate.observe(LocalVlmHtpWorkState(LocalVlmHtpWorkKind.FOCUSED_OBJECT_VQA, 1_000_000_000L))
+        assertEquals(
+            LiveVlmQnnAdmissionDecision.DEFER_QNN_FOR_VLM,
+            gate.decide(1_100_000_000L, SemanticDepthRefreshReason.STABLE_CADENCE),
+        )
+        assertEquals(
+            LiveVlmQnnAdmissionDecision.CANCEL_VLM_FOR_URGENT_QNN,
+            gate.decide(1_200_000_000L, SemanticDepthRefreshReason.MOTION),
+        )
     }
 
     @Test
@@ -131,5 +146,17 @@ class LiveVlmHtpAdmissionTest {
         assertTrue(gate.isActive(LocalVlmWorkLane.PREWARM))
         assertTrue(gate.finish(LocalVlmWorkLane.PREWARM, replacement))
         assertFalse(gate.isActive(LocalVlmWorkLane.PREWARM))
+    }
+
+    @Test
+    fun workGatePermitsOnlyOneTotalPrewarmOrInferenceLane() {
+        val gate = GenerationScopedVlmWorkGate()
+        val prewarm = requireNotNull(gate.begin(LocalVlmWorkLane.PREWARM))
+        assertNull(gate.begin(LocalVlmWorkLane.DRAIN))
+        assertTrue(gate.finish(LocalVlmWorkLane.PREWARM, prewarm))
+
+        val inference = requireNotNull(gate.begin(LocalVlmWorkLane.DRAIN))
+        assertNull(gate.begin(LocalVlmWorkLane.PREWARM))
+        assertTrue(gate.finish(LocalVlmWorkLane.DRAIN, inference))
     }
 }

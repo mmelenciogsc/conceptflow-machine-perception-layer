@@ -4,6 +4,7 @@ package org.conceptflow.mpl.host.vision
 enum class LocalVlmHtpWorkKind {
     PREWARM,
     ENVIRONMENT_CLASSIFICATION,
+    FOCUSED_OBJECT_VQA,
 }
 
 data class LocalVlmHtpWorkState(
@@ -24,7 +25,7 @@ enum class LiveVlmQnnAdmissionDecision {
 
 /**
  * Gives sparse VLM work one bounded completion window. Routine age/confidence refresh cannot
- * starve classification; only direct motion/occlusion/approach evidence interrupts that window.
+ * starve admitted inference; only direct motion/occlusion/approach evidence interrupts that window.
  * This state contains no image, label, location, or device identity.
  */
 class LiveVlmHtpAdmissionGate(
@@ -79,29 +80,32 @@ enum class LocalVlmWorkLane { PREWARM, DRAIN }
 /** Prevents a cancelled lazy job's stale completion from clearing a newer lane owner. */
 class GenerationScopedVlmWorkGate {
     private var generation = 0L
-    private val active = mutableSetOf<LocalVlmWorkLane>()
+    private var active: LocalVlmWorkLane? = null
 
     @Synchronized
     fun begin(lane: LocalVlmWorkLane): Long? {
-        if (!active.add(lane)) return null
+        if (active != null) return null
+        active = lane
         return generation
     }
 
     @Synchronized
     fun finish(lane: LocalVlmWorkLane, ownerGeneration: Long): Boolean {
         if (ownerGeneration != generation) return false
-        return active.remove(lane)
+        if (active != lane) return false
+        active = null
+        return true
     }
 
     @Synchronized
     fun isCurrent(lane: LocalVlmWorkLane, ownerGeneration: Long): Boolean =
-        ownerGeneration == generation && lane in active
+        ownerGeneration == generation && lane == active
 
     @Synchronized
     fun cancelAll() {
         generation = if (generation == Long.MAX_VALUE) 0L else generation + 1L
-        active.clear()
+        active = null
     }
 
-    @Synchronized fun isActive(lane: LocalVlmWorkLane): Boolean = lane in active
+    @Synchronized fun isActive(lane: LocalVlmWorkLane): Boolean = lane == active
 }

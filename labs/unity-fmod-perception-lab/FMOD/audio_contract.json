@@ -1,0 +1,43 @@
+{
+  "schema": "conceptflow.mpl.audio-contract.v1",
+  "events": {
+    "focusedObject": {
+      "path": "event:/MachinePerception/AuditoryIcons/FocusedObject",
+      "bus": "bus:/Accessible Sonification/Focused Object Icons",
+      "spatial": true,
+      "maxInstances": 1,
+      "parameters": {
+        "IconConcept": { "type": "integer", "minimum": 0, "maximumExclusive": 5 },
+        "IconSalience": { "type": "continuous", "minimum": 0, "maximum": 1 },
+        "IconConfidence": { "type": "continuous", "minimum": 0, "maximum": 1 },
+        "DistanceMeters": { "type": "continuous", "minimum": 0, "maximum": 8 },
+        "DwellSpeechActive": { "type": "continuous", "minimum": 0, "maximum": 1 }
+      },
+      "ducking": {
+        "owner": "authored_parameter_curve",
+        "parameter": "DwellSpeechActive",
+        "inactiveValue": 0,
+        "activeValue": 1,
+        "curveDb": [[0, 0], [1, -12]],
+        "runtimeVolumeMultiplier": false
+      }
+    },
+    "interfaceState": {
+      "path": "event:/MachinePerception/Interface/State",
+      "bus": "bus:/Accessible Sonification/Interface",
+      "spatial": false,
+      "maxInstances": 2,
+      "parameters": {
+        "InterfaceState": { "type": "integer", "minimum": 0, "maximumExclusive": 6 }
+      }
+    }
+  },
+  "icons": [
+    { "index": 0, "concept": "neutral", "representational": false, "asset": "AuditoryIcons/neutral_presence.wav", "aliases": [] },
+    { "index": 1, "concept": "person", "representational": true, "asset": "AuditoryIcons/soft_footfall_pair.wav", "aliases": ["person", "adult", "child"] },
+    { "index": 2, "concept": "door", "representational": true, "asset": "AuditoryIcons/restrained_latch.wav", "aliases": ["door", "doorway"] },
+    { "index": 3, "concept": "bicycle", "representational": true, "asset": "AuditoryIcons/short_freewheel.wav", "aliases": ["bicycle"] },
+    { "index": 4, "concept": "vehicle", "representational": true, "asset": "AuditoryIcons/subdued_tire_texture.wav", "aliases": ["vehicle", "car", "van", "bus", "truck", "motorcycle"] }
+  ],
+  "interfaceStates": ["closed", "open", "vqa", "beacon", "back", "back_unavailable"]
+}

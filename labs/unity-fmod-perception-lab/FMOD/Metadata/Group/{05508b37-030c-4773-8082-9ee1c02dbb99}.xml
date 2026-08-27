@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="MixerGroup" id="{05508b37-030c-4773-8082-9ee1c02dbb99}">
+		<property name="name">
+			<value>Focused Object Icons</value>
+		</property>
+		<property name="maxInstances">
+			<value>1</value>
+		</property>
+		<relationship name="effectChain">
+			<destination>{78276e03-03d8-4844-893e-5a1d27bebafa}</destination>
+		</relationship>
+		<relationship name="panner">
+			<destination>{32fbb478-eabc-4ddf-ba76-c857d4ab5640}</destination>
+		</relationship>
+		<relationship name="output">
+			<destination>{63c4caf3-d61d-49dc-b60e-40c359a406de}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusEffectChain" id="{78276e03-03d8-4844-893e-5a1d27bebafa}">
+		<relationship name="effects">
+			<destination>{54e1dd4b-2f73-4f2e-80bc-267f19152de1}</destination>
+		</relationship>
+	</object>
+	<object class="MixerBusPanner" id="{32fbb478-eabc-4ddf-ba76-c857d4ab5640}" />
+	<object class="MixerBusFader" id="{54e1dd4b-2f73-4f2e-80bc-267f19152de1}" />
+</objects>

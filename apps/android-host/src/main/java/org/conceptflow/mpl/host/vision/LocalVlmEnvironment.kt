@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host.vision
 
+import java.text.Normalizer
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -8,6 +9,12 @@ import kotlin.math.sqrt
 /** Stable task identifiers allow one local VLM runtime to acquire more typed capabilities later. */
 enum class LocalVlmTaskKind {
     SCENE_ENVIRONMENT_CLASSIFICATION_V1,
+    FOCUSED_OBJECT_VQA_V1,
+    ;
+
+    companion object {
+        fun parse(value: String?): LocalVlmTaskKind? = entries.singleOrNull { it.name == value }
+    }
 }
 
 enum class LocalVlmEnvironmentLabel {
@@ -70,6 +77,236 @@ object LocalVlmEnvironmentOutputParser {
 
     const val GRAMMAR = "root ::= \"INDOOR\" | \"OUTDOOR\" | \"TRANSITION\" | \"UNKNOWN\""
     private const val MAX_OUTPUT_CHARACTERS = 32
+}
+
+data class LocalVlmFocusedObjectCorrelation(
+    val focusRequestId: Long,
+    val sessionGeneration: Long,
+    val snapshotId: Long,
+    val focusGeneration: Long,
+    val stableTrackId: String,
+    val sourceFrameId: Long,
+    val sourceCaptureTimestampNanos: Long,
+) {
+    init {
+        require(focusRequestId > 0L)
+        require(sessionGeneration > 0L && snapshotId > 0L && focusGeneration > 0L)
+        require(sourceFrameId > 0L && sourceCaptureTimestampNanos >= 0L)
+        require(LocalVlmPlainText.normalizeIdentifier(stableTrackId) == stableTrackId)
+    }
+}
+
+data class LocalVlmFocusedObjectRequest(
+    val correlation: LocalVlmFocusedObjectCorrelation,
+    val requestedMonotonicTimestampNanos: Long,
+    val question: String,
+) {
+    init {
+        require(requestedMonotonicTimestampNanos >= correlation.sourceCaptureTimestampNanos)
+        require(LocalVlmFocusedObjectQuestionSanitizer.sanitize(question) == question)
+    }
+}
+
+data class LocalVlmFocusedObjectAnswer(
+    val correlation: LocalVlmFocusedObjectCorrelation,
+    val completedMonotonicTimestampNanos: Long,
+    val answer: String,
+) {
+    init {
+        require(completedMonotonicTimestampNanos >= correlation.sourceCaptureTimestampNanos)
+        require(LocalVlmFocusedObjectAnswerParser.parse(answer) == answer)
+    }
+}
+
+enum class LocalVlmFocusedObjectFailure {
+    BUSY,
+    DEFERRED_FOR_QNN,
+    INVALID_REQUEST,
+    INFERENCE_FAILED,
+    STALE_OR_MISMATCHED,
+    UNAVAILABLE,
+}
+
+sealed interface LocalVlmFocusedObjectOutcome {
+    data class Answered(val value: LocalVlmFocusedObjectAnswer) : LocalVlmFocusedObjectOutcome
+    data class Rejected(
+        val correlation: LocalVlmFocusedObjectCorrelation,
+        val reason: LocalVlmFocusedObjectFailure,
+    ) : LocalVlmFocusedObjectOutcome
+}
+
+fun interface LocalVlmFocusedObjectCallback {
+    fun onOutcome(outcome: LocalVlmFocusedObjectOutcome)
+}
+
+/** Queues external callbacks so callers may safely request delivery while holding internal state locks. */
+internal class LocalVlmFocusedCallbackDispatcher(
+    private val enqueue: (() -> Unit) -> Boolean,
+    private val onCallbackFailure: (Throwable) -> Unit = {},
+) {
+    fun dispatch(callback: LocalVlmFocusedObjectCallback, outcome: LocalVlmFocusedObjectOutcome): Boolean =
+        enqueue {
+            runCatching { callback.onOutcome(outcome) }.onFailure(onCallbackFailure)
+        }
+}
+
+internal data class LocalVlmReconnectTicket(val generation: Long, val delayMillis: Long)
+
+/** Bounded, duplicate-free retry state independent of Android lifecycle classes for JVM testing. */
+internal class LocalVlmReconnectPolicy(
+    retryDelaysMillis: List<Long> = listOf(250L, 500L, 1_000L, 2_000L, 5_000L, 15_000L, 30_000L),
+) {
+    private val delays = retryDelaysMillis.toList()
+    private var generation = 0L
+    private var attempt = 0
+    private var pending = false
+    private var closed = false
+
+    init {
+        require(delays.isNotEmpty() && delays.all { it > 0L })
+    }
+
+    @Synchronized
+    fun schedule(): LocalVlmReconnectTicket? {
+        if (closed || pending) return null
+        pending = true
+        val delay = delays[minOf(attempt, delays.lastIndex)]
+        attempt = minOf(attempt + 1, delays.lastIndex)
+        return LocalVlmReconnectTicket(++generation, delay)
+    }
+
+    @Synchronized
+    fun consume(ticket: LocalVlmReconnectTicket): Boolean {
+        if (closed || !pending || ticket.generation != generation) return false
+        pending = false
+        return true
+    }
+
+    @Synchronized
+    fun connected() {
+        generation += 1L
+        attempt = 0
+        pending = false
+    }
+
+    @Synchronized
+    fun close() {
+        generation += 1L
+        pending = false
+        closed = true
+    }
+}
+
+enum class LocalVlmSubmissionResult { ACCEPTED, BUSY, INVALID_REQUEST, UNAVAILABLE }
+
+/** Normalizes a bounded explicit question before it can enter a model prompt or IPC bundle. */
+object LocalVlmFocusedObjectQuestionSanitizer {
+    fun sanitize(question: String): String? = LocalVlmPlainText.normalize(
+        question,
+        maximumCharacters = MAXIMUM_CHARACTERS,
+        maximumUtf8Bytes = MAXIMUM_UTF8_BYTES,
+    )
+
+    const val MAXIMUM_CHARACTERS = 192
+    const val MAXIMUM_UTF8_BYTES = 384
+}
+
+/** Accepts one bounded plain-text answer and rejects control or formatting characters. */
+object LocalVlmFocusedObjectAnswerParser {
+    fun parse(output: String): String? {
+        val normalized = LocalVlmPlainText.normalize(
+            output,
+            maximumCharacters = MAXIMUM_CHARACTERS,
+            maximumUtf8Bytes = MAXIMUM_UTF8_BYTES,
+        ) ?: return null
+        return normalized.takeIf { it.split(' ').size <= MAXIMUM_WORDS }
+    }
+
+    const val MAXIMUM_CHARACTERS = 240
+    const val MAXIMUM_UTF8_BYTES = 512
+    const val MAXIMUM_WORDS = 20
+}
+
+/** Pure validation shared by the Android callback path and deterministic JVM tests. */
+internal object LocalVlmFocusedObjectResponseValidator {
+    fun matches(
+        expectedCorrelation: LocalVlmFocusedObjectCorrelation,
+        expectedRequestedNanos: Long,
+        returnedTask: LocalVlmTaskKind?,
+        returnedCorrelation: LocalVlmFocusedObjectCorrelation?,
+        returnedRequestedNanos: Long,
+    ): Boolean = returnedTask == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 &&
+        returnedCorrelation == expectedCorrelation &&
+        returnedRequestedNanos == expectedRequestedNanos
+
+    fun validateAnswer(
+        expectedCorrelation: LocalVlmFocusedObjectCorrelation,
+        expectedRequestedNanos: Long,
+        requestStartedNanos: Long,
+        nowNanos: Long,
+        isAnswerResponse: Boolean,
+        returnedTask: LocalVlmTaskKind?,
+        returnedCorrelation: LocalVlmFocusedObjectCorrelation?,
+        returnedRequestedNanos: Long,
+        completedNanos: Long,
+        rawAnswer: String?,
+    ): LocalVlmFocusedObjectAnswer? {
+        if (!isAnswerResponse ||
+            !matches(
+                expectedCorrelation,
+                expectedRequestedNanos,
+                returnedTask,
+                returnedCorrelation,
+                returnedRequestedNanos,
+            ) ||
+            nowNanos < requestStartedNanos ||
+            nowNanos - requestStartedNanos > MAXIMUM_RESPONSE_NANOS ||
+            completedNanos < expectedCorrelation.sourceCaptureTimestampNanos ||
+            completedNanos > nowNanos
+        ) return null
+        val answer = rawAnswer?.let(LocalVlmFocusedObjectAnswerParser::parse) ?: return null
+        return LocalVlmFocusedObjectAnswer(expectedCorrelation, completedNanos, answer)
+    }
+
+    private const val MAXIMUM_RESPONSE_NANOS = 9_000_000_000L
+}
+
+private object LocalVlmPlainText {
+    private const val MAXIMUM_IDENTIFIER_CHARACTERS = 128
+    private const val MAXIMUM_IDENTIFIER_UTF8_BYTES = 256
+
+    fun normalizeIdentifier(identifier: String): String? = normalize(
+        identifier,
+        MAXIMUM_IDENTIFIER_CHARACTERS,
+        MAXIMUM_IDENTIFIER_UTF8_BYTES,
+    )
+
+    fun normalize(value: String, maximumCharacters: Int, maximumUtf8Bytes: Int): String? {
+        if (value.isEmpty() || value.length > maximumCharacters * 2) return null
+        val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+        val result = StringBuilder(normalized.length.coerceAtMost(maximumCharacters))
+        var spacePending = false
+        normalized.forEach { character ->
+            if (character.isWhitespace()) {
+                spacePending = result.isNotEmpty()
+            } else {
+                val type = Character.getType(character)
+                if (Character.isISOControl(character) ||
+                    type == Character.FORMAT.toInt() ||
+                    type == Character.PRIVATE_USE.toInt() ||
+                    type == Character.SURROGATE.toInt() ||
+                    type == Character.UNASSIGNED.toInt()
+                ) return null
+                if (spacePending) result.append(' ')
+                result.append(character)
+                spacePending = false
+            }
+            if (result.length > maximumCharacters) return null
+        }
+        val text = result.toString()
+        if (text.isBlank() || text.encodeToByteArray().size > maximumUtf8Bytes) return null
+        return text
+    }
 }
 
 /**

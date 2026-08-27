@@ -32,6 +32,13 @@ import org.conceptflow.mpl.host.feedback.AccessibilityAwareSpeechFeedback
 import org.conceptflow.mpl.host.feedback.HostCueDispatcher
 import org.conceptflow.mpl.host.feedback.PlatformHostAudioFeedback
 import org.conceptflow.mpl.host.feedback.PlatformHostHapticFeedback
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
+import org.conceptflow.mpl.host.focus.SpatialFocusAnnouncementPolicy
+import org.conceptflow.mpl.host.focus.SpatialFocusDwell
+import org.conceptflow.mpl.host.focus.SpatialFocusMenuOption
+import org.conceptflow.mpl.host.focus.SpatialFocusMode
+import org.conceptflow.mpl.host.focus.SpatialFocusOperatorNotice
+import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.AcceleratorTarget
 import org.conceptflow.mpl.host.vision.AndroidGnssEnvironmentSource
 import org.conceptflow.mpl.host.vision.BoundedMetricDepthCalibrationStore
@@ -98,6 +105,8 @@ open class MainActivity : AppCompatActivity() {
     private lateinit var liveMachineVisionView: TextView
     private lateinit var environmentStatusView: TextView
     private lateinit var cueStatusView: TextView
+    private lateinit var spatialFocusStatusView: TextView
+    private val spatialFocusAnnouncementPolicy = SpatialFocusAnnouncementPolicy()
     private lateinit var liveMicrophoneButton: Button
     private lateinit var playRokidBrandButton: Button
     private lateinit var automaticEnvironmentButton: Button
@@ -127,6 +136,9 @@ open class MainActivity : AppCompatActivity() {
             updateLiveNodeControl(liveStatus)
             showMachineVisionReadiness(liveStatus)
         }
+    }
+    private val spatialFocusObserver: (SpatialFocusState?) -> Unit = { focus ->
+        runOnUiThread { showSpatialFocus(focus) }
     }
 
     private val locationPermissionRequest = registerForActivityResult(
@@ -168,6 +180,7 @@ open class MainActivity : AppCompatActivity() {
         liveMachineVisionView = findViewById(R.id.live_machine_vision_status)
         environmentStatusView = findViewById(R.id.environment_status)
         cueStatusView = findViewById(R.id.cue_status)
+        spatialFocusStatusView = findViewById(R.id.spatial_focus_status)
         liveMicrophoneButton = findViewById(R.id.request_live_microphone)
         playRokidBrandButton = findViewById(R.id.play_rokid_brand_sequence)
         automaticEnvironmentButton = findViewById(R.id.environment_automatic)
@@ -241,6 +254,18 @@ open class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.environment_diagnostic).setOnClickListener { runEnvironmentDiagnostic() }
         findViewById<Button>(R.id.cancel).setOnClickListener { cancelCurrent() }
         findViewById<Button>(R.id.disconnect).setOnClickListener { disconnect() }
+        findViewById<Button>(R.id.focus_previous).setOnClickListener {
+            sendFocusCommand(SpatialFocusCommand.PREVIOUS)
+        }
+        findViewById<Button>(R.id.focus_next).setOnClickListener {
+            sendFocusCommand(SpatialFocusCommand.NEXT)
+        }
+        findViewById<Button>(R.id.focus_activate).setOnClickListener {
+            sendFocusCommand(SpatialFocusCommand.ACTIVATE)
+        }
+        findViewById<Button>(R.id.focus_back).setOnClickListener {
+            sendFocusCommand(SpatialFocusCommand.BACK)
+        }
         showCapabilities(capabilities)
         showMachineVisionReadiness()
         showEnvironmentMode(speak = false)
@@ -250,6 +275,7 @@ open class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         AndroidNodeRuntimeState.addObserver(liveNodeStatusObserver)
+        AndroidNodeRuntimeState.addFocusObserver(spatialFocusObserver)
         if (environmentMode == EnvironmentSelectionMode.AUTOMATIC && hasFineLocationPermission()) {
             startGnssEvidenceBurst(speak = false)
         }
@@ -257,6 +283,7 @@ open class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         AndroidNodeRuntimeState.removeObserver(liveNodeStatusObserver)
+        AndroidNodeRuntimeState.removeFocusObserver(spatialFocusObserver)
         gnssEnvironmentSource.stop()
         super.onStop()
     }
@@ -291,7 +318,53 @@ open class MainActivity : AppCompatActivity() {
         KeyEvent.KEYCODE_E -> true.also { runEnvironmentDiagnostic() }
         KeyEvent.KEYCODE_X -> true.also { cancelCurrent() }
         KeyEvent.KEYCODE_D -> true.also { disconnect() }
+        KeyEvent.KEYCODE_DPAD_LEFT -> true.also { sendFocusCommand(SpatialFocusCommand.PREVIOUS) }
+        KeyEvent.KEYCODE_DPAD_RIGHT -> true.also { sendFocusCommand(SpatialFocusCommand.NEXT) }
+        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER ->
+            true.also { sendFocusCommand(SpatialFocusCommand.ACTIVATE) }
+        KeyEvent.KEYCODE_ESCAPE -> true.also { sendFocusCommand(SpatialFocusCommand.BACK) }
         else -> super.onKeyUp(keyCode, event)
+    }
+
+    private fun sendFocusCommand(command: SpatialFocusCommand) {
+        AndroidNodeForegroundService.focusCommand(this, command)
+    }
+
+    private fun showSpatialFocus(state: SpatialFocusState?) {
+        val message = when {
+            state == null || state.mode == SpatialFocusMode.INACTIVE -> getString(R.string.spatial_focus_inactive)
+            state.itemCount == 0 -> getString(R.string.spatial_focus_empty)
+            state.operatorNotice is SpatialFocusOperatorNotice.VqaRejected -> getString(
+                R.string.spatial_focus_vqa_rejected,
+                state.operatorNotice.reason.name.lowercase().replace('_', ' '),
+            )
+            state.operatorNotice is SpatialFocusOperatorNotice.BeaconRejected -> getString(
+                R.string.spatial_focus_beacon_rejected,
+                state.operatorNotice.reason.name.lowercase().replace('_', ' '),
+            )
+            state.mode == SpatialFocusMode.ACTION_MENU -> getString(
+                R.string.spatial_focus_menu,
+                when (state.menuOption) {
+                    SpatialFocusMenuOption.VQA -> getString(R.string.spatial_focus_option_vqa)
+                    SpatialFocusMenuOption.BEACON -> getString(R.string.spatial_focus_option_beacon)
+                    SpatialFocusMenuOption.BACK -> getString(R.string.spatial_focus_option_back)
+                    null -> getString(R.string.spatial_focus_option_back)
+                },
+                state.menuIndex + 1,
+            )
+            state.mode == SpatialFocusMode.VQA_PENDING -> getString(R.string.spatial_focus_vqa_pending)
+            state.mode == SpatialFocusMode.VQA_RESULT -> state.vqaAnswer
+            state.mode == SpatialFocusMode.BEACON_ACTIVE -> getString(
+                R.string.spatial_focus_beacon_active,
+                state.talkBackPhrase,
+            )
+            state.dwell == SpatialFocusDwell.READY -> state.talkBackPhrase
+            else -> getString(R.string.spatial_focus_moving, state.selectedIndex + 1, state.itemCount)
+        }
+        if (spatialFocusStatusView.text.toString() != message) spatialFocusStatusView.text = message
+        if (spatialFocusAnnouncementPolicy.shouldAnnounce(state)) {
+            spatialFocusStatusView.announceForAccessibility(message)
+        }
     }
 
     private fun startLiveMachineVision() {

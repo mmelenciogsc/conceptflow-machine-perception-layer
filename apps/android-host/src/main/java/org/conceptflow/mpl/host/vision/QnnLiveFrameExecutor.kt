@@ -60,6 +60,7 @@ class QnnLiveFrameExecutor(
     private val sessionFactory: QnnModelSessionFactory,
     private val decoder: JpegFrameDecoder,
     private val clockNanos: () -> Long,
+    private val sourceFrameObserver: (Long, VisionFrame, RgbImage) -> Unit = { _, _, _ -> },
 ) : AutoCloseable {
     private val segmentationSession: QnnModelSession
     private val tracker = BoundedYoloTracker()
@@ -75,6 +76,7 @@ class QnnLiveFrameExecutor(
     fun process(
         frame: EncodedJpegFrame,
         visionFrame: VisionFrame,
+        sourceSessionGeneration: Long = 0L,
         selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
     ): QnnLiveFrameResult? {
         check(!closed) { "live QNN frame executor is closed" }
@@ -89,6 +91,7 @@ class QnnLiveFrameExecutor(
             frame.frameId,
             visionFrame,
             image,
+            sourceSessionGeneration,
             frameStarted,
             decodeCompleted,
             selectDepthProfile,
@@ -99,6 +102,7 @@ class QnnLiveFrameExecutor(
     fun process(
         frame: RawRgbFrame,
         visionFrame: VisionFrame,
+        sourceSessionGeneration: Long = 0L,
         selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
     ): QnnLiveFrameResult? {
         check(!closed) { "live QNN frame executor is closed" }
@@ -110,6 +114,7 @@ class QnnLiveFrameExecutor(
             frame.frameId,
             visionFrame,
             image,
+            sourceSessionGeneration,
             frameStarted,
             decodeCompleted,
             selectDepthProfile,
@@ -120,10 +125,16 @@ class QnnLiveFrameExecutor(
         frameId: Long,
         visionFrame: VisionFrame,
         image: RgbImage,
+        sourceSessionGeneration: Long,
         frameStarted: Long,
         decodeCompleted: Long,
         selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
     ): QnnLiveFrameResult? {
+        try {
+            sourceFrameObserver(sourceSessionGeneration, visionFrame, image)
+        } catch (_: RuntimeException) {
+            // An optional bounded VQA cache must not disable the primary QNN perception path.
+        }
 
         val segmentationInput = VisionTensorPreprocessor.yolo640(image)
         val segmentationPreprocessingCompleted = clockNanos()

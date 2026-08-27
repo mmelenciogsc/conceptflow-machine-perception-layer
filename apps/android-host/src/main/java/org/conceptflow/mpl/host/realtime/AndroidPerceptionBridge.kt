@@ -19,4 +19,14 @@ object AndroidPerceptionBridge {
     fun drainTouchEvents(maximumEvents: Int): ByteArray = PerceptionBusBinaryCodec.encodeTouchBatch(
         runtimeBus.drainTouch(maximumEvents.coerceIn(1, 128)),
     )
+
+    @JvmStatic
+    fun pollFocusState(lastRevision: Long): ByteArray? =
+        runtimeBus.latestFocusAfter(lastRevision.coerceAtLeast(0L), SystemClock.elapsedRealtimeNanos())
+            ?.let(PerceptionBusBinaryCodec::encodeFocus)
+
+    @JvmStatic
+    fun pollHeadPose(lastRevision: Long): ByteArray? =
+        runtimeBus.latestHeadAfter(lastRevision.coerceAtLeast(0L))
+            ?.let(PerceptionBusBinaryCodec::encodeHead)
 }

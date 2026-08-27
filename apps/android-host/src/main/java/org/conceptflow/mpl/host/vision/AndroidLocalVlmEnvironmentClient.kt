@@ -28,14 +28,23 @@ class AndroidLocalVlmEnvironmentClient(
     private val clockNanos: () -> Long,
     private val cadence: LocalVlmCadenceGate = LocalVlmCadenceGate(),
     private val sceneChangeGate: LocalVlmSceneChangeGate = LocalVlmSceneChangeGate(),
-) : AutoCloseable {
+) : AutoCloseable, LocalFocusedVqaClient {
     private val context = context.applicationContext
     private val requestIds = AtomicLong()
     private val latest = AtomicReference<EnvironmentSignal?>(null)
-    private val responseMessenger = Messenger(Handler(Looper.getMainLooper()) { handleResponse(it) })
+    private val responseHandler = Handler(Looper.getMainLooper()) { handleResponse(it) }
+    private val responseMessenger = Messenger(responseHandler)
+    private val focusedCallbacks = LocalVlmFocusedCallbackDispatcher(
+        enqueue = { action -> responseHandler.post(action) },
+        onCallbackFailure = { error ->
+            Log.w(LOG_TAG, "focused VQA callback failed: ${error.javaClass.simpleName}")
+        },
+    )
+    private val reconnectPolicy = LocalVlmReconnectPolicy()
     private val lock = Any()
     private var service: Messenger? = null
     private var bound = false
+    private var binding = false
     private var closed = false
     private var prewarmReady = false
     private var prewarmInFlight = false
@@ -47,59 +56,43 @@ class AndroidLocalVlmEnvironmentClient(
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            if (binder == null) {
+                handleServiceLoss(unbindBeforeRetry = true)
+                return
+            }
+            var rejectConnection = false
             synchronized(lock) {
-                if (!closed && binder != null) {
+                if (closed) {
+                    rejectConnection = true
+                } else {
                     service = Messenger(binder)
+                    binding = false
+                    bound = true
+                    reconnectPolicy.connected()
                     requestPrewarmLocked(clockNanos())
                 }
             }
+            if (rejectConnection) unbindQuietly()
             Log.i(LOG_TAG, "local VLM service connected")
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            synchronized(lock) {
-                service = null
-                prewarmReady = false
-                prewarmInFlight = false
-                prewarmStartedNanos = -1L
-                val abandoned = activeRequest
-                abandoned?.image?.delete()
-                activeRequest = null
-                if (abandoned != null) cadence.fail(clockNanos())
-            }
+            // Android normally reconnects this still-active binding. A bounded watchdog falls back
+            // to an explicit unbind/rebind if no replacement binder arrives.
+            handleServiceLoss(unbindBeforeRetry = false)
             Log.w(LOG_TAG, "local VLM service disconnected")
         }
 
         override fun onBindingDied(name: ComponentName?) {
-            synchronized(lock) {
-                service = null
-                prewarmReady = false
-                prewarmInFlight = false
-                prewarmStartedNanos = -1L
-                val abandoned = activeRequest
-                abandoned?.image?.delete()
-                activeRequest = null
-                if (abandoned != null) cadence.fail(clockNanos())
-            }
+            handleServiceLoss(unbindBeforeRetry = true)
         }
 
         override fun onNullBinding(name: ComponentName?) {
-            synchronized(lock) {
-                service = null
-            }
+            handleServiceLoss(unbindBeforeRetry = true)
         }
     }
 
-    fun start(): Boolean = synchronized(lock) {
-        if (closed) return false
-        if (bound) return true
-        bound = context.bindService(
-            Intent(context, LocalVlmInferenceService::class.java),
-            connection,
-            Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
-        )
-        bound
-    }
+    fun start(): Boolean = bindIfNeeded()
 
     /** Returns immediately unless this admitted low-rate request needs bounded RGB-to-JPEG encoding. */
     fun offer(frame: EncodedJpegFrame): Boolean {
@@ -129,6 +122,97 @@ class AndroidLocalVlmEnvironmentClient(
         return observe(frame.frameId, descriptor)
     }
 
+    /**
+     * Submits one explicit focused-object question. It never runs from frame cadence and never
+     * replaces an environment request or another VQA request already using the shared VLM.
+     */
+    override fun submitFocusedObjectVqa(
+        request: LocalVlmFocusedObjectRequest,
+        frame: EncodedJpegFrame,
+        callback: LocalVlmFocusedObjectCallback,
+    ): LocalVlmSubmissionResult = synchronized(lock) {
+        val now = clockNanos()
+        if (closed || service == null) return LocalVlmSubmissionResult.UNAVAILABLE
+        if (!prewarmReady) {
+            requestPrewarmLocked(now)
+            return if (prewarmInFlight) LocalVlmSubmissionResult.BUSY else LocalVlmSubmissionResult.UNAVAILABLE
+        }
+        if (activeRequest != null) return LocalVlmSubmissionResult.BUSY
+        val correlation = request.correlation
+        if (frame.frameId != correlation.sourceFrameId ||
+            frame.captureMonotonicTimestampNanos != correlation.sourceCaptureTimestampNanos ||
+            now < request.requestedMonotonicTimestampNanos ||
+            now - request.requestedMonotonicTimestampNanos > MAXIMUM_FOCUSED_VQA_SUBMISSION_AGE_NANOS ||
+            frame.jpeg.size !in MIN_JPEG_BYTES..MAX_JPEG_BYTES
+        ) return LocalVlmSubmissionResult.INVALID_REQUEST
+
+        val transportRequestId = requestIds.incrementAndGet()
+        val image = runCatching { persist(transportRequestId, frame.jpeg) }.getOrElse {
+            return LocalVlmSubmissionResult.UNAVAILABLE
+        }
+        val active = FocusedActiveRequest(
+            transportRequestId,
+            correlation.sourceFrameId,
+            correlation.sourceCaptureTimestampNanos,
+            now,
+            image,
+            request,
+            callback,
+        )
+        activeRequest = active
+        val message = Message.obtain(null, LocalVlmIpc.REQUEST_INFER).apply {
+            replyTo = responseMessenger
+            data = Bundle().apply {
+                putLong(LocalVlmIpc.KEY_REQUEST_ID, transportRequestId)
+                putLong(LocalVlmIpc.KEY_FRAME_ID, correlation.sourceFrameId)
+                putLong(LocalVlmIpc.KEY_CAPTURE_NANOS, correlation.sourceCaptureTimestampNanos)
+                putString(LocalVlmIpc.KEY_IMAGE_PATH, image.absolutePath)
+                putString(LocalVlmIpc.KEY_IMAGE_SHA256, sha256(frame.jpeg))
+                putString(LocalVlmIpc.KEY_TASK, LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1.name)
+                putLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, correlation.focusRequestId)
+                putLong(LocalVlmIpc.KEY_SESSION_GENERATION, correlation.sessionGeneration)
+                putLong(LocalVlmIpc.KEY_SNAPSHOT_ID, correlation.snapshotId)
+                putLong(LocalVlmIpc.KEY_FOCUS_GENERATION, correlation.focusGeneration)
+                putString(LocalVlmIpc.KEY_TRACK_ID, correlation.stableTrackId)
+                putLong(LocalVlmIpc.KEY_REQUESTED_NANOS, request.requestedMonotonicTimestampNanos)
+                putString(LocalVlmIpc.KEY_QUESTION, request.question)
+            }
+        }
+        try {
+            requireNotNull(service).send(message)
+            LocalVlmSubmissionResult.ACCEPTED
+        } catch (_: RemoteException) {
+            activeRequest = null
+            image.delete()
+            LocalVlmSubmissionResult.UNAVAILABLE
+        }
+    }
+
+    /** Cancels only the exactly correlated focused request; stale cancellation is ignored. */
+    override fun cancelFocusedObjectVqa(correlation: LocalVlmFocusedObjectCorrelation): Boolean = synchronized(lock) {
+        val active = activeRequest as? FocusedActiveRequest ?: return false
+        if (active.request.correlation != correlation) return false
+        runCatching {
+            service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL).apply {
+                data = Bundle().apply {
+                    putLong(LocalVlmIpc.KEY_REQUEST_ID, active.requestId)
+                    putLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, correlation.focusRequestId)
+                    putLong(LocalVlmIpc.KEY_SESSION_GENERATION, correlation.sessionGeneration)
+                    putLong(LocalVlmIpc.KEY_SNAPSHOT_ID, correlation.snapshotId)
+                    putLong(LocalVlmIpc.KEY_FOCUS_GENERATION, correlation.focusGeneration)
+                    putString(LocalVlmIpc.KEY_TRACK_ID, correlation.stableTrackId)
+                    putLong(LocalVlmIpc.KEY_FRAME_ID, correlation.sourceFrameId)
+                    putLong(LocalVlmIpc.KEY_CAPTURE_NANOS, correlation.sourceCaptureTimestampNanos)
+                }
+            })
+        }
+        activeRequest = null
+        active.image.delete()
+        prewarmReady = false
+        nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
+        true
+    }
+
     private fun offer(
         frameId: Long,
         captureNanos: Long,
@@ -156,9 +240,9 @@ class AndroidLocalVlmEnvironmentClient(
             cadence.fail(clockNanos())
             return false
         }
-        val request = ActiveRequest(requestId, frameId, captureNanos, now, image, descriptor)
+        val request = EnvironmentActiveRequest(requestId, frameId, captureNanos, now, image, descriptor)
         activeRequest = request
-        val message = Message.obtain(null, LocalVlmIpc.REQUEST_CLASSIFY).apply {
+        val message = Message.obtain(null, LocalVlmIpc.REQUEST_INFER).apply {
             replyTo = responseMessenger
             data = Bundle().apply {
                 putLong(LocalVlmIpc.KEY_REQUEST_ID, requestId)
@@ -195,7 +279,7 @@ class AndroidLocalVlmEnvironmentClient(
         if (existing != null) return existing.decision
         val scene = sceneChangeGate.observe(descriptor)
         latestSceneObservation = SceneObservation(frameId, scene)
-        activeRequest?.observe(descriptor, sceneChangeGate)
+        (activeRequest as? EnvironmentActiveRequest)?.observe(descriptor, sceneChangeGate)
         if (scene.significantChange && cadence.isStable()) {
             latest.set(null)
             cadence.invalidateForSceneChange(nowNanos)
@@ -271,7 +355,11 @@ class AndroidLocalVlmEnvironmentClient(
     fun htpWorkState(): LocalVlmHtpWorkState? = synchronized(lock) {
         activeRequest?.let {
             return LocalVlmHtpWorkState(
-                LocalVlmHtpWorkKind.ENVIRONMENT_CLASSIFICATION,
+                if (it is FocusedActiveRequest) {
+                    LocalVlmHtpWorkKind.FOCUSED_OBJECT_VQA
+                } else {
+                    LocalVlmHtpWorkKind.ENVIRONMENT_CLASSIFICATION
+                },
                 it.startedNanos,
             )
         }
@@ -294,7 +382,11 @@ class AndroidLocalVlmEnvironmentClient(
         runCatching { service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL_ALL)) }
         active?.image?.delete()
         activeRequest = null
-        if (active != null) cadence.defer(clockNanos(), QNN_PRIORITY_RETRY_NANOS)
+        when (active) {
+            is EnvironmentActiveRequest -> cadence.defer(clockNanos(), QNN_PRIORITY_RETRY_NANOS)
+            is FocusedActiveRequest -> notifyFocused(active, LocalVlmFocusedObjectFailure.DEFERRED_FOR_QNN)
+            null -> Unit
+        }
         prewarmReady = false
         prewarmInFlight = false
         prewarmStartedNanos = -1L
@@ -318,41 +410,50 @@ class AndroidLocalVlmEnvironmentClient(
         latest.set(null)
     }
 
-    override fun close() = synchronized(lock) {
-        if (closed) return
-        runCatching { service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL_ALL)) }
-        closed = true
-        service = null
-        prewarmReady = false
-        prewarmInFlight = false
-        prewarmStartedNanos = -1L
-        activeRequest?.image?.delete()
-        activeRequest = null
-        cadence.reset()
-        sceneChangeGate.reset()
-        latestSceneObservation = null
-        latest.set(null)
-        if (bound) runCatching { context.unbindService(connection) }
-        bound = false
+    override fun close() {
+        val shouldUnbind = synchronized(lock) {
+            if (closed) return
+            runCatching { service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL_ALL)) }
+            closed = true
+            reconnectPolicy.close()
+            service = null
+            prewarmReady = false
+            prewarmInFlight = false
+            prewarmStartedNanos = -1L
+            activeRequest?.image?.delete()
+            activeRequest = null
+            cadence.reset()
+            sceneChangeGate.reset()
+            latestSceneObservation = null
+            latest.set(null)
+            val hadBinding = bound || binding
+            bound = false
+            binding = false
+            hadBinding
+        }
+        if (shouldUnbind) unbindQuietly()
         cleanupInbox()
     }
 
     private fun handleResponse(message: Message): Boolean = synchronized(lock) {
-        if (message.what == LocalVlmIpc.RESPONSE_PREWARMED ||
+        val prewarmTerminal = message.what == LocalVlmIpc.RESPONSE_PREWARMED ||
             message.what == LocalVlmIpc.RESPONSE_PREWARM_FAILED ||
-            message.what == LocalVlmIpc.RESPONSE_DEFERRED && prewarmInFlight
-        ) {
+            message.what == LocalVlmIpc.RESPONSE_DEFERRED ||
+            message.what == LocalVlmIpc.RESPONSE_BUSY
+        if (prewarmInFlight && prewarmTerminal) {
             val requestId = message.data?.getLong(LocalVlmIpc.KEY_REQUEST_ID, 0L) ?: 0L
-            if (!prewarmInFlight || requestId != prewarmRequestId) return true
+            if (requestId != prewarmRequestId) return true
             prewarmInFlight = false
             prewarmStartedNanos = -1L
             if (message.what == LocalVlmIpc.RESPONSE_PREWARMED) {
                 prewarmReady = true
                 Log.i(LOG_TAG, "local VLM prewarm complete")
-            } else if (message.what == LocalVlmIpc.RESPONSE_DEFERRED) {
+            } else if (message.what == LocalVlmIpc.RESPONSE_DEFERRED ||
+                message.what == LocalVlmIpc.RESPONSE_BUSY
+            ) {
                 prewarmReady = false
                 nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
-                Log.i(LOG_TAG, "local VLM prewarm deferred for QNN demand")
+                Log.i(LOG_TAG, "local VLM prewarm deferred")
             } else {
                 prewarmReady = false
                 nextPrewarmAttemptNanos = clockNanos() + PREWARM_RETRY_NANOS
@@ -361,8 +462,10 @@ class AndroidLocalVlmEnvironmentClient(
             return true
         }
         if (message.what != LocalVlmIpc.RESPONSE_CLASSIFIED &&
+            message.what != LocalVlmIpc.RESPONSE_VQA_ANSWERED &&
             message.what != LocalVlmIpc.RESPONSE_FAILED &&
-            message.what != LocalVlmIpc.RESPONSE_DEFERRED
+            message.what != LocalVlmIpc.RESPONSE_DEFERRED &&
+            message.what != LocalVlmIpc.RESPONSE_BUSY
         ) {
             return false
         }
@@ -372,39 +475,50 @@ class AndroidLocalVlmEnvironmentClient(
         activeRequest = null
         request.image.delete()
         val now = clockNanos()
-        if (message.what == LocalVlmIpc.RESPONSE_DEFERRED) {
-            cadence.defer(now, QNN_PRIORITY_RETRY_NANOS)
-            Log.i(
-                LOG_TAG,
-                "local VLM request deferred reason=" +
-                    (data.getString(LocalVlmIpc.KEY_FAILURE) ?: "htp_busy") +
-                    " waitMs=${data.getLong(LocalVlmIpc.KEY_LEASE_WAIT_NANOS, 0L) / 1_000_000L}",
-            )
-            return true
+        when (request) {
+            is EnvironmentActiveRequest -> handleEnvironmentResponse(request, message.what, data, now)
+            is FocusedActiveRequest -> handleFocusedResponse(request, message.what, data, now)
         }
-        if (message.what == LocalVlmIpc.RESPONSE_FAILED) {
-            cadence.fail(now)
+        true
+    }
+
+    private fun handleEnvironmentResponse(
+        request: EnvironmentActiveRequest,
+        response: Int,
+        data: Bundle,
+        nowNanos: Long,
+    ) {
+        if (response == LocalVlmIpc.RESPONSE_DEFERRED || response == LocalVlmIpc.RESPONSE_BUSY) {
+            cadence.defer(nowNanos, QNN_PRIORITY_RETRY_NANOS)
+            Log.i(LOG_TAG, "local VLM environment request deferred")
+            return
+        }
+        if (response == LocalVlmIpc.RESPONSE_FAILED) {
+            cadence.fail(nowNanos)
             prewarmReady = false
-            requestPrewarmLocked(now)
-            Log.w(LOG_TAG, "local VLM request failed: ${data.getString(LocalVlmIpc.KEY_FAILURE) ?: "unknown"}")
-            return true
+            requestPrewarmLocked(nowNanos)
+            Log.w(LOG_TAG, "local VLM environment request failed")
+            return
         }
         if (request.superseded) {
             cadence.cancel()
             latest.set(null)
             Log.i(LOG_TAG, "discarded stale local VLM response for frame=${request.frameId}")
-            return true
+            return
         }
         val frameId = data.getLong(LocalVlmIpc.KEY_FRAME_ID, 0L)
         val captureNanos = data.getLong(LocalVlmIpc.KEY_CAPTURE_NANOS, -1L)
         val completedNanos = data.getLong(LocalVlmIpc.KEY_COMPLETED_NANOS, -1L)
+        val task = LocalVlmTaskKind.parse(data.getString(LocalVlmIpc.KEY_TASK))
         val label = data.getString(LocalVlmIpc.KEY_LABEL)
             ?.let { runCatching { LocalVlmEnvironmentLabel.valueOf(it) }.getOrNull() }
-        if (frameId != request.frameId || captureNanos != request.captureNanos ||
+        if (response != LocalVlmIpc.RESPONSE_CLASSIFIED ||
+            task != LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1 ||
+            frameId != request.frameId || captureNanos != request.captureNanos ||
             completedNanos < captureNanos || label == null
         ) {
-            cadence.fail(now)
-            return true
+            cadence.fail(nowNanos)
+            return
         }
         val result = LocalVlmEnvironmentResult(
             request.requestId,
@@ -416,7 +530,7 @@ class AndroidLocalVlmEnvironmentClient(
             LocalVlmModelProfile.RUNTIME_ID,
             LocalVlmModelProfile.COMPUTE_UNIT,
         )
-        val confirmed = cadence.complete(label, now)
+        val confirmed = cadence.complete(label, nowNanos)
         if (confirmed == label) {
             sceneChangeGate.markClassified(request.descriptor)
             result.toEnvironmentSignal()?.let(latest::set)
@@ -426,21 +540,212 @@ class AndroidLocalVlmEnvironmentClient(
             "local VLM classified frame=$frameId label=${label.name} " +
                 "latencyMs=${(completedNanos - captureNanos) / 1_000_000L}",
         )
-        true
+    }
+
+    private fun handleFocusedResponse(
+        request: FocusedActiveRequest,
+        response: Int,
+        data: Bundle,
+        nowNanos: Long,
+    ) {
+        val correlation = request.request.correlation
+        val returnedCorrelation = decodeFocusedCorrelation(data)
+        val task = LocalVlmTaskKind.parse(data.getString(LocalVlmIpc.KEY_TASK))
+        val requestedNanos = data.getLong(LocalVlmIpc.KEY_REQUESTED_NANOS, -1L)
+        if (!LocalVlmFocusedObjectResponseValidator.matches(
+                correlation,
+                request.request.requestedMonotonicTimestampNanos,
+                task,
+                returnedCorrelation,
+                requestedNanos,
+            )
+        ) {
+            notifyFocused(request, LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED)
+            return
+        }
+        when (response) {
+            LocalVlmIpc.RESPONSE_BUSY -> {
+                notifyFocused(request, LocalVlmFocusedObjectFailure.BUSY)
+                return
+            }
+            LocalVlmIpc.RESPONSE_DEFERRED -> {
+                notifyFocused(request, LocalVlmFocusedObjectFailure.DEFERRED_FOR_QNN)
+                return
+            }
+            LocalVlmIpc.RESPONSE_FAILED -> {
+                val failure = if (data.getString(LocalVlmIpc.KEY_FAILURE) == "invalid_request") {
+                    LocalVlmFocusedObjectFailure.INVALID_REQUEST
+                } else {
+                    prewarmReady = false
+                    requestPrewarmLocked(nowNanos)
+                    LocalVlmFocusedObjectFailure.INFERENCE_FAILED
+                }
+                notifyFocused(request, failure)
+                return
+            }
+        }
+        val completedNanos = data.getLong(LocalVlmIpc.KEY_COMPLETED_NANOS, -1L)
+        val answer = LocalVlmFocusedObjectResponseValidator.validateAnswer(
+            expectedCorrelation = correlation,
+            expectedRequestedNanos = request.request.requestedMonotonicTimestampNanos,
+            requestStartedNanos = request.startedNanos,
+            nowNanos = nowNanos,
+            isAnswerResponse = response == LocalVlmIpc.RESPONSE_VQA_ANSWERED,
+            returnedTask = task,
+            returnedCorrelation = returnedCorrelation,
+            returnedRequestedNanos = requestedNanos,
+            completedNanos = completedNanos,
+            rawAnswer = data.getString(LocalVlmIpc.KEY_ANSWER),
+        )
+        if (answer == null) {
+            notifyFocused(request, LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED)
+            return
+        }
+        notifyFocused(request, LocalVlmFocusedObjectOutcome.Answered(answer))
+    }
+
+    private fun decodeFocusedCorrelation(data: Bundle): LocalVlmFocusedObjectCorrelation? = runCatching {
+        LocalVlmFocusedObjectCorrelation(
+            data.getLong(LocalVlmIpc.KEY_FOCUS_REQUEST_ID, 0L),
+            data.getLong(LocalVlmIpc.KEY_SESSION_GENERATION, 0L),
+            data.getLong(LocalVlmIpc.KEY_SNAPSHOT_ID, 0L),
+            data.getLong(LocalVlmIpc.KEY_FOCUS_GENERATION, 0L),
+            data.getString(LocalVlmIpc.KEY_TRACK_ID).orEmpty(),
+            data.getLong(LocalVlmIpc.KEY_FRAME_ID, 0L),
+            data.getLong(LocalVlmIpc.KEY_CAPTURE_NANOS, -1L),
+        )
+    }.getOrNull()
+
+    private fun notifyFocused(
+        request: FocusedActiveRequest,
+        reason: LocalVlmFocusedObjectFailure,
+    ) = notifyFocused(
+        request,
+        LocalVlmFocusedObjectOutcome.Rejected(request.request.correlation, reason),
+    )
+
+    private fun notifyFocused(
+        request: FocusedActiveRequest,
+        outcome: LocalVlmFocusedObjectOutcome,
+    ) {
+        focusedCallbacks.dispatch(request.callback, outcome)
+    }
+
+    private fun abandonActiveLocked(reason: LocalVlmFocusedObjectFailure): FocusedDelivery? {
+        val active = activeRequest ?: return null
+        activeRequest = null
+        active.image.delete()
+        return when (active) {
+            is EnvironmentActiveRequest -> {
+                cadence.fail(clockNanos())
+                null
+            }
+            is FocusedActiveRequest -> FocusedDelivery(
+                active,
+                LocalVlmFocusedObjectOutcome.Rejected(active.request.correlation, reason),
+            )
+        }
+    }
+
+    private fun handleServiceLoss(unbindBeforeRetry: Boolean) {
+        var shouldUnbind = false
+        var delivery: FocusedDelivery? = null
+        var ticket: LocalVlmReconnectTicket? = null
+        synchronized(lock) {
+            if (closed) return
+            service = null
+            binding = false
+            prewarmReady = false
+            prewarmInFlight = false
+            prewarmStartedNanos = -1L
+            delivery = abandonActiveLocked(LocalVlmFocusedObjectFailure.UNAVAILABLE)
+            if (unbindBeforeRetry) {
+                shouldUnbind = bound
+                bound = false
+            }
+            ticket = reconnectPolicy.schedule()
+        }
+        if (shouldUnbind) unbindQuietly()
+        delivery?.deliver()
+        ticket?.let(::postReconnect)
+    }
+
+    private fun bindIfNeeded(): Boolean {
+        synchronized(lock) {
+            if (closed) return false
+            if (service != null || bound || binding) return true
+            binding = true
+        }
+        val accepted = runCatching {
+            context.bindService(
+                Intent(context, LocalVlmInferenceService::class.java),
+                connection,
+                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
+            )
+        }.getOrDefault(false)
+        var shouldUnbind = false
+        var ticket: LocalVlmReconnectTicket? = null
+        val usable = synchronized(lock) {
+            binding = false
+            if (closed) {
+                shouldUnbind = accepted
+                bound = false
+                false
+            } else {
+                bound = accepted
+                if (!accepted && service == null) ticket = reconnectPolicy.schedule()
+                accepted
+            }
+        }
+        if (shouldUnbind) unbindQuietly()
+        ticket?.let(::postReconnect)
+        return usable
+    }
+
+    private fun postReconnect(ticket: LocalVlmReconnectTicket) {
+        responseHandler.postDelayed(
+            {
+                if (!reconnectPolicy.consume(ticket)) return@postDelayed
+                var shouldUnbind = false
+                synchronized(lock) {
+                    if (closed || service != null) return@synchronized
+                    shouldUnbind = bound
+                    bound = false
+                }
+                if (shouldUnbind) unbindQuietly()
+                bindIfNeeded()
+            },
+            ticket.delayMillis,
+        )
+    }
+
+    private fun unbindQuietly() {
+        runCatching { context.unbindService(connection) }
+    }
+
+    private fun FocusedDelivery.deliver() {
+        notifyFocused(request, outcome)
     }
 
     private fun persist(requestId: Long, bytes: ByteArray): File {
         val directory = inboxDirectory()
         val temporary = File(directory, "frame-$requestId.jpg.tmp")
         val destination = File(directory, "frame-$requestId.jpg")
-        FileOutputStream(temporary).use { output ->
-            output.write(bytes)
-            output.fd.sync()
+        try {
+            FileOutputStream(temporary).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            check(temporary.renameTo(destination)) { "could not atomically publish VLM input" }
+            check(destination.setReadable(false, false) && destination.setReadable(true, true))
+            check(destination.setWritable(false, false) && destination.setWritable(true, true))
+            return destination
+        } catch (error: Throwable) {
+            destination.delete()
+            throw error
+        } finally {
+            temporary.delete()
         }
-        check(temporary.renameTo(destination)) { "could not atomically publish VLM input" }
-        check(destination.setReadable(false, false) && destination.setReadable(true, true))
-        check(destination.setWritable(false, false) && destination.setWritable(true, true))
-        return destination
     }
 
     private fun cleanupInbox() {
@@ -471,14 +776,22 @@ class AndroidLocalVlmEnvironmentClient(
         .digest(bytes)
         .joinToString("") { "%02x".format(it) }
 
-    private class ActiveRequest(
-        val requestId: Long,
-        val frameId: Long,
-        val captureNanos: Long,
-        val startedNanos: Long,
-        val image: File,
+    private sealed class ActiveRequest(
+        open val requestId: Long,
+        open val frameId: Long,
+        open val captureNanos: Long,
+        open val startedNanos: Long,
+        open val image: File,
+    )
+
+    private class EnvironmentActiveRequest(
+        override val requestId: Long,
+        override val frameId: Long,
+        override val captureNanos: Long,
+        override val startedNanos: Long,
+        override val image: File,
         val descriptor: LocalVlmSceneDescriptor,
-    ) {
+    ) : ActiveRequest(requestId, frameId, captureNanos, startedNanos, image) {
         private var consecutiveMismatches = 0
         var superseded: Boolean = false
             private set
@@ -498,6 +811,21 @@ class AndroidLocalVlmEnvironmentClient(
         }
     }
 
+    private class FocusedActiveRequest(
+        override val requestId: Long,
+        override val frameId: Long,
+        override val captureNanos: Long,
+        override val startedNanos: Long,
+        override val image: File,
+        val request: LocalVlmFocusedObjectRequest,
+        val callback: LocalVlmFocusedObjectCallback,
+    ) : ActiveRequest(requestId, frameId, captureNanos, startedNanos, image)
+
+    private data class FocusedDelivery(
+        val request: FocusedActiveRequest,
+        val outcome: LocalVlmFocusedObjectOutcome,
+    )
+
     private data class SceneObservation(
         val frameId: Long,
         val decision: LocalVlmSceneChangeDecision,
@@ -512,6 +840,7 @@ class AndroidLocalVlmEnvironmentClient(
         const val DESCRIPTOR_GRID_EDGE = 16
         const val PREWARM_RETRY_NANOS = 10_000_000_000L
         const val QNN_PRIORITY_RETRY_NANOS = 250_000_000L
+        const val MAXIMUM_FOCUSED_VQA_SUBMISSION_AGE_NANOS = 1_500_000_000L
         const val MAXIMUM_CARRY_RELIABILITY_REDUCTION = 0.35
         const val STABLE_SCENE_SOURCE_ID = "qwen3-vl-2b-environment-stable-scene"
         const val LOG_TAG = "MplLocalVlm"

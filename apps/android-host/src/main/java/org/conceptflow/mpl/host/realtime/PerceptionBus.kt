@@ -7,6 +7,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.sqrt
+import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.HeadPoseObservation
 import org.conceptflow.mpl.host.vision.LiveMetricFusionResult
 import org.conceptflow.mpl.host.vision.LiveMetricFusionReason
@@ -67,7 +68,26 @@ data class PerceptionHeadState(
     val x: Float,
     val y: Float,
     val z: Float,
-)
+) {
+    init {
+        require(timestampNs >= 0L)
+        require(orientationAccuracy in 0..3)
+        require(listOf(w, x, y, z).all(Float::isFinite))
+    }
+}
+
+data class PerceptionHeadSnapshot(
+    val revision: Long,
+    val sessionGeneration: Long,
+    val state: PerceptionHeadState,
+) {
+    init {
+        require(revision > 0L && sessionGeneration > 0L)
+        require(state.orientationAccuracy in 1..3)
+        val normSquared = state.w * state.w + state.x * state.x + state.y * state.y + state.z * state.z
+        require(kotlin.math.abs(normSquared - 1f) <= 0.001f)
+    }
+}
 
 data class PerceptionWorldState(
     val revision: Long,
@@ -132,8 +152,12 @@ class PerceptionBus(
     private val nextRevision = AtomicLong(0L)
     private val latestState = AtomicReference<PerceptionWorldState?>(null)
     private val latestHead = AtomicReference<PerceptionHeadState?>(null)
+    private val latestHeadSnapshot = AtomicReference<PerceptionHeadSnapshot?>(null)
+    private val latestFocus = AtomicReference<SpatialFocusState?>(null)
+    private val nextHeadRevision = AtomicLong(0L)
+    private val nextFocusRevision = AtomicLong(0L)
     private val touchEvents = ArrayDeque<PerceptionTouchInput>()
-    private var sessionGeneration = 0L
+    @Volatile private var sessionGeneration = 0L
     private var publishedStates = 0L
     private var touchEventsPublished = 0L
     private var touchEventsRejected = 0L
@@ -150,6 +174,8 @@ class PerceptionBus(
         sessionGeneration = generation
         touchEvents.clear()
         latestHead.set(null)
+        latestHeadSnapshot.set(null)
+        latestFocus.set(null)
         publishState(
             sourceFrameId = 0L,
             sourceCaptureTimestampNs = nowNanos,
@@ -162,17 +188,35 @@ class PerceptionBus(
     }
 
     fun publishHeadPose(pose: HeadPoseObservation) {
-        latestHead.set(
-            PerceptionHeadState(
+        val state = PerceptionHeadState(
                 pose.hostMonotonicTimestampNanos,
                 pose.orientationAccuracy,
                 pose.worldFromHead.w.toFloat(),
                 pose.worldFromHead.x.toFloat(),
                 pose.worldFromHead.y.toFloat(),
                 pose.worldFromHead.z.toFloat(),
-            ),
-        )
+            )
+        latestHead.set(state)
+        val generation = sessionGeneration
+        if (generation > 0L && state.orientationAccuracy in 1..3) {
+            latestHeadSnapshot.set(
+                PerceptionHeadSnapshot(nextHeadRevision.incrementAndGet(), generation, state),
+            )
+        }
     }
+
+    fun publishFocus(state: SpatialFocusState): SpatialFocusState {
+        require(state.sessionGeneration == 0L || state.sessionGeneration == sessionGeneration)
+        val published = state.copy(revision = nextFocusRevision.incrementAndGet())
+        latestFocus.set(published)
+        return published
+    }
+
+    fun latestHeadAfter(revision: Long): PerceptionHeadSnapshot? =
+        latestHeadSnapshot.get()?.takeIf { it.revision > revision }
+
+    fun latestFocusAfter(revision: Long, nowNanos: Long): SpatialFocusState? =
+        latestFocus.get()?.takeIf { it.revision > revision && nowNanos <= it.validUntilTimestampNanos }
 
     @Synchronized
     fun publishPerception(
@@ -257,6 +301,8 @@ class PerceptionBus(
         require(nowNanos >= 0L)
         touchEvents.clear()
         latestHead.set(null)
+        latestHeadSnapshot.set(null)
+        latestFocus.set(null)
         publishState(
             sourceFrameId = 0L,
             sourceCaptureTimestampNs = nowNanos,
@@ -403,6 +449,8 @@ class PerceptionBus(
 object PerceptionBusBinaryCodec {
     private const val WORLD_MAGIC = 0x43465753 // CFWS
     private const val TOUCH_MAGIC = 0x43465442 // CFTB
+    private const val FOCUS_MAGIC = 0x43464653 // CFFS
+    private const val HEAD_MAGIC = 0x43464850 // CFHP
     private const val VERSION = 1
 
     fun encodeWorld(state: PerceptionWorldState): ByteArray = output { data ->
@@ -464,6 +512,32 @@ object PerceptionBusBinaryCodec {
             data.writeInt(event.action.number)
             data.writeInt(event.scanCode)
         }
+    }
+
+    fun encodeHead(snapshot: PerceptionHeadSnapshot): ByteArray = output { data ->
+        data.writeInt(HEAD_MAGIC)
+        data.writeShort(VERSION)
+        data.writeShort(0)
+        data.writeLong(snapshot.revision)
+        data.writeLong(snapshot.sessionGeneration)
+        data.writeLong(snapshot.state.timestampNs)
+        data.writeInt(snapshot.state.orientationAccuracy)
+        data.writeFloat(snapshot.state.w)
+        data.writeFloat(snapshot.state.x)
+        data.writeFloat(snapshot.state.y)
+        data.writeFloat(snapshot.state.z)
+    }
+
+    fun encodeFocus(state: SpatialFocusState): ByteArray = output { data ->
+        data.writeInt(FOCUS_MAGIC)
+        data.writeShort(VERSION)
+        data.writeShort(if (state.target == null) 0 else 1)
+        data.writeLong(state.revision)
+        data.writeLong(state.sessionGeneration)
+        data.writeLong(state.sourceWorldRevision)
+        data.writeLong(state.publishedTimestampNanos)
+        data.writeLong(state.validUntilTimestampNanos)
+        writeString(data, state.target?.stableTrackId.orEmpty())
     }
 
     private inline fun output(block: (DataOutputStream) -> Unit): ByteArray {

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<objects serializationModel="Studio.02.03.00">
+	<object class="ParameterPreset" id="{c44962f0-cb60-4c51-9fa0-58b0c4d338a5}">
+		<property name="name">
+			<value>IconConfidence</value>
+		</property>
+		<relationship name="folder">
+			<destination>{a418e0de-c7d0-05c9-280a-b529dc02e12e}</destination>
+		</relationship>
+		<relationship name="parameter">
+			<destination>{596d457f-44f5-43d6-aa89-a8c3b612685c}</destination>
+		</relationship>
+	</object>
+	<object class="GameParameter" id="{596d457f-44f5-43d6-aa89-a8c3b612685c}" />
+</objects>

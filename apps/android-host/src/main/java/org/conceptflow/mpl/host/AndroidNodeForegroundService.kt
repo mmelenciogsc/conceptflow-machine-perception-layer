@@ -16,6 +16,8 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.concurrent.CopyOnWriteArraySet
 import org.conceptflow.mpl.androidhost.LauncherActivity
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
+import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.GnssQualitySample
 
@@ -27,9 +29,11 @@ import org.conceptflow.mpl.host.vision.GnssQualitySample
  */
 object AndroidNodeRuntimeState {
     private val observers = CopyOnWriteArraySet<(LiveMachineVisionStatus?) -> Unit>()
+    private val focusObservers = CopyOnWriteArraySet<(SpatialFocusState?) -> Unit>()
 
     @Volatile
     private var latest: LiveMachineVisionStatus? = null
+    @Volatile private var latestFocus: SpatialFocusState? = null
 
     fun current(): LiveMachineVisionStatus? = latest
 
@@ -42,9 +46,25 @@ object AndroidNodeRuntimeState {
         observers -= observer
     }
 
+    fun currentFocus(): SpatialFocusState? = latestFocus
+
+    fun addFocusObserver(observer: (SpatialFocusState?) -> Unit) {
+        focusObservers += observer
+        observer(latestFocus)
+    }
+
+    fun removeFocusObserver(observer: (SpatialFocusState?) -> Unit) {
+        focusObservers -= observer
+    }
+
     internal fun publish(status: LiveMachineVisionStatus?) {
         latest = status
         observers.forEach { observer -> runCatching { observer(status) } }
+    }
+
+    internal fun publishFocus(state: SpatialFocusState?) {
+        latestFocus = state
+        focusObservers.forEach { observer -> runCatching { observer(state) } }
     }
 }
 
@@ -77,6 +97,10 @@ class AndroidNodeForegroundService : Service() {
                 controller?.playRokidBrandSequence()
                 START_NOT_STICKY
             }
+            ACTION_FOCUS_COMMAND -> {
+                intent.focusCommand()?.let { controller?.handleFocusCommand(it) }
+                START_NOT_STICKY
+            }
             else -> {
                 Log.w(TAG, "state=android_node_service action=rejected")
                 stopSelfResult(startId)
@@ -104,6 +128,7 @@ class AndroidNodeForegroundService : Service() {
         existing?.close()
         val replacement = LiveMachineVisionController(
             context = applicationContext,
+            onFocusState = AndroidNodeRuntimeState::publishFocus,
             onStatus = { status ->
                 AndroidNodeRuntimeState.publish(status)
                 updateNotification(status.accessibleSummary())
@@ -127,6 +152,7 @@ class AndroidNodeForegroundService : Service() {
     private fun stopNode() {
         controller?.close()
         controller = null
+        AndroidNodeRuntimeState.publishFocus(null)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -201,6 +227,10 @@ class AndroidNodeForegroundService : Service() {
             ?.let { value -> runCatching { EnvironmentSelectionMode.valueOf(value) }.getOrNull() }
             ?: EnvironmentSelectionMode.AUTOMATIC
 
+    private fun Intent.focusCommand(): SpatialFocusCommand? =
+        getStringExtra(EXTRA_FOCUS_COMMAND)
+            ?.let { value -> runCatching { SpatialFocusCommand.valueOf(value) }.getOrNull() }
+
     companion object {
         private const val TAG = "ConceptFlowHost"
         private const val NOTIFICATION_CHANNEL_ID = "conceptflow_android_node"
@@ -212,7 +242,9 @@ class AndroidNodeForegroundService : Service() {
             "org.conceptflow.mpl.host.action.REQUEST_ROKID_MICROPHONE"
         private const val ACTION_PLAY_BRAND_SEQUENCE =
             "org.conceptflow.mpl.host.action.PLAY_ROKID_BRAND_SEQUENCE"
+        private const val ACTION_FOCUS_COMMAND = "org.conceptflow.mpl.host.action.FOCUS_COMMAND"
         private const val EXTRA_ENVIRONMENT_MODE = "environment_mode"
+        private const val EXTRA_FOCUS_COMMAND = "focus_command"
         private val ACTIVE_NODE_PHASES = setOf(
             LiveMachineVisionPhase.OPENING_QNN_HTP,
             LiveMachineVisionPhase.LISTENING,
@@ -248,6 +280,14 @@ class AndroidNodeForegroundService : Service() {
             context.startService(
                 Intent(context, AndroidNodeForegroundService::class.java)
                     .setAction(ACTION_PLAY_BRAND_SEQUENCE),
+            )
+        }
+
+        fun focusCommand(context: Context, command: SpatialFocusCommand) {
+            context.startService(
+                Intent(context, AndroidNodeForegroundService::class.java)
+                    .setAction(ACTION_FOCUS_COMMAND)
+                    .putExtra(EXTRA_FOCUS_COMMAND, command.name),
             )
         }
 

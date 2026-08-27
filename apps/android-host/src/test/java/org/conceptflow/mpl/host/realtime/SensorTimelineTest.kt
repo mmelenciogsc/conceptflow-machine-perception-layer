@@ -67,6 +67,25 @@ class SensorTimelineTest {
         assertEquals(1L, snapshot.touchOverflow)
     }
 
+    @Test
+    fun `immediate touch dispatch remains bounded across a long session and preserves raw semantics`() {
+        val timeline = SensorTimeline(SensorTimelineLimits(maximumTouchEvents = 8))
+
+        repeat(512) { index ->
+            val id = index + 1L
+            val accepted = requireNotNull(timeline.acceptTouch(touchDelivery(id, rawSemantics = true)))
+            val dispatched = timeline.drainTouch().single()
+            assertEquals(accepted, dispatched)
+            assertEquals(4, dispatched.event.repeatCount)
+            assertTrue(dispatched.event.canceled)
+            assertTrue(dispatched.event.longPress)
+        }
+
+        val snapshot = timeline.snapshotAround(0L)
+        assertEquals(0, snapshot.touch.size)
+        assertEquals(0L, snapshot.touchOverflow)
+    }
+
     private fun imuDelivery(timestamps: List<Long>, receiveNs: Long): LiveSensorDelivery {
         val readings = timestamps.mapIndexed { index, timestamp ->
             ImuReading.newBuilder()
@@ -99,11 +118,14 @@ class SensorTimelineTest {
         return delivery(sensor, id + 1L, microphone = normalized(id))
     }
 
-    private fun touchDelivery(id: Long): LiveSensorDelivery {
+    private fun touchDelivery(id: Long, rawSemantics: Boolean = false): LiveSensorDelivery {
         val sensor = base().setTouchEvent(
             RokidTouchEvent.newBuilder().setEventId(id).setObservedMonotonicTimestampNs(id)
                 .setSourceUptimeMs(id).setKey(RokidTouchKey.ROKID_TOUCH_KEY_SINGLE_TAP)
-                .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_DOWN).setScanCode(148),
+                .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_DOWN).setScanCode(148)
+                .setRepeatCount(if (rawSemantics) 4 else 0)
+                .setCanceled(rawSemantics)
+                .setLongPress(rawSemantics),
         ).build()
         return delivery(sensor, id + 1L, touch = normalized(id))
     }
