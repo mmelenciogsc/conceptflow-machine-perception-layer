@@ -138,19 +138,16 @@ exit 1
     calls = adb_log.read_text(encoding="utf-8")
     assert calls.count(" android.permission.ACCESS_COARSE_LOCATION ") == 2
     assert calls.count(" android.permission.ACCESS_FINE_LOCATION ") == 2
-    assert all(
-        "network_topology=wifi_direct_required" in path.read_text(encoding="utf-8")
-        for path in installed
-    )
+    assert all("network_topology=wifi_direct_required" in path.read_text(encoding="utf-8") for path in installed)
 
 
 def test_wifi_direct_pairing_does_not_require_a_static_address(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[1]
     script = (repository / "scripts/android-live-link-pair").read_text(encoding="utf-8")
 
-    assert '--network-topology private-lan|wifi-direct-required' in script
+    assert "--network-topology private-lan|wifi-direct-required" in script
     assert 'network_topology="wifi_direct_required"' in script
     assert 'poco_address="192.168.49.1"' in script
-    assert 'android.permission.ACCESS_COARSE_LOCATION' in script
-    assert 'android.permission.ACCESS_FINE_LOCATION' in script
-    assert 'android.permission.NEARBY_WIFI_DEVICES' in script
+    assert "android.permission.ACCESS_COARSE_LOCATION" in script
+    assert "android.permission.ACCESS_FINE_LOCATION" in script
+    assert "android.permission.NEARBY_WIFI_DEVICES" in script
