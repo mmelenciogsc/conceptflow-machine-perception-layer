@@ -11,6 +11,9 @@ import org.conceptflow.mpl.v1.ImuReading
 import org.conceptflow.mpl.v1.MicrophoneChunk
 import org.conceptflow.mpl.v1.Pose
 import org.conceptflow.mpl.v1.Quaternion
+import org.conceptflow.mpl.v1.RokidTouchAction
+import org.conceptflow.mpl.v1.RokidTouchEvent
+import org.conceptflow.mpl.v1.RokidTouchKey
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -39,6 +42,36 @@ class GlassesStreamIngressTest {
         assertArrayEquals(ByteArray(2_500) { (it + 2).toByte() }, frame.frameData.toByteArray())
         assertEquals(1L, ingress.statistics().unreadCameraFramesReplaced)
         assertNull(ingress.takeLatestCamera())
+    }
+
+    @Test
+    fun acceptsFrameAfterCameraSourceRestartWhenSessionSequenceContinuesAboveHighWater() {
+        val ingress = GlassesStreamIngress("session", "lease", false, MutableHostClock(1L))
+        val beforeRestart = chunks(158L, ByteArray(100) { 1 }, 0L)
+        beforeRestart.forEachIndexed { index, packet ->
+            assertEquals(
+                if (index == beforeRestart.lastIndex) {
+                    StreamIngressDisposition.CAMERA_READY
+                } else {
+                    StreamIngressDisposition.CAMERA_PARTIAL
+                },
+                ingress.accept(packet),
+            )
+        }
+        val afterRestart = chunks(159L, ByteArray(100) { 2 }, beforeRestart.size.toLong())
+
+        afterRestart.forEachIndexed { index, packet ->
+            assertEquals(
+                if (index == afterRestart.lastIndex) {
+                    StreamIngressDisposition.CAMERA_READY
+                } else {
+                    StreamIngressDisposition.CAMERA_PARTIAL
+                },
+                ingress.accept(packet),
+            )
+        }
+
+        assertEquals(159L, ingress.takeLatestCamera()!!.frameId)
     }
 
     @Test
@@ -97,6 +130,67 @@ class GlassesStreamIngressTest {
     }
 
     @Test
+    fun authenticatedMicrophoneIngressPreservesContinuityAndIsBounded() {
+        val ingress = GlassesStreamIngress("session", "lease", true, MutableHostClock(1L))
+        val first = microphone(chunkId = 1L, bytes = byteArrayOf(1, 2))
+        val second = microphone(chunkId = 2L, bytes = byteArrayOf(3, 4))
+
+        assertEquals(StreamIngressDisposition.MICROPHONE_READY, ingress.acceptAuthenticatedLane(first))
+        assertEquals(StreamIngressDisposition.MICROPHONE_READY, ingress.acceptAuthenticatedLane(second))
+        assertArrayEquals(byteArrayOf(1, 2), ingress.takeLatestMicrophone()!!.audioData.toByteArray())
+        assertArrayEquals(byteArrayOf(3, 4), ingress.takeLatestMicrophone()!!.audioData.toByteArray())
+        assertEquals(0L, ingress.statistics().microphoneOverflowChunks)
+    }
+
+    @Test
+    fun touchEventsPreserveOrderAndRejectOverflowWithoutEviction() {
+        val ingress = GlassesStreamIngress(
+            "session",
+            "lease",
+            true,
+            MutableHostClock(1L),
+            GlassesIngressLimits(maximumTouchEvents = 2),
+        )
+
+        assertEquals(StreamIngressDisposition.TOUCH_READY, ingress.acceptAuthenticatedLane(touch(1L)))
+        assertEquals(StreamIngressDisposition.TOUCH_READY, ingress.acceptAuthenticatedLane(touch(2L)))
+        assertEquals(StreamIngressDisposition.REJECTED_OVERFLOW, ingress.acceptAuthenticatedLane(touch(3L)))
+        assertEquals(listOf(1L, 2L), ingress.takeTouchEvents().map { it.eventId })
+        assertEquals(1L, ingress.statistics().touchOverflowEvents)
+    }
+
+    @Test
+    fun semanticTwoFingerHoldCrossesIngressAsOneTriggeredEvent() {
+        val ingress = GlassesStreamIngress("session", "lease", true, MutableHostClock(1L))
+        val event = envelope(1L).setTouchEvent(
+            RokidTouchEvent.newBuilder()
+                .setEventId(1L)
+                .setObservedMonotonicTimestampNs(10L)
+                .setSourceUptimeMs(9L)
+                .setKey(RokidTouchKey.ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS)
+                .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_TRIGGERED)
+                .setLongPress(true)
+                .setScanCode(149),
+        ).build()
+
+        assertEquals(StreamIngressDisposition.TOUCH_READY, ingress.acceptAuthenticatedLane(event))
+        val accepted = ingress.takeTouchEvents().single()
+        assertEquals(RokidTouchKey.ROKID_TOUCH_KEY_TWO_FINGER_LONG_PRESS, accepted.key)
+        assertEquals(RokidTouchAction.ROKID_TOUCH_ACTION_TRIGGERED, accepted.action)
+    }
+
+    @Test
+    fun microphoneIngressRejectsPartialPcmFrames() {
+        val ingress = GlassesStreamIngress("session", "lease", true, MutableHostClock(1L))
+
+        assertEquals(
+            StreamIngressDisposition.REJECTED_MALFORMED,
+            ingress.acceptAuthenticatedLane(microphone(chunkId = 1L, bytes = byteArrayOf(1, 2, 3))),
+        )
+        assertNull(ingress.takeLatestMicrophone())
+    }
+
+    @Test
     fun expiresPartialAssemblyUsingReceiverClockNotSenderClock() {
         val clock = MutableHostClock(1L)
         val ingress = GlassesStreamIngress(
@@ -127,6 +221,7 @@ class GlassesStreamIngressTest {
                 .setChunkIndex(index)
                 .setChunkCount(count)
                 .setTotalPayloadBytes(bytes.size.toLong())
+                .setCaptureMonotonicTimestampNs(frame.captureMonotonicTimestampNs)
                 .setChunkData(ByteString.copyFrom(bytes, start, end - start))
                 .apply { if (index == 0) setFrameMetadata(metadata) }
                 .build()
@@ -139,6 +234,29 @@ class GlassesStreamIngressTest {
         .setLeaseId("lease")
         .setSequenceId(sequence)
         .setSentMonotonicTimestampNs(1L)
+
+    private fun microphone(chunkId: Long, bytes: ByteArray): SensorStreamEnvelope = envelope(chunkId)
+        .setMicrophoneChunk(
+            MicrophoneChunk.newBuilder()
+                .setLeaseId("lease")
+                .setChunkId(chunkId)
+                .setCaptureMonotonicTimestampNs(chunkId)
+                .setSampleRateHz(16_000)
+                .setChannelCount(1)
+                .setEncoding(AudioSampleEncoding.AUDIO_SAMPLE_ENCODING_PCM_S16LE)
+                .setAudioData(ByteString.copyFrom(bytes)),
+        ).build()
+
+    private fun touch(eventId: Long): SensorStreamEnvelope = envelope(eventId)
+        .setTouchEvent(
+            RokidTouchEvent.newBuilder()
+                .setEventId(eventId)
+                .setObservedMonotonicTimestampNs(eventId)
+                .setSourceUptimeMs(eventId)
+                .setKey(RokidTouchKey.ROKID_TOUCH_KEY_SINGLE_TAP)
+                .setAction(RokidTouchAction.ROKID_TOUCH_ACTION_DOWN)
+                .setScanCode(148),
+        ).build()
 
     private fun imu(sequence: Long, timestamp: Long): ImuReading = ImuReading.newBuilder()
         .setSequenceId(sequence)

@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host
 
+import com.google.protobuf.ByteString
 import org.conceptflow.mpl.host.vision.CameraIntrinsicsSource
 import org.conceptflow.mpl.host.vision.CameraLensDistortionModel
+import org.conceptflow.mpl.host.vision.HeadCameraExtrinsicProvenance
+import org.conceptflow.mpl.v1.CameraExtrinsicProvenance
+import org.conceptflow.mpl.v1.CameraHeadExtrinsic
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import org.conceptflow.mpl.v1.CameraIntrinsicsProvenance
 import org.conceptflow.mpl.v1.CameraIntrinsicsUncertainty
 import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImageDescriptor
+import org.conceptflow.mpl.v1.Quaternion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -104,6 +109,47 @@ class CameraIntrinsicsMappingTest {
         assertNotNull(mapped)
         assertEquals(0.0, requireNotNull(mapped).vectorAtDepth(320.0, 180.0, 2.0).x, 0.0)
         assertEquals(CameraIntrinsicsSource.DERIVED, mapped.source)
+    }
+
+    @Test
+    fun `camera2 sensor-coordinate rotation is normalized and admitted with digest provenance`() {
+        val frame = frame(CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED).toBuilder()
+            .setIntrinsics(
+                frame(CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED).intrinsics.toBuilder()
+                    .setHeadFromCameraExtrinsic(
+                        CameraHeadExtrinsic.newBuilder()
+                            .setHeadFromCameraRotation(
+                                Quaternion.newBuilder().setW(1.0),
+                            )
+                            .setProvenance(
+                                CameraExtrinsicProvenance.CAMERA_EXTRINSIC_PROVENANCE_CAMERA2_SENSOR_COORDINATES,
+                            )
+                            .setVerificationSha256(ByteString.copyFrom(ByteArray(32) { 0x5a })),
+                    ),
+            )
+            .build()
+
+        val mapped = requireNotNull(validatedHeadCameraExtrinsic(frame))
+
+        assertEquals(1.0, mapped.headFromCameraRotation.w, 0.0)
+        assertEquals(HeadCameraExtrinsicProvenance.CAMERA2_SENSOR_COORDINATES, mapped.provenance)
+        assertNull(mapped.headFromCameraTranslationMeters)
+    }
+
+    @Test
+    fun `unknown provenance and absent digest reject camera extrinsic`() {
+        val intrinsics = frame(CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED).intrinsics
+        val invalid = frame(CameraIntrinsicsProvenance.CAMERA_INTRINSICS_PROVENANCE_DERIVED).toBuilder()
+            .setIntrinsics(
+                intrinsics.toBuilder().setHeadFromCameraExtrinsic(
+                    CameraHeadExtrinsic.newBuilder()
+                        .setHeadFromCameraRotation(Quaternion.newBuilder().setW(1.0))
+                        .setProvenance(CameraExtrinsicProvenance.CAMERA_EXTRINSIC_PROVENANCE_UNKNOWN),
+                ),
+            )
+            .build()
+
+        assertNull(validatedHeadCameraExtrinsic(invalid))
     }
 
     private fun frame(

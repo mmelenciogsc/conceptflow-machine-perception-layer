@@ -8,19 +8,19 @@ readonly ROKID_COMPONENT="$ROKID_PACKAGE/org.conceptflow.mpl.rokid.RokidCommandA
 readonly ROKID_INIT_ACTION="org.conceptflow.mpl.rokid.action.INITIALIZE_LIVE_IDENTITY"
 readonly ROKID_ALIAS="org.conceptflow.mpl.rokid.live-link.v1"
 readonly POCO_PACKAGE="org.conceptflow.mpl.androidhost"
-readonly POCO_COMPONENT="$POCO_PACKAGE/org.conceptflow.mpl.host.MainActivity"
-readonly POCO_INIT_ACTION="org.conceptflow.mpl.host.action.INITIALIZE_LIVE_IDENTITY"
 readonly POCO_ALIAS="org.conceptflow.mpl.androidhost.live-link.v1"
+readonly POCO_DEBUG_IDENTITY_URI="content://org.conceptflow.mpl.androidhost.debug-control/identity"
 readonly PUBLIC_CERT_PATH="no_backup/live-link/public-identity.der"
 readonly CONFIG_PATH="no_backup/live-link/live-link.properties"
 
 usage() {
     printf '%s\n' \
-        "Usage: $0 --rokid-serial SERIAL --poco-serial SERIAL --poco-address PRIVATE_IP [OPTIONS]" \
-        "Options: --realtime-port PORT --camera-port PORT (defaults: 39431 and 39432)" \
+        "Usage: $0 --rokid-serial SERIAL --poco-serial SERIAL [--poco-address PRIVATE_IP] [OPTIONS]" \
+        "Options: --network-topology private-lan|wifi-direct-required" \
+        "         --realtime-port PORT --camera-port PORT (defaults: 39431 and 39432)" \
         "Creates non-exportable identities on both devices and pins only their public certificates." \
         "Writes role-specific configuration into each debuggable app's private no-backup directory." \
-        "Does not start the Poco listener or Rokid capture; start the listener first after pairing."
+        "Does not start capture; use the Poco's accessible Start control after pairing and Rokid arm."
 }
 
 fail() {
@@ -31,6 +31,7 @@ fail() {
 rokid_serial=""
 poco_serial=""
 poco_address=""
+network_topology="private_lan"
 realtime_port=39431
 camera_port=39432
 while (($#)); do
@@ -38,6 +39,14 @@ while (($#)); do
         --rokid-serial) rokid_serial="${2:-}"; shift 2 ;;
         --poco-serial) poco_serial="${2:-}"; shift 2 ;;
         --poco-address) poco_address="${2:-}"; shift 2 ;;
+        --network-topology)
+            case "${2:-}" in
+                private-lan) network_topology="private_lan" ;;
+                wifi-direct-required) network_topology="wifi_direct_required" ;;
+                *) fail "network topology must be private-lan or wifi-direct-required" ;;
+            esac
+            shift 2
+            ;;
         --realtime-port) realtime_port="${2:-}"; shift 2 ;;
         --camera-port) camera_port="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
@@ -45,10 +54,18 @@ while (($#)); do
     esac
 done
 
-[[ -n "$rokid_serial" && -n "$poco_serial" && -n "$poco_address" ]] || {
+[[ -n "$rokid_serial" && -n "$poco_serial" ]] || {
     usage >&2
     exit 2
 }
+if [[ -z "$poco_address" ]]; then
+    [[ "$network_topology" == "wifi_direct_required" ]] || {
+        fail "--poco-address is required for private-lan topology"
+    }
+    # Parsed for schema compatibility only; Wi-Fi Direct always uses the runtime group-owner
+    # address and never this placeholder.
+    poco_address="192.168.49.1"
+fi
 [[ "$rokid_serial" != "$poco_serial" ]] || fail "Rokid and Poco serials must identify different devices"
 [[ "$rokid_serial" != *$'\n'* && "$poco_serial" != *$'\n'* ]] || fail "device serial is malformed"
 [[ "$realtime_port" =~ ^[0-9]+$ && "$camera_port" =~ ^[0-9]+$ ]] || fail "ports must be integers"
@@ -83,19 +100,56 @@ for serial in "$rokid_serial" "$poco_serial"; do
         fail "one selected Android device is not authorized and online"
     }
 done
+
+grant_wifi_direct_permission() {
+    local serial="$1"
+    local package_name="$2"
+    local sdk
+    adb -s "$serial" shell pm list features | grep -q '^feature:android.hardware.wifi.direct' || {
+        fail "a selected device does not advertise Android Wi-Fi Direct"
+    }
+    sdk="$(adb -s "$serial" shell getprop ro.build.version.sdk | tr -d '\r')"
+    [[ "$sdk" =~ ^[0-9]+$ ]] || fail "could not determine Android API level"
+    if ((sdk >= 33)); then
+        adb -s "$serial" shell pm grant "$package_name" android.permission.NEARBY_WIFI_DEVICES >/dev/null || {
+            fail "could not grant the nearby Wi-Fi devices permission"
+        }
+    else
+        adb -s "$serial" shell pm grant "$package_name" android.permission.ACCESS_COARSE_LOCATION >/dev/null || {
+            printf 'Unable to grant coarse location for Android 12 Wi-Fi Direct discovery on %s.\n' "$serial" >&2
+            exit 1
+        }
+        adb -s "$serial" shell pm grant "$package_name" android.permission.ACCESS_FINE_LOCATION >/dev/null || {
+            fail "could not grant the Wi-Fi Direct discovery permission"
+        }
+        [[ "$(adb -s "$serial" shell settings get secure location_mode | tr -d '\r')" != "0" ]] || {
+            fail "location services must be enabled for Wi-Fi Direct discovery on Android 12 or earlier"
+        }
+    fi
+}
+
 adb -s "$rokid_serial" shell pm path "$ROKID_PACKAGE" >/dev/null 2>&1 || {
     fail "install the debuggable Rokid Node APK first"
 }
 adb -s "$poco_serial" shell pm path "$POCO_PACKAGE" >/dev/null 2>&1 || {
     fail "install the debuggable Android Node APK first"
 }
+if [[ "$network_topology" == "wifi_direct_required" ]]; then
+    grant_wifi_direct_permission "$rokid_serial" "$ROKID_PACKAGE"
+    grant_wifi_direct_permission "$poco_serial" "$POCO_PACKAGE"
+fi
 
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 chmod 700 "$temporary_directory"
 
 adb -s "$rokid_serial" shell am start --user 0 -W -n "$ROKID_COMPONENT" -a "$ROKID_INIT_ACTION" >/dev/null
-adb -s "$poco_serial" shell am start --user 0 -W -n "$POCO_COMPONENT" -a "$POCO_INIT_ACTION" >/dev/null
+poco_identity_status="$(
+    adb -s "$poco_serial" shell content query --user 0 --uri "$POCO_DEBUG_IDENTITY_URI" 2>/dev/null || true
+)"
+[[ "$poco_identity_status" == *"status=identity_ready"* ]] || {
+    fail "Android Node debug identity provisioning failed"
+}
 
 export_public_certificate() {
     local serial="$1"
@@ -133,6 +187,7 @@ write_config() {
         printf '\nconnect_timeout_ms=5000\n'
         printf 'socket_read_timeout_ms=4000\n'
         printf 'camera_ticket_lifetime_ms=10000\n'
+        printf 'network_topology=%s\n' "$network_topology"
     } >"$output"
     chmod 600 "$output"
 }

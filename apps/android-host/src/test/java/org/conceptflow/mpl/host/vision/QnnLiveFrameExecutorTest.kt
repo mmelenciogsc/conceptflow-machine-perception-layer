@@ -9,6 +9,29 @@ import org.junit.Test
 
 class QnnLiveFrameExecutorTest {
     @Test
+    fun `packed RGB frame bypasses JPEG decoding and preserves correlation`() {
+        var decoderCalls = 0
+        val executor = QnnLiveFrameExecutor(
+            QnnModelSessionFactory { profile -> FakeSession(profile, mutableListOf()) },
+            JpegFrameDecoder {
+                decoderCalls += 1
+                error("raw frame must not enter JPEG decoder")
+            },
+            System::nanoTime,
+        )
+        val raw = RawRgbFrame(1L, 10L, 1, 1, 3, byteArrayOf(10, 20, 30))
+        val vision = VisionFrame(1L, 10L, 1, 1, synthetic = false)
+
+        val result = requireNotNull(executor.process(raw, vision) {
+            MachineVisionModelProfiles.depthIndoorBalanced
+        })
+
+        assertEquals(0, decoderCalls)
+        assertEquals(1L, result.frameId)
+        executor.close()
+    }
+
+    @Test
     fun `opens and executes only YOLO plus selected balanced depth graph`() {
         val opened = mutableListOf<String>()
         val executed = mutableListOf<String>()

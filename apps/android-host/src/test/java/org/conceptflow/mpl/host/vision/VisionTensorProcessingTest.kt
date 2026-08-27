@@ -82,12 +82,12 @@ class VisionTensorProcessingTest {
         rows[invalidOffset + 2] = 200f
         rows[invalidOffset + 3] = 200f
         rows[invalidOffset + 4] = 0.99f
-        rows[invalidOffset + 5] = 40f
+        rows[invalidOffset + 5] = 330f
         val prototypes = FloatArray(160 * 160 * 32)
         for (pixel in 0 until 160 * 160) prototypes[pixel * 32] = 1f
         val transform = LetterboxTransform(1_280, 720, 640, 640, 640, 360, 0, 140)
 
-        val detections = YoloBvi40Postprocessor.process(
+        val detections = YoloFixedVocabularyPostprocessor.process(
             float32(rows),
             float32(prototypes),
             transform,

@@ -7,6 +7,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 JNI_SOURCE = REPOSITORY_ROOT / "apps/android-host/src/main/cpp/qnn_jni.cpp"
 MANIFEST = REPOSITORY_ROOT / "apps/android-host/src/main/AndroidManifest.xml"
 PRIVATE_PROVISIONER = REPOSITORY_ROOT / "scripts/android-qnn-private-provision"
+QNN_BUILDER = REPOSITORY_ROOT / "scripts/android-qnn-jni-build"
 ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
 
 
@@ -54,3 +55,17 @@ def test_dynamic_libraries_use_bounded_diagnostics_and_raii_dependency_order() -
 def test_platform_cdsprpc_is_not_part_of_private_provisioning() -> None:
     provisioner = PRIVATE_PROVISIONER.read_text(encoding="utf-8")
     assert "libcdsprpc" not in provisioner
+
+
+def test_named_qnn_outputs_are_reordered_to_the_stable_kotlin_abi() -> None:
+    source = JNI_SOURCE.read_text(encoding="utf-8")
+    assert "output_result_order" in source
+    assert "matched[candidate]" in source
+    assert "session->outputs[session->output_result_order[output_index]]" in source
+
+
+def test_qnn_apk_is_preserved_outside_gradle_managed_outputs() -> None:
+    builder = QNN_BUILDER.read_text(encoding="utf-8")
+    assert 'qnn_directory="apps/android-host/build/qnn"' in builder
+    assert 'qnn_apk="$qnn_directory/android-host-qnn-debug.apk"' in builder
+    assert "build/outputs/apk/debug/android-host-qnn-debug.apk" not in builder

@@ -16,7 +16,7 @@ class MetricDepthCalibrationTest {
         val calibration = calibrator.calibrate(
             listOf(
                 sample("door", ReferenceDistance.NEAR_TWO_FEET, 2.0),
-                sample("traffic_cone", ReferenceDistance.FAR_EIGHT_FEET, 8.0),
+                sample("chair", ReferenceDistance.FAR_EIGHT_FEET, 8.0),
             ),
             RelativeDepthRepresentation.DEPTH,
         )!!
@@ -81,8 +81,8 @@ class MetricDepthCalibrationTest {
         val estimate = PinholeDimensionEstimator.estimate(
             MaskExtentObservation(
                 classId = "chair",
-                maskWidthPixels = 300,
-                maskHeightPixels = 425,
+                maskWidthPixels = 225,
+                maskHeightPixels = 450,
                 focalLengthXPixels = 1_000.0,
                 focalLengthYPixels = 1_000.0,
                 confidence = 0.9,
@@ -95,6 +95,46 @@ class MetricDepthCalibrationTest {
                 MaskExtentObservation("wall", 300, 300, 1_000.0, 1_000.0, 0.9),
             ),
         )
+        assertNull(
+            PinholeDimensionEstimator.estimate(
+                MaskExtentObservation("chair", 1_200, 2_400, 1_000.0, 1_000.0, 0.9),
+            ),
+        )
+    }
+
+    @Test
+    fun knownDimensionPriorConservativelyBoundsNativeMetricDepth() {
+        val nativeCalibration = requireNotNull(
+            OfficialDepthAnythingV2MetricSemanticsProvider.resolve(
+                MachineVisionModelProfiles.depthIndoorBalanced,
+            ),
+        )
+        val native = requireNotNull(nativeCalibration.estimate(2.0))
+
+        val agreeing = RobustMetricDepthFusion.fuse(
+            native,
+            0.9,
+            DimensionDistanceEstimate(2.2, 0.30, "chair", calibrationWeight = 0.8),
+            0.9,
+        )
+        val outlier = RobustMetricDepthFusion.fuse(
+            native,
+            0.9,
+            DimensionDistanceEstimate(8.0, 0.30, "chair", calibrationWeight = 0.8),
+            0.9,
+        )
+
+        assertTrue(agreeing.usedDimensionPrior)
+        assertTrue(agreeing.estimate.distanceMeters > 2.0)
+        assertTrue(agreeing.estimate.distanceMeters < 2.2)
+        assertEquals(
+            MetricDepthUncertaintyBasis.DIMENSION_PRIOR_BOUND,
+            agreeing.estimate.uncertaintyBasis,
+        )
+        assertTrue(requireNotNull(agreeing.estimate.uncertaintyMeters) >= 0.4)
+        assertFalse(outlier.usedDimensionPrior)
+        assertTrue(outlier.rejectedDimensionPriorAsOutlier)
+        assertEquals(native, outlier.estimate)
     }
 
     @Test

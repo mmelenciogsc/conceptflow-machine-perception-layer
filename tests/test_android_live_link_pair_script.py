@@ -40,6 +40,23 @@ if [[ "$1" == "shell" && "$2" == "pm" && "$3" == "path" ]]; then
     printf 'package:/mock/base.apk\n'
     exit 0
 fi
+if [[ "$1" == "shell" && "$2" == "pm" && "$3" == "list" && "$4" == "features" ]]; then
+    printf 'feature:android.hardware.wifi.direct\n'
+    exit 0
+fi
+if [[ "$1" == "shell" && "$2" == "pm" && "$3" == "grant" ]]; then exit 0; fi
+if [[ "$1" == "shell" && "$2" == "getprop" && "$3" == "ro.build.version.sdk" ]]; then
+    printf '32\n'
+    exit 0
+fi
+if [[ "$1" == "shell" && "$2" == "settings" && "$3" == "get" ]]; then
+    printf '3\n'
+    exit 0
+fi
+if [[ "$1" == "shell" && "$2" == "content" && "$3" == "query" ]]; then
+    printf 'Row: 0 status=identity_ready\n'
+    exit 0
+fi
 if [[ "$1" == "shell" && "$2" == "am" ]]; then exit 0; fi
 if [[ "$1" == "shell" && "$2" == "run-as" ]]; then
     package_name="$3"
@@ -92,8 +109,48 @@ exit 1
     assert " sh " not in calls
     assert calls.count(" tee ") == 2
     assert calls.count(" mv ") == 2
+    assert " content query " in calls
     assert "192.168.100.89" not in result.stdout
     assert "public-cert" not in result.stdout
     installed = list(state.glob("*-no_backup_live-link_live-link.properties"))
     assert len(installed) == 2
     assert all("schema_version=1" in path.read_text(encoding="utf-8") for path in installed)
+    assert all("network_topology=private_lan" in path.read_text(encoding="utf-8") for path in installed)
+
+    wifi_direct_result = subprocess.run(
+        [
+            str(repository / "scripts/android-live-link-pair"),
+            "--rokid-serial",
+            "rokid-test",
+            "--poco-serial",
+            "poco-test",
+            "--network-topology",
+            "wifi-direct-required",
+        ],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert wifi_direct_result.returncode == 0, wifi_direct_result.stderr
+    calls = adb_log.read_text(encoding="utf-8")
+    assert calls.count(" android.permission.ACCESS_COARSE_LOCATION ") == 2
+    assert calls.count(" android.permission.ACCESS_FINE_LOCATION ") == 2
+    assert all(
+        "network_topology=wifi_direct_required" in path.read_text(encoding="utf-8")
+        for path in installed
+    )
+
+
+def test_wifi_direct_pairing_does_not_require_a_static_address(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    script = (repository / "scripts/android-live-link-pair").read_text(encoding="utf-8")
+
+    assert '--network-topology private-lan|wifi-direct-required' in script
+    assert 'network_topology="wifi_direct_required"' in script
+    assert 'poco_address="192.168.49.1"' in script
+    assert 'android.permission.ACCESS_COARSE_LOCATION' in script
+    assert 'android.permission.ACCESS_FINE_LOCATION' in script
+    assert 'android.permission.NEARBY_WIFI_DEVICES' in script

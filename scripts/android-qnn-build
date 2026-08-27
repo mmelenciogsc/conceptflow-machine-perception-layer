@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     printf '%s\n' \
-        "Usage: $0 --qnn-sdk DIR --ndk DIR --onnx-dir DIR --calibration-dir DIR --output-dir DIR [--precision fp16|w8a16] --acknowledge-ultralytics-terms" \
+        "Usage: $0 --qnn-sdk DIR --ndk DIR --onnx-dir DIR --calibration-dir DIR --output-dir DIR [--precision fp16|w8a16] [--models all|yoloe] --acknowledge-ultralytics-terms" \
         "Converts externally supplied ONNX graphs into private AArch64 QNN model libraries." \
         "Output must be outside this repository. No QNN binary or model artifact is copied into Git."
 }
@@ -15,6 +15,7 @@ onnx_dir=""
 calibration_dir=""
 output_dir=""
 precision="fp16"
+models="all"
 acknowledged=false
 while (($#)); do
     case "$1" in
@@ -24,6 +25,7 @@ while (($#)); do
         --calibration-dir) calibration_dir="${2:-}"; shift 2 ;;
         --output-dir) output_dir="${2:-}"; shift 2 ;;
         --precision) precision="${2:-}"; shift 2 ;;
+        --models) models="${2:-}"; shift 2 ;;
         --acknowledge-ultralytics-terms) acknowledged=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -36,6 +38,10 @@ if [[ -z "$qnn_sdk" || -z "$ndk" || -z "$onnx_dir" || -z "$calibration_dir" || -
 fi
 [[ "$precision" == "fp16" || "$precision" == "w8a16" ]] || {
     printf 'Precision must be fp16 or w8a16.\n' >&2
+    exit 2
+}
+[[ "$models" == "all" || "$models" == "yoloe" ]] || {
+    printf 'Models must be all or yoloe.\n' >&2
     exit 2
 }
 [[ "$acknowledged" == true ]] || {
@@ -69,9 +75,13 @@ export PATH="$qnn_sdk/venv/bin:$ndk:$PATH"
 export PYTHONPATH="$qnn_sdk/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 export LD_LIBRARY_PATH="$qnn_sdk/lib/x86_64-linux-clang${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-declare -a keys=(yoloe depth-indoor depth-outdoor)
+if [[ "$models" == "yoloe" ]]; then
+    declare -a keys=(yoloe)
+else
+    declare -a keys=(yoloe depth-indoor depth-outdoor)
+fi
 declare -A onnx=(
-    [yoloe]="$onnx_dir/yoloe-26s-bvi40-seg.onnx"
+    [yoloe]="$onnx_dir/yoloe-26s-bvi330-seg.onnx"
     [depth-indoor]="$onnx_dir/depth-anything-v2-metric-indoor-hypersim-vits.onnx"
     [depth-outdoor]="$onnx_dir/depth-anything-v2-metric-outdoor-vkitti-vits.onnx"
 )
@@ -81,12 +91,12 @@ declare -A input_list=(
     [depth-outdoor]="$calibration_dir/depth/depth-image-input-list.txt"
 )
 declare -A stem=(
-    [yoloe]="yoloe-26s-bvi40-seg"
+    [yoloe]="yoloe-26s-bvi330-seg"
     [depth-indoor]="depth-anything-v2-metric-indoor-hypersim-vits"
     [depth-outdoor]="depth-anything-v2-metric-outdoor-vkitti-vits"
 )
 declare -A library=(
-    [yoloe]="yoloe_bvi40_${precision}"
+    [yoloe]="yoloe_bvi330_${precision}"
     [depth-indoor]="depth_indoor_${precision}"
     [depth-outdoor]="depth_outdoor_${precision}"
 )

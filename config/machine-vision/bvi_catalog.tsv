@@ -1,0 +1,332 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# index\tid\tprompt\tsemantic_group\tlength_m\twidth_m\theight_m\trelative_uncertainty\tcalibration_axis\tcalibration_weight\ttext_aware\tenvironment_class\tdimension_basis
+0	person	person	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.05	HEIGHT	0.2744	false	BOTH	explicit representative size
+1	face	face	PERSON_OR_MOBILITY_AID	0.24	0.16	0.12	0.08	HEIGHT	0.2576	false	BOTH	explicit representative size
+2	hand	hand	PERSON_OR_MOBILITY_AID	0.2	0.1	0.05	0.1	HEIGHT	0.252	false	BOTH	explicit representative size
+3	child	child	PERSON_OR_MOBILITY_AID	1.2	0.4	0.25	0.06	HEIGHT	0.2632	false	BOTH	explicit representative size
+4	adult	adult	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.05	HEIGHT	0.2688	false	BOTH	explicit representative size
+5	crowd	crowd	PERSON_OR_MOBILITY_AID	5.0	3.0	2.0	0.28	NONE	0.0	false	BOTH	explicit representative size
+6	queue	queue	PERSON_OR_MOBILITY_AID	3.0	1.0	1.8	0.3	NONE	0.0	false	BOTH	explicit representative size
+7	guide_dog	guide dog	PERSON_OR_MOBILITY_AID	0.7	0.3	0.6	0.1	BOTH	0.315	false	BOTH	explicit representative size
+8	service_dog	service dog	PERSON_OR_MOBILITY_AID	0.7	0.3	0.6	0.1	BOTH	0.315	false	BOTH	explicit representative size
+9	cane	cane	PERSON_OR_MOBILITY_AID	0.9	0.03	0.03	0.05	NONE	0.0	false	BOTH	explicit representative size
+10	walker	walker	PERSON_OR_MOBILITY_AID	1.0	0.55	0.95	0.1	BOTH	0.315	false	BOTH	explicit representative size
+11	wheelchair	wheelchair	PERSON_OR_MOBILITY_AID	1.05	0.7	0.95	0.05	BOTH	0.3325	false	BOTH	explicit representative size
+12	stroller	stroller	PERSON_OR_MOBILITY_AID	1.0	0.6	1.0	0.1	BOTH	0.315	false	BOTH	explicit representative size
+13	crutch	crutch	PERSON_OR_MOBILITY_AID	1.4	0.15	0.1	0.1	NONE	0.0	false	BOTH	explicit representative size
+14	chair	chair	INTERIOR_STRUCTURE	0.45	0.45	0.9	0.06	BOTH	0.3572	false	INDOOR	explicit representative size
+15	armchair	armchair	INTERIOR_STRUCTURE	1.0	0.9	1.0	0.08	BOTH	0.3496	false	INDOOR	explicit representative size
+16	sofa	sofa	INTERIOR_STRUCTURE	2.2	0.9	0.9	0.07	BOTH	0.3534	false	INDOOR	explicit representative size
+17	couch	couch	INTERIOR_STRUCTURE	2.2	0.9	0.9	0.07	BOTH	0.3534	false	INDOOR	explicit representative size
+18	bench	bench	STREET_OBJECT	1.5	0.45	0.55	0.05	BOTH	0.361	false	OUTDOOR	explicit representative size
+19	table	table	INTERIOR_STRUCTURE	0.21	0.29	0.001	0.12	BOTH	0.1584	false	INDOOR	explicit representative size
+20	desk	desk	INTERIOR_STRUCTURE	1.4	0.7	0.75	0.06	BOTH	0.3572	false	INDOOR	explicit representative size
+21	counter	counter	INTERIOR_STRUCTURE	1.8	0.6	0.9	0.1	BOTH	0.342	false	INDOOR	explicit representative size
+22	cabinet	cabinet	INTERIOR_STRUCTURE	0.9	0.45	1.8	0.1	BOTH	0.342	false	INDOOR	explicit representative size
+23	shelf	shelf	INTERIOR_STRUCTURE	1.0	0.35	2.0	0.12	BOTH	0.3344	false	INDOOR	explicit representative size
+24	bookcase	bookcase	INTERIOR_STRUCTURE	1.0	0.35	2.0	0.12	BOTH	0.3344	false	INDOOR	explicit representative size
+25	drawer	drawer	INTERIOR_STRUCTURE	0.5	0.45	0.15	0.14	BOTH	0.3268	false	INDOOR	explicit representative size
+26	bed	bed	INTERIOR_STRUCTURE	2.0	1.5	0.6	0.08	BOTH	0.3496	false	INDOOR	explicit representative size
+27	nightstand	nightstand	INTERIOR_STRUCTURE	0.5	0.45	0.6	0.1	BOTH	0.342	false	INDOOR	explicit representative size
+28	cupboard	cupboard	INTERIOR_STRUCTURE	1.0	0.5	1.8	0.1	BOTH	0.342	false	INDOOR	explicit representative size
+29	door	door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.05	BOTH	0.6984	false	TRANSITION	explicit representative size
+30	doorway	doorway	INTERIOR_STRUCTURE	0.9	0.2	2.1	0.05	BOTH	0.684	false	TRANSITION	explicit representative size
+31	window	window	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+32	curtain	curtain	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+33	wall	wall	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+34	floor	floor	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+35	ceiling	ceiling	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+36	stairs	stairs	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	TRANSITION	family default for general_object
+37	staircase	staircase	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	TRANSITION	family default for general_object
+38	escalator	escalator	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+39	elevator	elevator	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+40	ramp	ramp	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	TRANSITION	family default for general_object
+41	threshold	threshold	INTERIOR_STRUCTURE	0.9	0.1	0.05	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+42	step	step	PEDESTRIAN_INFRASTRUCTURE	1.0	0.3	0.18	0.1	NONE	0.0	false	TRANSITION	explicit representative size
+43	railing	railing	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+44	handrail	handrail	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+45	pillar	pillar	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+46	column	column	TEXT_REGION	0.4	0.2	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+47	pole	pole	PEDESTRIAN_INFRASTRUCTURE	0.2	0.2	3.0	0.1	WIDTH	0.27	false	OUTDOOR	explicit representative size
+48	barrier	barrier	PEDESTRIAN_INFRASTRUCTURE	3.0	0.2	1.0	0.15	WIDTH	0.255	false	OUTDOOR	explicit representative size
+49	fence	fence	PEDESTRIAN_INFRASTRUCTURE	3.0	0.05	1.5	0.14	WIDTH	0.258	false	OUTDOOR	explicit representative size
+50	gate	gate	INTERIOR_STRUCTURE	1.2	0.08	1.8	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+51	bollard	bollard	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+52	trash_can	trash can	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+53	bin	bin	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+54	cart	cart	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+55	trolley	trolley	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+56	luggage	luggage	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+57	suitcase	suitcase	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+58	backpack	backpack	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+59	bag	bag	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+60	purse	purse	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+61	coat_rack	coat rack	INTERIOR_STRUCTURE	0.6	0.6	1.8	0.12	BOTH	0.3344	false	INDOOR	explicit representative size
+62	mirror	mirror	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+63	sink	sink	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+64	toilet	toilet	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+65	bathtub	bathtub	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+66	shower	shower	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+67	microwave	microwave	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+68	refrigerator	refrigerator	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+69	stove	stove	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+70	oven	oven	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+71	washer	washer	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+72	dryer	dryer	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+73	lamp	lamp	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+74	light_switch	light switch	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+75	outlet	outlet	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+76	blind	blind	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+77	shade	shade	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	INDOOR	family default for general_object
+78	road	road	PEDESTRIAN_INFRASTRUCTURE	100.0	6.0	0.01	0.14	NONE	0.0	false	OUTDOOR	explicit representative size
+79	street	street	PEDESTRIAN_INFRASTRUCTURE	100.0	6.0	0.01	0.14	NONE	0.0	false	OUTDOOR	explicit representative size
+80	sidewalk	sidewalk	PEDESTRIAN_INFRASTRUCTURE	50.0	1.8	0.01	0.12	NONE	0.0	false	OUTDOOR	explicit representative size
+81	walkway	walkway	PEDESTRIAN_INFRASTRUCTURE	30.0	1.8	0.01	0.12	NONE	0.0	false	OUTDOOR	explicit representative size
+82	path	path	PEDESTRIAN_INFRASTRUCTURE	20.0	1.2	0.01	0.12	NONE	0.0	false	OUTDOOR	explicit representative size
+83	trail	trail	PEDESTRIAN_INFRASTRUCTURE	20.0	1.2	0.01	0.14	NONE	0.0	false	OUTDOOR	explicit representative size
+84	alley	alley	PEDESTRIAN_INFRASTRUCTURE	15.0	3.0	0.01	0.18	NONE	0.0	false	OUTDOOR	explicit representative size
+85	intersection	intersection	PEDESTRIAN_INFRASTRUCTURE	4.0	4.0	0.01	0.2	NONE	0.0	false	OUTDOOR	explicit representative size
+86	crosswalk	crosswalk	PEDESTRIAN_INFRASTRUCTURE	2.0	4.0	0.01	0.15	NONE	0.0	false	OUTDOOR	explicit representative size
+87	parking_lot	parking lot	PEDESTRIAN_INFRASTRUCTURE	60.0	40.0	0.01	0.18	NONE	0.0	false	OUTDOOR	explicit representative size
+88	driveway	driveway	PEDESTRIAN_INFRASTRUCTURE	15.0	3.0	0.01	0.2	NONE	0.0	false	OUTDOOR	explicit representative size
+89	plaza	plaza	PEDESTRIAN_INFRASTRUCTURE	40.0	40.0	0.01	0.2	NONE	0.0	false	OUTDOOR	explicit representative size
+90	courtyard	courtyard	PEDESTRIAN_INFRASTRUCTURE	30.0	30.0	0.01	0.2	NONE	0.0	false	OUTDOOR	explicit representative size
+91	bus_stop	bus stop	PEDESTRIAN_INFRASTRUCTURE	3.0	1.5	2.5	0.15	NONE	0.0	false	OUTDOOR	explicit representative size
+92	curb	curb	PEDESTRIAN_INFRASTRUCTURE	15.0	0.2	0.15	0.14	NONE	0.0	false	OUTDOOR	explicit representative size
+93	guard_rail	guard rail	PEDESTRIAN_INFRASTRUCTURE	3.0	0.05	1.2	0.14	WIDTH	0.258	false	OUTDOOR	explicit representative size
+94	post	post	PEDESTRIAN_INFRASTRUCTURE	0.2	0.2	2.5	0.12	WIDTH	0.264	false	OUTDOOR	explicit representative size
+95	signpost	signpost	PEDESTRIAN_INFRASTRUCTURE	0.2	0.2	2.5	0.1	WIDTH	0.27	false	OUTDOOR	explicit representative size
+96	lamp_post	lamp post	PEDESTRIAN_INFRASTRUCTURE	0.2	0.2	3.5	0.12	WIDTH	0.264	false	OUTDOOR	explicit representative size
+97	tree	tree	PEDESTRIAN_INFRASTRUCTURE	4.0	4.0	30.0	0.3	NONE	0.0	false	OUTDOOR	explicit representative size
+98	bush	bush	PEDESTRIAN_INFRASTRUCTURE	1.5	1.5	1.2	0.3	NONE	0.0	false	OUTDOOR	explicit representative size
+99	planter	planter	PEDESTRIAN_INFRASTRUCTURE	0.8	0.8	0.6	0.2	WIDTH	0.24	false	OUTDOOR	explicit representative size
+100	awning	awning	PEDESTRIAN_INFRASTRUCTURE	3.0	1.2	0.4	0.24	NONE	0.0	false	OUTDOOR	explicit representative size
+101	loading_dock	loading dock	PEDESTRIAN_INFRASTRUCTURE	6.0	3.0	3.5	0.24	NONE	0.0	false	OUTDOOR	explicit representative size
+102	building_entrance	building entrance	PEDESTRIAN_INFRASTRUCTURE	2.2	1.2	2.8	0.12	BOTH	0.6336	false	TRANSITION	explicit representative size
+103	exit	exit	INTERIOR_STRUCTURE	1.2	0.4	2.2	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+104	storefront	storefront	PEDESTRIAN_INFRASTRUCTURE	5.0	1.0	3.5	0.22	NONE	0.0	false	OUTDOOR	explicit representative size
+105	building	building	PEDESTRIAN_INFRASTRUCTURE	50.0	30.0	15.0	0.3	NONE	0.0	false	OUTDOOR	explicit representative size
+106	car	car	VEHICLE	4.5	1.8	1.5	0.05	BOTH	0.4032	false	OUTDOOR	explicit representative size
+107	taxi	taxi	VEHICLE	4.5	1.8	1.5	0.05	BOTH	0.4032	false	OUTDOOR	explicit representative size
+108	van	van	VEHICLE	5.0	2.0	2.2	0.05	BOTH	0.399	false	OUTDOOR	explicit representative size
+109	bus	bus	VEHICLE	12.0	2.5	3.2	0.05	BOTH	0.399	false	OUTDOOR	explicit representative size
+110	truck	truck	VEHICLE	10.0	2.5	3.5	0.05	BOTH	0.399	false	OUTDOOR	explicit representative size
+111	bicycle	bicycle	VEHICLE	1.8	0.6	1.1	0.06	BOTH	0.3948	false	OUTDOOR	explicit representative size
+112	motorcycle	motorcycle	VEHICLE	2.2	0.8	1.2	0.06	BOTH	0.3948	false	OUTDOOR	explicit representative size
+113	scooter	scooter	VEHICLE	1.8	0.6	1.2	0.08	BOTH	0.3864	false	OUTDOOR	explicit representative size
+114	train	train	VEHICLE	20.0	3.0	4.0	0.1	BOTH	0.378	false	OUTDOOR	explicit representative size
+115	tram	tram	VEHICLE	18.0	3.0	3.6	0.1	BOTH	0.378	false	OUTDOOR	explicit representative size
+116	subway	subway	VEHICLE	20.0	3.0	4.0	0.1	BOTH	0.378	false	OUTDOOR	explicit representative size
+117	traffic_light	traffic light	PEDESTRIAN_INFRASTRUCTURE	0.3	0.2	1.0	0.05	BOTH	0.5225	false	OUTDOOR	explicit representative size
+118	stop_sign	stop sign	PEDESTRIAN_INFRASTRUCTURE	0.75	0.05	0.75	0.05	BOTH	0.5225	false	OUTDOOR	explicit representative size
+119	yield_sign	yield sign	PEDESTRIAN_INFRASTRUCTURE	0.75	0.05	0.75	0.05	BOTH	0.5225	false	OUTDOOR	explicit representative size
+120	road_sign	road sign	PEDESTRIAN_INFRASTRUCTURE	0.9	0.05	1.2	0.05	BOTH	0.5225	false	OUTDOOR	explicit representative size
+121	sign	sign	TEXT_REGION	0.6	0.05	0.4	0.05	BOTH	0.171	true	BOTH	explicit representative size
+122	signboard	signboard	TEXT_REGION	1.2	0.1	0.8	0.05	BOTH	0.171	true	BOTH	explicit representative size
+123	billboard	billboard	TEXT_REGION	6.0	0.2	3.0	0.08	BOTH	0.1656	true	OUTDOOR	explicit representative size
+124	poster	poster	TEXT_REGION	0.6	0.02	0.9	0.08	BOTH	0.1656	true	BOTH	explicit representative size
+125	banner	banner	TEXT_REGION	3.0	0.02	0.6	0.1	BOTH	0.162	true	BOTH	explicit representative size
+126	placard	placard	TEXT_REGION	0.5	0.01	0.7	0.1	BOTH	0.162	true	BOTH	explicit representative size
+127	street_sign	street sign	TEXT_REGION	0.4	0.05	0.6	0.06	BOTH	0.1692	true	OUTDOOR	explicit representative size
+128	traffic_sign	traffic sign	TEXT_REGION	0.75	0.05	0.75	0.06	BOTH	0.1692	true	OUTDOOR	explicit representative size
+129	warning_sign	warning sign	TEXT_REGION	0.6	0.05	0.6	0.06	BOTH	0.1692	true	OUTDOOR	explicit representative size
+130	exit_sign	exit sign	TEXT_REGION	0.4	0.05	0.2	0.06	BOTH	0.1692	true	OUTDOOR	explicit representative size
+131	menu_board	menu board	TEXT_REGION	1.0	0.03	0.8	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+132	price_tag	price tag	TEXT_REGION	0.06	0.002	0.04	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+133	label	label	TEXT_REGION	0.05	0.001	0.03	0.1	BOTH	0.162	true	BOTH	explicit representative size
+134	name_tag	name tag	TEXT_REGION	0.08	0.001	0.05	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+135	screen	screen	TEXT_REGION	0.5	0.05	0.3	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+136	monitor	monitor	TEXT_REGION	0.55	0.15	0.35	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+137	display	display	TEXT_REGION	0.7	0.08	0.4	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+138	kiosk	kiosk	TEXT_REGION	1.2	0.8	2.0	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+139	map	map	TEXT_REGION	0.6	0.01	0.9	0.12	BOTH	0.1584	true	BOTH	explicit representative size
+140	schedule	schedule	TEXT_REGION	0.8	0.02	1.2	0.12	BOTH	0.1584	true	BOTH	explicit representative size
+141	timetable	timetable	TEXT_REGION	0.8	0.02	1.2	0.12	BOTH	0.1584	true	BOTH	explicit representative size
+142	notice	notice	TEXT_REGION	0.6	0.01	0.8	0.12	BOTH	0.1584	true	BOTH	explicit representative size
+143	ad	ad	TEXT_REGION	1.0	0.05	0.7	0.16	BOTH	0.1512	true	OUTDOOR	explicit representative size
+144	advertisement	advertisement	TEXT_REGION	1.0	0.05	0.7	0.16	BOTH	0.1512	true	OUTDOOR	explicit representative size
+145	store_sign	store sign	TEXT_REGION	2.5	0.1	0.8	0.1	BOTH	0.162	true	OUTDOOR	explicit representative size
+146	storefront_sign	storefront sign	TEXT_REGION	2.5	0.1	0.8	0.1	BOTH	0.162	true	OUTDOOR	explicit representative size
+147	room_number	room number	TEXT_REGION	0.1	0.01	0.15	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+148	floor_number	floor number	TEXT_REGION	0.1	0.01	0.15	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+149	document	document	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.1728	true	INDOOR	explicit representative size
+150	paper	paper	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.1728	true	INDOOR	explicit representative size
+151	page	page	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.171	true	INDOOR	explicit representative size
+152	form	form	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.171	true	INDOOR	explicit representative size
+153	letter	letter	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.171	true	INDOOR	explicit representative size
+154	mail	mail	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+155	envelope	envelope	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+156	brochure	brochure	TEXT_REGION	0.21	0.297	0.002	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+157	menu	menu	TEXT_REGION	0.21	0.297	0.002	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+158	flyer	flyer	TEXT_REGION	0.21	0.297	0.001	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+159	pamphlet	pamphlet	TEXT_REGION	0.15	0.21	0.002	0.08	BOTH	0.1656	true	INDOOR	explicit representative size
+160	receipt	receipt	TEXT_REGION	0.08	0.2	0.0005	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+161	invoice	invoice	TEXT_REGION	0.08	0.2	0.0005	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+162	bill	bill	TEXT_REGION	0.08	0.2	0.0005	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+163	order_slip	order slip	TEXT_REGION	0.1	0.15	0.0005	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+164	ticket	ticket	TEXT_REGION	0.05	0.15	0.0002	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+165	prescription	prescription	TEXT_REGION	0.08	0.2	0.0005	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+166	note	note	TEXT_REGION	0.1	0.15	0.0005	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+167	notebook	notebook	TEXT_REGION	0.15	0.21	0.01	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+168	book	book	TEXT_REGION	0.15	0.23	0.03	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+169	magazine	magazine	TEXT_REGION	0.21	0.28	0.005	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+170	newspaper	newspaper	TEXT_REGION	0.4	0.6	0.005	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+171	calendar	calendar	TEXT_REGION	0.21	0.3	0.005	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+172	checklist	checklist	TEXT_REGION	0.21	0.29	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+173	report	report	TEXT_REGION	0.21	0.29	0.005	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+174	manual	manual	TEXT_REGION	0.16	0.24	0.02	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+175	chart	chart	TEXT_REGION	0.21	0.29	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+176	spreadsheet	spreadsheet	TEXT_REGION	0.21	0.29	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+177	certificate	certificate	TEXT_REGION	0.21	0.29	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+178	id_card	id card	TEXT_REGION	0.09	0.06	0.001	0.1	BOTH	0.162	true	INDOOR	explicit representative size
+179	badge	badge	TEXT_REGION	0.09	0.06	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+180	package_label	package label	TEXT_REGION	0.1	0.15	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+181	shipping_label	shipping label	TEXT_REGION	0.1	0.15	0.001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+182	barcode	barcode	TEXT_REGION	0.04	0.04	0.0001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+183	qr_code	qr code	TEXT_REGION	0.04	0.04	0.0001	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+184	whiteboard	whiteboard	TEXT_REGION	1.5	0.05	1.0	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+185	blackboard	blackboard	TEXT_REGION	1.5	0.05	1.0	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+186	chalkboard	chalkboard	TEXT_REGION	1.5	0.05	1.0	0.12	BOTH	0.1584	true	INDOOR	explicit representative size
+187	text_area	text area	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+188	scene_text_area	scene text area	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+189	document_text_area	document text area	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+190	handwritten_text_area	handwritten text area	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+191	printed_text_area	printed text area	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+192	ocr_region	ocr region	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+193	text_block	text block	TEXT_REGION	0.4	0.2	0.01	0.15	NONE	0.0	true	INDOOR	explicit representative size
+194	paragraph	paragraph	TEXT_REGION	0.4	0.2	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+195	table_cell	table cell	TEXT_REGION	0.12	0.05	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+196	header_text	header text	TEXT_REGION	0.2	0.05	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+197	footer_text	footer text	TEXT_REGION	0.2	0.05	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+198	multi_column_text	multi-column text	PEDESTRIAN_INFRASTRUCTURE	0.6	0.4	0.001	0.14	NONE	0.0	false	BOTH	explicit representative size
+199	layout_text_region	layout text region	TEXT_REGION	0.4	0.2	0.01	0.16	NONE	0.0	true	INDOOR	explicit representative size
+200	cashier	cashier	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+201	clerk	clerk	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+202	receptionist	receptionist	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+203	waiter	waiter	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+204	server	server	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+205	nurse	nurse	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+206	doctor	doctor	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+207	security_guard	security guard	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+208	attendant	attendant	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+209	delivery_worker	delivery worker	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+210	shopkeeper	shopkeeper	PERSON_OR_MOBILITY_AID	1.75	0.5	0.3	0.16	NONE	0.0	false	BOTH	family default for person_role
+211	customer_service_desk	customer service desk	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+212	checkout_counter	checkout counter	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+213	room	room	STREET_OBJECT	5.0	4.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+214	office	office	STREET_OBJECT	5.0	4.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+215	kitchen	kitchen	STREET_OBJECT	5.0	4.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+216	bathroom	bathroom	STREET_OBJECT	2.5	2.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+217	bedroom	bedroom	STREET_OBJECT	5.0	4.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+218	living_room	living room	STREET_OBJECT	6.0	5.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+219	dining_room	dining room	STREET_OBJECT	5.0	4.0	2.5	0.14	NONE	0.0	false	INDOOR	explicit representative size
+220	classroom	classroom	STREET_OBJECT	7.0	5.0	2.5	0.16	NONE	0.0	false	INDOOR	explicit representative size
+221	conference_room	conference room	STREET_OBJECT	7.0	5.0	2.5	0.16	NONE	0.0	false	INDOOR	explicit representative size
+222	hallway	hallway	INTERIOR_STRUCTURE	12.0	2.5	2.5	0.12	NONE	0.0	false	TRANSITION	explicit representative size
+223	corridor	corridor	INTERIOR_STRUCTURE	12.0	2.5	2.5	0.12	NONE	0.0	false	TRANSITION	explicit representative size
+224	aisle	aisle	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+225	lobby	lobby	STREET_OBJECT	8.0	7.0	3.5	0.16	NONE	0.0	false	INDOOR	explicit representative size
+226	waiting_room	waiting room	STREET_OBJECT	6.0	4.0	2.5	0.16	NONE	0.0	false	INDOOR	explicit representative size
+227	clinic	clinic	STREET_OBJECT	8.0	5.0	2.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+228	hospital	hospital	STREET_OBJECT	12.0	8.0	2.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+229	pharmacy	pharmacy	STREET_OBJECT	3.0	2.0	2.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+230	restaurant	restaurant	STREET_OBJECT	8.0	6.0	2.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+231	cafe	cafe	STREET_OBJECT	3.0	2.0	2.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+232	store	store	STREET_OBJECT	5.0	3.0	3.0	0.18	NONE	0.0	false	INDOOR	explicit representative size
+233	supermarket	supermarket	STREET_OBJECT	12.0	8.0	3.5	0.18	NONE	0.0	false	INDOOR	explicit representative size
+234	mall	mall	STREET_OBJECT	30.0	20.0	4.0	0.2	NONE	0.0	false	INDOOR	explicit representative size
+235	park	park	STREET_OBJECT	50.0	50.0	4.0	0.2	NONE	0.0	false	BOTH	explicit representative size
+236	entrance	entrance	INTERIOR_STRUCTURE	1.2	0.4	2.2	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+237	bulletin_board	bulletin board	TEXT_REGION	0.6	0.05	0.4	0.22	NONE	0.0	true	BOTH	family default for scene_text
+238	notice_board	notice board	TEXT_REGION	0.6	0.05	0.4	0.22	NONE	0.0	true	BOTH	family default for scene_text
+239	directory_sign	directory sign	TEXT_REGION	0.6	0.05	0.4	0.22	NONE	0.0	true	OUTDOOR	family default for scene_text
+240	information_board	information board	TEXT_REGION	0.6	0.05	0.4	0.22	NONE	0.0	true	OUTDOOR	family default for scene_text
+241	digital_sign	digital sign	TEXT_REGION	0.6	0.05	0.4	0.22	NONE	0.0	true	OUTDOOR	family default for scene_text
+242	display_screen	display screen	STREET_OBJECT	0.5	0.5	0.5	0.5	NONE	0.0	false	BOTH	family default for general_object
+243	mail_envelope	mail envelope	STREET_OBJECT	0.16	0.11	0.001	0.05	BOTH	0.171	false	BOTH	explicit representative size
+244	book_page	book page	TEXT_REGION	0.21	0.297	0.001	0.05	BOTH	0.171	true	INDOOR	explicit representative size
+245	contract	contract	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	BOTH	family default for document_text
+246	manual_page	manual page	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+247	newspaper_page	newspaper page	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+248	magazine_page	magazine page	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+249	check	check	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	BOTH	family default for document_text
+250	passport	passport	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	BOTH	family default for document_text
+251	bank_statement	bank statement	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	BOTH	family default for document_text
+252	calendar_page	calendar page	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+253	worksheet	worksheet	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+254	memo	memo	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+255	postcard	postcard	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+256	ledger	ledger	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+257	application_form	application form	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+258	notebook_page	notebook page	TEXT_REGION	0.21	0.297	0.001	0.2	NONE	0.0	true	INDOOR	family default for document_text
+259	door_frame	door frame	INTERIOR_STRUCTURE	0.9	0.12	2.1	0.05	BOTH	0.6912	false	TRANSITION	explicit representative size
+260	doorframe	doorframe	INTERIOR_STRUCTURE	0.9	0.12	2.1	0.05	BOTH	0.6912	false	TRANSITION	explicit representative size
+261	door_handle	door handle	INTERIOR_STRUCTURE	0.15	0.05	0.12	0.05	BOTH	0.684	false	BOTH	explicit representative size
+262	door_knob	door knob	INTERIOR_STRUCTURE	0.1	0.1	0.1	0.06	BOTH	0.6768	false	BOTH	explicit representative size
+263	latch	latch	INTERIOR_STRUCTURE	0.08	0.04	0.06	0.08	BOTH	0.6624	false	BOTH	explicit representative size
+264	archway	archway	INTERIOR_STRUCTURE	1.5	0.25	2.4	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+265	vestibule	vestibule	INTERIOR_STRUCTURE	3.0	2.5	2.4	0.16	NONE	0.0	false	TRANSITION	explicit representative size
+266	sliding_door	sliding door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.05	BOTH	0.684	false	TRANSITION	explicit representative size
+267	swing_door	swing door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.05	BOTH	0.684	false	TRANSITION	explicit representative size
+268	revolving_door	revolving door	INTERIOR_STRUCTURE	2.2	2.2	2.4	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+269	glass_door	glass door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.05	BOTH	0.684	false	TRANSITION	explicit representative size
+270	loading_dock_door	loading dock door	INTERIOR_STRUCTURE	2.4	0.1	2.6	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+271	double_door	double door	INTERIOR_STRUCTURE	1.8	0.04	2.1	0.06	BOTH	0.6768	false	TRANSITION	explicit representative size
+272	automatic_door	automatic door	INTERIOR_STRUCTURE	0.9	0.06	2.1	0.06	BOTH	0.6768	false	TRANSITION	explicit representative size
+273	screen_door	screen door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+274	french_door	french door	INTERIOR_STRUCTURE	1.8	0.04	2.1	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+275	barn_door	barn door	INTERIOR_STRUCTURE	1.2	0.05	2.2	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+276	garage_door	garage door	INTERIOR_STRUCTURE	2.4	0.08	2.4	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+277	cabinet_door	cabinet door	INTERIOR_STRUCTURE	0.5	0.02	0.7	0.12	BOTH	0.6336	false	TRANSITION	explicit representative size
+278	closet_door	closet door	INTERIOR_STRUCTURE	0.8	0.04	2.1	0.1	BOTH	0.648	false	TRANSITION	explicit representative size
+279	hinged_door	hinged door	INTERIOR_STRUCTURE	0.9	0.04	2.1	0.06	BOTH	0.6768	false	TRANSITION	explicit representative size
+280	security_door	security door	INTERIOR_STRUCTURE	0.9	0.08	2.1	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+281	saloon_door	saloon door	INTERIOR_STRUCTURE	1.2	0.04	1.6	0.12	BOTH	0.6336	false	TRANSITION	explicit representative size
+282	fire_door	fire door	INTERIOR_STRUCTURE	0.9	0.08	2.1	0.08	BOTH	0.6624	false	TRANSITION	explicit representative size
+283	pathway	pathway	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+284	footpath	footpath	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+285	passage	passage	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+286	route	route	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+287	lane	lane	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+288	boardwalk	boardwalk	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+289	catwalk	catwalk	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+290	bridge	bridge	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+291	pedestrian_bridge	pedestrian bridge	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+292	footbridge	footbridge	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+293	underpass	underpass	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+294	overpass	overpass	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+295	pedestrian_tunnel	pedestrian tunnel	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+296	curb_cut	curb cut	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+297	garden_path	garden path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+298	dirt_path	dirt path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+299	paved_path	paved path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+300	stone_path	stone path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+301	brick_path	brick path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	OUTDOOR	family default for navigation_surface
+302	service_corridor	service corridor	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	TRANSITION	family default for navigation_surface
+303	side_path	side path	PEDESTRIAN_INFRASTRUCTURE	10.0	1.8	0.01	0.25	NONE	0.0	false	BOTH	family default for navigation_surface
+304	park_bench	park bench	STREET_OBJECT	1.8	0.55	0.85	0.07	BOTH	0.3534	false	OUTDOOR	explicit representative size
+305	picnic_bench	picnic bench	STREET_OBJECT	1.8	1.5	0.75	0.08	BOTH	0.3496	false	OUTDOOR	explicit representative size
+306	outdoor_bench	outdoor bench	STREET_OBJECT	1.6	0.45	0.85	0.08	BOTH	0.3496	false	OUTDOOR	explicit representative size
+307	indoor_bench	indoor bench	STREET_OBJECT	1.4	0.45	0.85	0.1	BOTH	0.342	false	INDOOR	explicit representative size
+308	seating_bench	seating bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	BOTH	explicit representative size
+309	bench_seat	bench seat	STREET_OBJECT	0.45	0.45	0.45	0.12	BOTH	0.3344	false	BOTH	explicit representative size
+310	empty_bench	empty bench	STREET_OBJECT	1.5	0.45	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+311	vacant_bench	vacant bench	STREET_OBJECT	1.5	0.45	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+312	occupied_bench	occupied bench	STREET_OBJECT	1.5	0.45	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+313	seat	seat	STREET_OBJECT	0.45	0.45	0.45	0.1	BOTH	0.342	false	BOTH	explicit representative size
+314	sitting_person	sitting person	STREET_OBJECT	1.5	0.45	0.55	0.1	NONE	0.0	false	BOTH	family default for bench
+315	bus_stop_bench	bus stop bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+316	station_bench	station bench	STREET_OBJECT	1.8	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+317	stadium_bench	stadium bench	STREET_OBJECT	2.0	0.5	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+318	garden_bench	garden bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+319	backless_bench	backless bench	STREET_OBJECT	1.5	0.45	0.45	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+320	bench_with_backrest	bench with backrest	STREET_OBJECT	1.8	0.55	0.85	0.08	BOTH	0.3496	false	OUTDOOR	explicit representative size
+321	wooden_bench	wooden bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+322	metal_bench	metal bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+323	stone_bench	stone bench	STREET_OBJECT	1.6	0.5	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+324	concrete_bench	concrete bench	STREET_OBJECT	1.6	0.5	0.55	0.12	BOTH	0.3344	false	OUTDOOR	explicit representative size
+325	slatted_bench	slatted bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+326	folding_bench	folding bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+327	built_in_bench	built-in bench	STREET_OBJECT	1.8	0.45	0.45	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+328	fixed_bench	fixed bench	STREET_OBJECT	1.8	0.45	0.45	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size
+329	movable_bench	movable bench	STREET_OBJECT	1.5	0.45	0.55	0.1	BOTH	0.342	false	OUTDOOR	explicit representative size

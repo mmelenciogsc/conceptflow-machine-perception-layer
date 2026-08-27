@@ -63,6 +63,26 @@ data class EncodedJpegFrame(
         width == frame.width && height == frame.height
 }
 
+data class RawRgbFrame(
+    val frameId: Long,
+    val captureMonotonicTimestampNanos: Long,
+    val width: Int,
+    val height: Int,
+    val rowStrideBytes: Int,
+    val rgb: ByteArray,
+) {
+    init {
+        require(frameId > 0 && captureMonotonicTimestampNanos >= 0)
+        require(width in 1..7_680 && height in 1..4_320)
+        require(rowStrideBytes == width * 3) { "packed RGB8 is required" }
+        require(rgb.size.toLong() == rowStrideBytes.toLong() * height)
+    }
+
+    fun matches(frame: VisionFrame): Boolean = frameId == frame.frameId &&
+        captureMonotonicTimestampNanos == frame.captureMonotonicTimestampNanos &&
+        width == frame.width && height == frame.height
+}
+
 fun interface EncodedJpegFrameSource {
     /** The source must return only the exact requested frame; null means it has expired. */
     fun take(frameId: Long): EncodedJpegFrame?
@@ -243,7 +263,7 @@ class QnnStagedMachineVisionInferenceAdapter(
         val outputs = session.execute(prepared.bytes).outputs
         if (outputs.size != 2) fail(QnnFailureCode.OUTPUT_INVALID, "YOLO graph must return two tensors")
         val detections = runCatching {
-            YoloBvi40Postprocessor.process(outputs[0], outputs[1], prepared.transform)
+            YoloFixedVocabularyPostprocessor.process(outputs[0], outputs[1], prepared.transform)
         }.getOrElse { fail(QnnFailureCode.OUTPUT_INVALID, "YOLO output invalid: ${it.javaClass.simpleName}") }
         val tracked = runCatching { tracker.update(frame.frameId, detections) }.getOrElse {
             fail(QnnFailureCode.FRAME_CORRELATION_FAILED, "tracking failed: ${it.javaClass.simpleName}")

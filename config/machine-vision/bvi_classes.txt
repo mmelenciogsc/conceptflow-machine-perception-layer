@@ -1,42 +1,332 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Ordered fixed vocabulary baked into the Android Node YOLOE-26S export.
+# Ordered 330-class fixed vocabulary baked into the Android Node YOLOE-26S export.
 person
+face
+hand
+child
+adult
+crowd
+queue
 guide dog
+service dog
+cane
+walker
 wheelchair
-white mobility cane
+stroller
+crutch
 chair
-table
+armchair
+sofa
+couch
 bench
-doorway
+table
+desk
+counter
+cabinet
+shelf
+bookcase
+drawer
+bed
+nightstand
+cupboard
 door
-door handle
-stairs
-escalator
-elevator door
+doorway
+window
+curtain
 wall
-curb
-curb ramp
-pedestrian crosswalk
-transit platform edge
-drop-off edge
-pothole
+floor
+ceiling
+stairs
+staircase
+escalator
+elevator
+ramp
+threshold
+step
+railing
+handrail
+pillar
+column
 pole
-bollard
-traffic cone
-pedestrian barrier
+barrier
 fence
-tree trunk
-low tree branch
-overhead obstacle
-trash bin
-construction scaffold
+gate
+bollard
+trash can
+bin
+cart
+trolley
+luggage
+suitcase
+backpack
+bag
+purse
+coat rack
+mirror
+sink
+toilet
+bathtub
+shower
+microwave
+refrigerator
+stove
+oven
+washer
+dryer
+lamp
+light switch
+outlet
+blind
+shade
+road
+street
+sidewalk
+walkway
+path
+trail
+alley
+intersection
+crosswalk
+parking lot
+driveway
+plaza
+courtyard
+bus stop
+curb
+guard rail
+post
+signpost
+lamp post
+tree
+bush
+planter
+awning
+loading dock
+building entrance
+exit
+storefront
+building
 car
+taxi
+van
 bus
+truck
 bicycle
 motorcycle
+scooter
+train
+tram
+subway
 traffic light
-pedestrian crossing signal
 stop sign
-sign containing readable text
-room number sign
-information display
+yield sign
+road sign
+sign
+signboard
+billboard
+poster
+banner
+placard
+street sign
+traffic sign
+warning sign
+exit sign
+menu board
+price tag
+label
+name tag
+screen
+monitor
+display
+kiosk
+map
+schedule
+timetable
+notice
+ad
+advertisement
+store sign
+storefront sign
+room number
+floor number
+document
+paper
+page
+form
+letter
+mail
+envelope
+brochure
+menu
+flyer
+pamphlet
+receipt
+invoice
+bill
+order slip
+ticket
+prescription
+note
+notebook
+book
+magazine
+newspaper
+calendar
+checklist
+report
+manual
+chart
+spreadsheet
+certificate
+id card
+badge
+package label
+shipping label
+barcode
+qr code
+whiteboard
+blackboard
+chalkboard
+text area
+scene text area
+document text area
+handwritten text area
+printed text area
+ocr region
+text block
+paragraph
+table cell
+header text
+footer text
+multi-column text
+layout text region
+cashier
+clerk
+receptionist
+waiter
+server
+nurse
+doctor
+security guard
+attendant
+delivery worker
+shopkeeper
+customer service desk
+checkout counter
+room
+office
+kitchen
+bathroom
+bedroom
+living room
+dining room
+classroom
+conference room
+hallway
+corridor
+aisle
+lobby
+waiting room
+clinic
+hospital
+pharmacy
+restaurant
+cafe
+store
+supermarket
+mall
+park
+entrance
+bulletin board
+notice board
+directory sign
+information board
+digital sign
+display screen
+mail envelope
+book page
+contract
+manual page
+newspaper page
+magazine page
+check
+passport
+bank statement
+calendar page
+worksheet
+memo
+postcard
+ledger
+application form
+notebook page
+door frame
+doorframe
+door handle
+door knob
+latch
+archway
+vestibule
+sliding door
+swing door
+revolving door
+glass door
+loading dock door
+double door
+automatic door
+screen door
+french door
+barn door
+garage door
+cabinet door
+closet door
+hinged door
+security door
+saloon door
+fire door
+pathway
+footpath
+passage
+route
+lane
+boardwalk
+catwalk
+bridge
+pedestrian bridge
+footbridge
+underpass
+overpass
+pedestrian tunnel
+curb cut
+garden path
+dirt path
+paved path
+stone path
+brick path
+service corridor
+side path
+park bench
+picnic bench
+outdoor bench
+indoor bench
+seating bench
+bench seat
+empty bench
+vacant bench
+occupied bench
+seat
+sitting person
+bus stop bench
+station bench
+stadium bench
+garden bench
+backless bench
+bench with backrest
+wooden bench
+metal bench
+stone bench
+concrete bench
+slatted bench
+folding bench
+built-in bench
+fixed bench
+movable bench

@@ -19,6 +19,7 @@ enum class EnvironmentSelectionMode {
 
 enum class EnvironmentSignalFamily {
     CAMERA,
+    VLM_CAMERA,
     GNSS,
 }
 
@@ -40,7 +41,7 @@ data class EnvironmentSignal(
         require(abs(indoorProbability + outdoorProbability - 1.0) <= 1e-6)
         require(reliability.isFinite() && reliability in 0.0..1.0)
         require(originatingFrameId == null || originatingFrameId > 0L)
-        require((family == EnvironmentSignalFamily.CAMERA) == (originatingFrameId != null))
+        require((family != EnvironmentSignalFamily.GNSS) == (originatingFrameId != null))
     }
 
     private companion object {
@@ -86,8 +87,8 @@ class BviSemanticSceneClassifier : CameraSceneClassifier {
             .filter { BviClassCatalog.find(it.classId) != null }
             .groupBy(SceneSemanticDetection::classId)
             .mapValues { (_, values) -> values.maxOf(SceneSemanticDetection::confidence) }
-        val indoorScore = score(strongestByClass, INDOOR_WEIGHTS)
-        val outdoorScore = score(strongestByClass, OUTDOOR_WEIGHTS)
+        val indoorScore = score(strongestByClass, BviEnvironmentClass.INDOOR, INDOOR_WEIGHTS)
+        val outdoorScore = score(strongestByClass, BviEnvironmentClass.OUTDOOR, OUTDOOR_WEIGHTS)
         val total = indoorScore + outdoorScore
         if (total <= 0.0) return null
 
@@ -105,34 +106,42 @@ class BviSemanticSceneClassifier : CameraSceneClassifier {
         )
     }
 
-    private fun score(confidences: Map<String, Double>, weights: Map<String, Double>): Double =
-        weights.entries.sumOf { (classId, weight) -> (confidences[classId] ?: 0.0) * weight }
-            .coerceAtMost(MAX_EVIDENCE_SCORE)
+    private fun score(
+        confidences: Map<String, Double>,
+        environmentClass: BviEnvironmentClass,
+        overrides: Map<String, Double>,
+    ): Double = confidences.entries.sumOf { (classId, confidence) ->
+        val definition = requireNotNull(BviClassCatalog.find(classId))
+        val defaultWeight = if (definition.environmentClass == environmentClass) {
+            GENERIC_CONTEXT_WEIGHT
+        } else {
+            0.0
+        }
+        confidence * (overrides[classId] ?: defaultWeight)
+    }.coerceAtMost(MAX_EVIDENCE_SCORE)
 
     companion object {
         private const val SOURCE_ID = "bvi-semantic-scene"
         private const val MAX_EVIDENCE_SCORE = 3.0
         private const val RELIABLE_SCORE = 1.25
+        private const val GENERIC_CONTEXT_WEIGHT = 0.12
 
         private val INDOOR_WEIGHTS = mapOf(
-            "room_number_sign" to 1.00,
-            "elevator_door" to 0.90,
+            "room_number" to 1.00,
+            "elevator" to 0.90,
             "escalator" to 0.65,
             "door_handle" to 0.45,
-            "information_display" to 0.35,
+            "information_board" to 0.35,
             "doorway" to 0.20,
             "door" to 0.15,
         )
         private val OUTDOOR_WEIGHTS = mapOf(
             "crosswalk" to 1.00,
-            "pedestrian_signal" to 1.00,
             "traffic_light" to 0.95,
             "stop_sign" to 0.95,
-            "curb_ramp" to 0.80,
+            "curb_cut" to 0.80,
             "curb" to 0.75,
-            "pothole" to 0.75,
-            "low_branch" to 0.70,
-            "tree_trunk" to 0.65,
+            "tree" to 0.65,
             "bus" to 0.55,
             "bollard" to 0.50,
             "car" to 0.35,
@@ -196,11 +205,13 @@ object GnssOutdoorEvidenceInterpreter {
 
 data class EnvironmentEvidenceFusionConfig(
     val cameraMaximumAgeNanos: Long = 2_000_000_000L,
+    val vlmCameraMaximumAgeNanos: Long = 20_000_000_000L,
     val gnssMaximumAgeNanos: Long = 15_000_000_000L,
     val maximumFutureSkewNanos: Long = 100_000_000L,
 ) {
     init {
-        require(cameraMaximumAgeNanos > 0L && gnssMaximumAgeNanos > 0L)
+        require(cameraMaximumAgeNanos > 0L && vlmCameraMaximumAgeNanos >= cameraMaximumAgeNanos)
+        require(gnssMaximumAgeNanos > 0L)
         require(maximumFutureSkewNanos >= 0L)
     }
 }
@@ -245,6 +256,7 @@ class EnvironmentEvidenceFusion(
             if (age < -config.maximumFutureSkewNanos) return@mapNotNull null
             val maximumAge = when (signal.family) {
                 EnvironmentSignalFamily.CAMERA -> config.cameraMaximumAgeNanos
+                EnvironmentSignalFamily.VLM_CAMERA -> config.vlmCameraMaximumAgeNanos
                 EnvironmentSignalFamily.GNSS -> config.gnssMaximumAgeNanos
             }
             val boundedAge = age.coerceAtLeast(0L)
@@ -254,9 +266,9 @@ class EnvironmentEvidenceFusion(
         }.filter { it.weight > 0.0 }
         if (accepted.isEmpty()) return null
 
-        val families = accepted.groupBy { it.signal.family }.mapValues { (family, members) ->
+        val families = accepted.groupBy { it.signal.family.independenceGroup() }.mapValues { (family, members) ->
             val rawWeight = members.sumOf(WeightedSignal::weight)
-            val familyCap = if (family == EnvironmentSignalFamily.GNSS) 0.35 else 1.0
+            val familyCap = if (family == EvidenceIndependenceGroup.GNSS) 0.35 else 1.0
             FamilyEvidence(
                 indoorProbability = members.sumOf { it.signal.indoorProbability * it.weight } / rawWeight,
                 weight = rawWeight.coerceAtMost(familyCap),
@@ -274,7 +286,7 @@ class EnvironmentEvidenceFusion(
             indoorProbability = indoorProbability,
             outdoorProbability = 1.0 - indoorProbability,
             independentSignalCount = families.size,
-            hasPrimaryVisualSignal = EnvironmentSignalFamily.CAMERA in families,
+            hasPrimaryVisualSignal = EvidenceIndependenceGroup.VISUAL in families,
         )
     }
 
@@ -284,4 +296,13 @@ class EnvironmentEvidenceFusion(
         val weight: Double,
         val newestTimestampNanos: Long,
     )
+
+    private enum class EvidenceIndependenceGroup { VISUAL, GNSS }
+
+    private fun EnvironmentSignalFamily.independenceGroup(): EvidenceIndependenceGroup = when (this) {
+        EnvironmentSignalFamily.CAMERA, EnvironmentSignalFamily.VLM_CAMERA -> {
+            EvidenceIndependenceGroup.VISUAL
+        }
+        EnvironmentSignalFamily.GNSS -> EvidenceIndependenceGroup.GNSS
+    }
 }

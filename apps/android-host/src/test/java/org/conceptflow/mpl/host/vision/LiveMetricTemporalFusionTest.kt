@@ -115,7 +115,7 @@ class LiveMetricTemporalFusionTest {
     }
 
     @Test
-    fun `unquantified derived intrinsics never become temporal anchors`() {
+    fun `unquantified derived intrinsics propagate with explicit unquantified status`() {
         val derivedIntrinsics = intrinsics().copy(source = CameraIntrinsicsSource.DERIVED)
         val frame = frame(intrinsics = derivedIntrinsics)
         val guided = MetricDepthCalibrationProvider.single(
@@ -138,13 +138,13 @@ class LiveMetricTemporalFusionTest {
         )
 
         assertEquals(
-            LiveMetricFusionReason.CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED,
+            LiveMetricFusionReason.METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED,
             output.reason,
         )
         assertEquals(1, output.metricTrackCount)
         assertTrue(output.metricTracks.single().cameraVectorMeters != null)
         assertEquals(MetricDepthProvenanceKind.GUIDED_TWO_ANCHOR, requireNotNull(output.metricProvenance).kind)
-        assertTrue(output.temporalTracks.isEmpty())
+        assertEquals(1, output.temporalTracks.size)
     }
 
     @Test
@@ -218,6 +218,46 @@ class LiveMetricTemporalFusionTest {
 
         assertEquals(1, ready.temporalTracks.size)
         assertEquals(1, moved.temporalTrackCount)
+    }
+
+    @Test
+    fun `frame supplied camera2 extrinsic enables subsequent pose propagation`() {
+        val frame = frame(intrinsics = intrinsics())
+        val fusion = LiveMetricTemporalFusion(provider(), null)
+        val before = fusion.acceptPose(HeadPoseObservation(100L, UnitQuaternion.IDENTITY, 3))
+
+        val ready = fusion.process(
+            frame,
+            result(frame, TemporalMotionEvidence.CONFIRMED_STATIC_WORLD),
+            200L,
+            extrinsic().copy(provenance = HeadCameraExtrinsicProvenance.CAMERA2_SENSOR_COORDINATES),
+        )
+        val moved = fusion.acceptPose(HeadPoseObservation(250L, yawDegrees(15.0), 3))
+
+        assertEquals("head_camera_extrinsic_missing", before.reason)
+        assertEquals(LiveMetricFusionReason.METRIC_TRACKS_READY, ready.reason)
+        assertEquals(1, ready.temporalTracks.size)
+        assertEquals(100L, requireNotNull(ready.capturePose).monotonicTimestampNanos)
+        assertEquals(1, moved.temporalTrackCount)
+        assertEquals(250L, requireNotNull(moved.cameraPose).monotonicTimestampNanos)
+    }
+
+    @Test
+    fun `reset removes frame supplied extrinsic as well as prior head state`() {
+        val frame = frame(intrinsics = intrinsics())
+        val fusion = LiveMetricTemporalFusion(provider(), null)
+        fusion.acceptPose(HeadPoseObservation(100L, UnitQuaternion.IDENTITY, 3))
+        val first = fusion.process(frame, result(frame), 200L, extrinsic())
+        assertEquals(LiveMetricFusionReason.METRIC_TRACKS_READY, first.reason)
+
+        fusion.reset()
+        val afterResetPose = fusion.acceptPose(HeadPoseObservation(100L, UnitQuaternion.IDENTITY, 3))
+        assertEquals("head_camera_extrinsic_missing", afterResetPose.reason)
+        assertNull(afterResetPose.cameraPose)
+
+        val replacement = extrinsic().copy(verificationFingerprint = "b".repeat(64))
+        val second = fusion.process(frame, result(frame), 200L, replacement)
+        assertEquals(LiveMetricFusionReason.METRIC_TRACKS_READY, second.reason)
     }
 
     private fun assertUnavailable(result: LiveMetricFusionResult, reason: LiveMetricFusionReason) {

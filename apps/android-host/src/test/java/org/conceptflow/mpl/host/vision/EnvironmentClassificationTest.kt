@@ -16,8 +16,8 @@ class EnvironmentClassificationTest {
             1L,
             100L,
             listOf(
-                SceneSemanticDetection("room_number_sign", 0.95),
-                SceneSemanticDetection("elevator_door", 0.90),
+                SceneSemanticDetection("room_number", 0.95),
+                SceneSemanticDetection("elevator", 0.90),
             ),
         )!!
         val outdoor = classifier.classify(
@@ -39,7 +39,7 @@ class EnvironmentClassificationTest {
     @Test
     fun repeatedInstancesOfOneClassCannotOverpowerContradictoryContext() {
         val detections = List(20) { SceneSemanticDetection("car", 0.95) } +
-            SceneSemanticDetection("room_number_sign", 0.95)
+            SceneSemanticDetection("room_number", 0.95)
         val signal = classifier.classify(1L, 100L, detections)!!
 
         assertTrue(signal.indoorProbability > signal.outdoorProbability)
@@ -75,6 +75,21 @@ class EnvironmentClassificationTest {
         assertEquals(2, evidence.independentSignalCount)
         assertTrue(evidence.hasPrimaryVisualSignal)
         assertTrue(evidence.indoorProbability > 0.5)
+    }
+
+    @Test
+    fun fusionDoesNotDoubleCountVlmAndSegmentationAsIndependentSensors() {
+        val fusion = EnvironmentEvidenceFusion()
+        val evidence = fusion.fuse(
+            1_000_000_000L,
+            listOf(
+                signal("camera-semantic", EnvironmentSignalFamily.CAMERA, 990_000_000L, 0.80, 0.70, 2L),
+                signal("camera-vlm", EnvironmentSignalFamily.VLM_CAMERA, 980_000_000L, 0.95, 0.85, 1L),
+            ),
+        )!!
+
+        assertEquals(1, evidence.independentSignalCount)
+        assertTrue(evidence.hasPrimaryVisualSignal)
     }
 
     @Test

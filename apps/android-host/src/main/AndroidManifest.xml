@@ -3,9 +3,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -24,8 +35,19 @@
         <uses-native-library
             android:name="libcdsprpc.so"
             android:required="false" />
+        <service
+            android:name="org.conceptflow.mpl.host.AndroidNodeForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <!-- Keep GenieX's QNN/GGML libraries out of the real-time YOLO/depth process. This
+             prevents two independently versioned Qualcomm runtime stacks sharing one linker
+             namespace while retaining the same private application UID and storage boundary. -->
+        <service
+            android:name="org.conceptflow.mpl.host.vision.LocalVlmInferenceService"
+            android:exported="false"
+            android:process=":local_vlm" />
         <activity
-            android:name=".MainActivity"
+            android:name="org.conceptflow.mpl.androidhost.LauncherActivity"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>

@@ -37,6 +37,34 @@ class LiveReconnectPolicyTest {
             policy.onDisconnect(LiveLinkDisconnectReason.REMOTE_COMPLETED),
         )
         assertEquals(LiveReconnectDecision.RETRY, policy.onDisconnect(LiveLinkDisconnectReason.NETWORK))
+        assertFalse(LiveLinkDisconnectReason.REMOTE_COMPLETED.isUnexpectedInterruption())
+        assertFalse(LiveLinkDisconnectReason.LEASE_EXPIRED.isUnexpectedInterruption())
+        assertTrue(LiveLinkDisconnectReason.NETWORK.isUnexpectedInterruption())
+        assertTrue(LiveLinkDisconnectReason.TIMEOUT.isUnexpectedInterruption())
+    }
+
+    @Test
+    fun `persistent node keeps listening across normal sessions and arbitrary network interruptions`() {
+        val policy = LiveReconnectPolicy(maximumInterruptions = 1, persistent = true)
+
+        assertEquals(
+            LiveReconnectDecision.RETRY,
+            policy.onDisconnect(LiveLinkDisconnectReason.REMOTE_COMPLETED),
+        )
+        assertEquals(
+            LiveReconnectDecision.RETRY,
+            policy.onDisconnect(LiveLinkDisconnectReason.LEASE_EXPIRED),
+        )
+        repeat(4) {
+            assertEquals(
+                LiveReconnectDecision.RETRY,
+                policy.onDisconnect(LiveLinkDisconnectReason.NETWORK),
+            )
+        }
+        assertEquals(
+            LiveReconnectDecision.FAIL_CLOSED,
+            policy.onDisconnect(LiveLinkDisconnectReason.AUTHENTICATION),
+        )
     }
 
     @Test
@@ -61,5 +89,22 @@ class LiveReconnectPolicyTest {
         val replacement = gate.begin()
         assertTrue(gate.mayPublish(replacement))
         assertFalse(gate.mayPublish(slowStartup))
+    }
+
+    @Test
+    fun `first authenticated session owns active deadline and reconnect cannot reset it`() {
+        val gate = LiveSessionDeadlineGate()
+
+        assertEquals(LiveSessionArrival.FIRST_AUTHENTICATED, gate.onSessionReady())
+        assertEquals(LiveSessionArrival.RECONNECT, gate.onSessionReady())
+        assertFalse(gate.expireRendezvousIfUnauthenticated())
+    }
+
+    @Test
+    fun `rendezvous timeout rejects a late first session`() {
+        val gate = LiveSessionDeadlineGate()
+
+        assertTrue(gate.expireRendezvousIfUnauthenticated())
+        assertEquals(LiveSessionArrival.REJECT_AFTER_TIMEOUT, gate.onSessionReady())
     }
 }

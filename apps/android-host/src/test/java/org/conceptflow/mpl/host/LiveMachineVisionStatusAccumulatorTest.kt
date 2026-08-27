@@ -11,6 +11,9 @@ import org.conceptflow.mpl.host.vision.SemanticMaskObservation
 import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkFailureLane
+import org.conceptflow.mpl.transport.RokidNodeCommandDelivery
+import org.conceptflow.mpl.v1.RokidNodeCommandOperation
+import org.conceptflow.mpl.v1.LiveLinkTelemetry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -18,11 +21,89 @@ import org.junit.Test
 
 class LiveMachineVisionStatusAccumulatorTest {
     @Test
+    fun `peer pressure telemetry is exposed without sensor content`() {
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+        status.peerTelemetry(
+            LiveLinkTelemetry.newBuilder()
+                .setSampledMonotonicTimestampNs(1L)
+                .setPendingCameraFrames(1)
+                .setPendingImuBatches(2)
+                .setPendingAudioBlocks(3)
+                .setPendingTouchEvents(4)
+                .setDroppedCameraFrames(5)
+                .setDroppedImuBatches(6)
+                .setDroppedAudioBlocks(7)
+                .setTouchOverflowEvents(8)
+                .setSentRealtimeMessages(9)
+                .setSentCameraMessages(10)
+                .build(),
+        )
+
+        val snapshot = status.snapshot()
+        assertEquals(1L, snapshot.peerPressure?.samplesReceived)
+        assertEquals(8L, snapshot.peerPressure?.touchOverflowEvents)
+        assertEquals(9L, snapshot.peerPressure?.sentRealtimeMessages)
+        assertEquals(10L, snapshot.peerPressure?.sentCameraMessages)
+        assertTrue(snapshot.accessibleSummary().contains("Rokid queue telemetry: samples 1"))
+        assertTrue(snapshot.accessibleSummary().contains("sent realtime messages 9, camera messages 10"))
+        assertFalse(snapshot.accessibleSummary().contains("timestamp"))
+    }
+
+    @Test
+    fun `node command acknowledgement remains in accessible aggregate status`() {
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+        val operation = RokidNodeCommandOperation.ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE
+
+        status.nodeCommandRequested(operation, fromGlassesGesture = false)
+        assertTrue(status.snapshot().accessibleSummary().contains("Rokid Node command: requested"))
+
+        status.nodeCommandResult(
+            RokidNodeCommandDelivery(
+                commandId = 7L,
+                originatingGestureId = 0L,
+                operation = operation,
+                acceptedForExecution = true,
+            ),
+        )
+
+        val snapshot = status.snapshot()
+        assertEquals(LiveRokidNodeCommandPhase.ACCEPTED, snapshot.nodeCommandPhase)
+        assertEquals(operation, snapshot.lastNodeCommandOperation)
+        assertFalse(snapshot.lastNodeCommandFromGlassesGesture)
+        assertTrue(
+            snapshot.accessibleSummary().contains(
+                "Rokid Node command: accepted; operation play brand sequence; source Android control",
+            ),
+        )
+    }
+
+    @Test
+    fun `glasses gesture command source is retained without its identifier`() {
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+        val operation = RokidNodeCommandOperation.ROKID_NODE_COMMAND_OPERATION_ACTIVATE_NODE
+
+        status.nodeCommandRequested(operation, fromGlassesGesture = true)
+        status.nodeCommandResult(
+            RokidNodeCommandDelivery(
+                commandId = 9L,
+                originatingGestureId = 4L,
+                operation = operation,
+                acceptedForExecution = false,
+            ),
+        )
+
+        val text = status.snapshot().accessibleSummary()
+        assertTrue(text.contains("Rokid Node command: rejected; operation activate; source glasses gesture"))
+        assertFalse(text.contains("commandId"))
+        assertFalse(text.contains("gestureId"))
+    }
+
+    @Test
     fun `reports bounded aggregate percentiles without captured content`() {
         val status = LiveMachineVisionStatusAccumulator("depth-indoor-392")
         status.phase(LiveMachineVisionPhase.STREAMING)
         status.cameraReceived()
-        status.cameraReceived()
+        status.cameraReceived(admittedToTimeline = false)
         status.cameraReplaced()
         status.imuReceived(8, acceptedPoses = 6, rejectedPoses = 2, propagatedTracks = 0)
         repeat(4) { index ->
@@ -75,8 +156,10 @@ class LiveMachineVisionStatusAccumulatorTest {
 
         val snapshot = status.snapshot()
         assertEquals(2L, snapshot.framesReceived)
+        assertEquals(1L, snapshot.cameraFramesRejectedStale)
         assertEquals(1L, snapshot.framesDroppedBeforeInference)
         assertEquals(4L, snapshot.inferenceSuccesses)
+        assertEquals(0L, snapshot.perceptionResultsRejectedStale)
         assertEquals(3, snapshot.currentDetectedInstances)
         assertEquals(6L, snapshot.totalDetectedInstances)
         assertEquals(830_600, snapshot.lastFiniteYoloValues)
@@ -94,6 +177,7 @@ class LiveMachineVisionStatusAccumulatorTest {
         assertEquals(0.2, snapshot.depthPreprocessMs.p95!!, 0.0)
         assertEquals(1.325, snapshot.executorTotalMs.p95!!, 0.0)
         val text = snapshot.accessibleSummary()
+        assertTrue(text.contains("Camera frames reconstructed: 2; rejected stale: 1"))
         assertTrue(text.contains("Host stage p95 milliseconds"))
         assertTrue(text.contains("Detected instances: current 3; total 6"))
         assertTrue(text.contains("Finite outputs: last YOLO 830600"))
@@ -102,6 +186,40 @@ class LiveMachineVisionStatusAccumulatorTest {
         assertFalse(text.contains("session"))
         assertFalse(text.contains("address"))
         assertFalse(text.contains("class"))
+    }
+
+    @Test
+    fun `post inference freshness includes clock uncertainty and reports stale suppression`() {
+        val gate = LivePerceptionResultFreshnessGate(maximumResultAgeNanos = 1_500_000_000L)
+        assertTrue(
+            gate.accept(
+                captureNanos = 1_000_000_000L,
+                completedNanos = 2_400_000_000L,
+                clockUncertaintyNanos = 100_000_000L,
+            ),
+        )
+        assertFalse(
+            gate.accept(
+                captureNanos = 1_000_000_000L,
+                completedNanos = 2_400_000_001L,
+                clockUncertaintyNanos = 100_000_000L,
+            ),
+        )
+        assertFalse(
+            gate.accept(
+                captureNanos = 2_000_000_000L,
+                completedNanos = 1_999_999_999L,
+                clockUncertaintyNanos = 0L,
+            ),
+        )
+
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+        status.inferenceStarted()
+        status.perceptionResultRejectedStale()
+        val snapshot = status.snapshot()
+        assertEquals(1L, snapshot.perceptionResultsRejectedStale)
+        assertTrue(snapshot.accessibleSummary().contains("results rejected stale: 1"))
+        assertTrue(snapshot.accessibleSummary().contains("PERCEPTION_RESULT_STALE"))
     }
 
     @Test
@@ -268,10 +386,24 @@ class LiveMachineVisionStatusAccumulatorTest {
         status.linkDiagnostic(LiveLinkDiagnosticCode.NETWORK_IO)
         status.linkInterrupted()
         status.sessionReady()
+        status.phase(LiveMachineVisionPhase.STREAMING)
 
         val snapshot = status.snapshot()
         assertEquals(1L, snapshot.linkInterruptions)
         assertEquals("NETWORK_IO", snapshot.lastLinkDiagnosticCode)
-        assertTrue(snapshot.accessibleSummary().contains("NETWORK_IO"))
+        assertTrue(snapshot.accessibleSummary().contains("Previous link interruption diagnostic: NETWORK_IO"))
+        assertFalse(snapshot.accessibleSummary().contains(". Link diagnostic: NETWORK_IO"))
+    }
+
+    @Test
+    fun `link interruption completes an in-flight microphone window`() {
+        listOf(LiveMicrophonePhase.REQUESTING, LiveMicrophonePhase.ACTIVE).forEach { phase ->
+            val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+            status.microphoneState(phase)
+
+            status.linkInterrupted()
+
+            assertEquals(LiveMicrophonePhase.COMPLETE, status.snapshot().microphonePhase)
+        }
     }
 }

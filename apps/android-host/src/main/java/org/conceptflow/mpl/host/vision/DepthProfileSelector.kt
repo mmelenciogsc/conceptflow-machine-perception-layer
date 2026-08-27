@@ -19,10 +19,12 @@ data class EnvironmentEvidence(
 data class DepthProfileSelectorConfig(
     val enterProbability: Double = 0.72,
     val minimumProbabilityMargin: Double = 0.18,
-    val consecutiveEvidenceRequired: Int = 3,
+    val consecutiveEvidenceRequired: Int = 2,
     val minimumHoldNanos: Long = 10_000_000_000L,
-    val maximumEvidenceAgeNanos: Long = 2_000_000_000L,
-    val maximumProfileReuseNanos: Long = 30_000_000_000L,
+    // The fusion layer already applies modality-specific freshness (2 s semantic camera,
+    // 20 s VLM camera, 15 s GNSS). This outer bound must admit the slowest accepted modality.
+    val maximumEvidenceAgeNanos: Long = 20_000_000_000L,
+    val maximumProfileReuseNanos: Long = 90_000_000_000L,
     val singleVisualEnterProbability: Double = 0.88,
 ) {
     init {
@@ -63,8 +65,18 @@ class DepthProfileSelector(
     private var lastConfidence = 0.0
 
     @Synchronized
-    fun evaluate(evidence: EnvironmentEvidence, nowNanos: Long): DepthProfileDecision {
+    fun evaluate(evidence: EnvironmentEvidence?, nowNanos: Long): DepthProfileDecision {
         require(nowNanos >= 0L)
+        if (evidence == null) {
+            resetCandidate()
+            return holdOrExpire(
+                nowNanos,
+                "no_environment_evidence",
+                SceneEnvironmentState.UNKNOWN,
+                0.0,
+                null,
+            )
+        }
         val age = nowNanos - evidence.timestampNanos
         if (age < 0L || age > config.maximumEvidenceAgeNanos) {
             resetCandidate()

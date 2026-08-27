@@ -2,8 +2,6 @@
 package org.conceptflow.mpl.host
 
 import android.Manifest
-import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
@@ -69,6 +67,8 @@ import org.conceptflow.mpl.host.vision.UnitQuaternion
 import org.conceptflow.mpl.host.vision.VisualKeyframeSignal
 import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.protocol.SyntheticImageFixtures
+import org.conceptflow.mpl.transport.LiveLinkEndpointRole
+import org.conceptflow.mpl.transport.LiveLinkNetworkTopology
 import org.conceptflow.mpl.transport.LiveLinkProvisioningStore
 import org.conceptflow.mpl.v1.CapabilitySet
 import org.conceptflow.mpl.v1.CueCategory
@@ -91,13 +91,15 @@ import org.conceptflow.mpl.v1.Urgency
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicLong
 
-class MainActivity : AppCompatActivity() {
+open class MainActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var capabilityView: TextView
     private lateinit var machineVisionView: TextView
     private lateinit var liveMachineVisionView: TextView
     private lateinit var environmentStatusView: TextView
     private lateinit var cueStatusView: TextView
+    private lateinit var liveMicrophoneButton: Button
+    private lateinit var playRokidBrandButton: Button
     private lateinit var automaticEnvironmentButton: Button
     private lateinit var indoorEnvironmentButton: Button
     private lateinit var outdoorEnvironmentButton: Button
@@ -117,7 +119,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var gnssEnvironmentSource: AndroidGnssEnvironmentSource
     private var environmentMode = EnvironmentSelectionMode.AUTOMATIC
     private var lastGnssEvidenceNanos: Long? = null
-    private var liveMachineVisionController: LiveMachineVisionController? = null
+    private val liveNodeStatusObserver: (LiveMachineVisionStatus?) -> Unit = { liveStatus ->
+        runOnUiThread {
+            liveMachineVisionView.text = liveStatus?.accessibleSummary()
+                ?: getString(R.string.live_machine_vision_idle)
+            updateLiveMicrophoneControl(liveStatus)
+            updateLiveNodeControl(liveStatus)
+            showMachineVisionReadiness(liveStatus)
+        }
+    }
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -126,6 +136,16 @@ class MainActivity : AppCompatActivity() {
             startGnssEvidenceBurst(speak = true)
         } else {
             showAutomaticEnvironmentStatus(R.string.environment_location_permission_required, speak = true)
+        }
+    }
+
+    private val nearbyWifiPermissionRequest = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startLiveMachineVisionService()
+        } else {
+            announceLiveNodeStatus(R.string.live_wifi_direct_permission_required)
         }
     }
 
@@ -148,6 +168,8 @@ class MainActivity : AppCompatActivity() {
         liveMachineVisionView = findViewById(R.id.live_machine_vision_status)
         environmentStatusView = findViewById(R.id.environment_status)
         cueStatusView = findViewById(R.id.cue_status)
+        liveMicrophoneButton = findViewById(R.id.request_live_microphone)
+        playRokidBrandButton = findViewById(R.id.play_rokid_brand_sequence)
         automaticEnvironmentButton = findViewById(R.id.environment_automatic)
         indoorEnvironmentButton = findViewById(R.id.environment_indoor)
         outdoorEnvironmentButton = findViewById(R.id.environment_outdoor)
@@ -186,7 +208,7 @@ class MainActivity : AppCompatActivity() {
         }
         cueDispatch = InProcessCueDispatchTransport(dispatcher::dispatch)
         gnssEnvironmentSource = AndroidGnssEnvironmentSource(this, clock, onSample = { sample ->
-            liveMachineVisionController?.updateGnss(sample)
+            AndroidNodeForegroundService.offerGnss(sample)
             if (environmentCoordinator.updateGnss(sample)) {
                 lastGnssEvidenceNanos = sample.timestampNanos
                 runOnUiThread {
@@ -204,6 +226,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.process_frame).setOnClickListener { processSyntheticFrame() }
         findViewById<Button>(R.id.machine_vision_diagnostic).setOnClickListener { runMachineVisionDiagnostic() }
         findViewById<Button>(R.id.start_live_machine_vision).setOnClickListener { startLiveMachineVision() }
+        liveMicrophoneButton.setOnClickListener { requestLiveMicrophone() }
+        playRokidBrandButton.setOnClickListener { playRokidBrandSequence() }
         findViewById<Button>(R.id.stop_live_machine_vision).setOnClickListener { stopLiveMachineVision() }
         automaticEnvironmentButton.setOnClickListener {
             selectEnvironmentMode(EnvironmentSelectionMode.AUTOMATIC, requestLocationPermission = true)
@@ -221,30 +245,23 @@ class MainActivity : AppCompatActivity() {
         showMachineVisionReadiness()
         showEnvironmentMode(speak = false)
         announceState(getString(R.string.idle_status), speak = false)
-        handleDebugLiveAction(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleDebugLiveAction(intent)
     }
 
     override fun onStart() {
         super.onStart()
+        AndroidNodeRuntimeState.addObserver(liveNodeStatusObserver)
         if (environmentMode == EnvironmentSelectionMode.AUTOMATIC && hasFineLocationPermission()) {
             startGnssEvidenceBurst(speak = false)
         }
     }
 
     override fun onStop() {
+        AndroidNodeRuntimeState.removeObserver(liveNodeStatusObserver)
         gnssEnvironmentSource.stop()
         super.onStop()
     }
 
     override fun onDestroy() {
-        liveMachineVisionController?.close()
-        liveMachineVisionController = null
         activeOperation?.cancel()
         gnssEnvironmentSource.close()
         cueDispatch.close()
@@ -259,6 +276,12 @@ class MainActivity : AppCompatActivity() {
         KeyEvent.KEYCODE_P -> true.also { processSyntheticFrame() }
         KeyEvent.KEYCODE_V -> true.also { runMachineVisionDiagnostic() }
         KeyEvent.KEYCODE_L -> true.also { startLiveMachineVision() }
+        KeyEvent.KEYCODE_M -> true.also {
+            if (liveMicrophoneButton.isEnabled) requestLiveMicrophone()
+        }
+        KeyEvent.KEYCODE_B -> true.also {
+            if (playRokidBrandButton.isEnabled) playRokidBrandSequence()
+        }
         KeyEvent.KEYCODE_S -> true.also { stopLiveMachineVision() }
         KeyEvent.KEYCODE_A -> true.also {
             selectEnvironmentMode(EnvironmentSelectionMode.AUTOMATIC, requestLocationPermission = true)
@@ -271,77 +294,70 @@ class MainActivity : AppCompatActivity() {
         else -> super.onKeyUp(keyCode, event)
     }
 
-    private fun handleDebugLiveAction(intent: Intent?) {
-        val action = intent?.action ?: return
-        if (action !in DEBUG_LIVE_ACTIONS) return
-        if (!isDebuggableBuild()) {
-            liveMachineVisionView.text = getString(R.string.live_debug_action_rejected)
+    private fun startLiveMachineVision() {
+        if (requiresNearbyWifiPermission() && !hasNearbyWifiPermission()) {
+            nearbyWifiPermissionRequest.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
             return
         }
-        when (action) {
-            ACTION_INITIALIZE_LIVE_IDENTITY -> initializeLiveIdentity()
-            ACTION_START_LIVE_TEST -> {
-                val mode = when (intent.getStringExtra(EXTRA_ENVIRONMENT)?.lowercase()) {
-                    "indoor" -> EnvironmentSelectionMode.FORCE_INDOOR
-                    "outdoor" -> EnvironmentSelectionMode.FORCE_OUTDOOR
-                    else -> EnvironmentSelectionMode.AUTOMATIC
-                }
-                val duration = intent.getIntExtra(EXTRA_DURATION_SECONDS, DEFAULT_LIVE_DURATION_SECONDS)
-                val frames = intent.getIntExtra(EXTRA_MAXIMUM_FRAMES, DEFAULT_LIVE_MAXIMUM_FRAMES)
-                startLiveMachineVision(LiveMachineVisionTestSpec(mode, duration, frames))
-            }
-            ACTION_STOP_LIVE_TEST -> stopLiveMachineVision()
-        }
+        startLiveMachineVisionService()
     }
 
-    private fun initializeLiveIdentity() {
-        val succeeded = runCatching {
-            LiveLinkProvisioningStore(this).ensureIdentity(LIVE_IDENTITY_ALIAS)
-        }.isSuccess
-        liveMachineVisionView.text = getString(
-            if (succeeded) R.string.live_identity_ready else R.string.live_identity_failed,
-        )
+    private fun startLiveMachineVisionService() {
+        AndroidNodeForegroundService.start(this, environmentMode)
+        liveMachineVisionView.text = getString(R.string.android_node_starting)
     }
 
-    private fun startLiveMachineVision(
-        spec: LiveMachineVisionTestSpec = LiveMachineVisionTestSpec(environmentMode = environmentMode),
-    ) {
-        if (!isDebuggableBuild()) {
-            liveMachineVisionView.text = getString(R.string.live_debug_action_rejected)
-            return
-        }
-        val current = liveMachineVisionController
-        val currentPhase = current?.snapshot()?.phase
-        if (currentPhase != null && currentPhase in ACTIVE_LIVE_PHASES) {
-            liveMachineVisionView.text = current?.snapshot()?.accessibleSummary()
-            return
-        }
-        current?.close()
-        val controller = LiveMachineVisionController(this) { liveStatus ->
-            runOnUiThread {
-                liveMachineVisionView.text = liveStatus.accessibleSummary()
-                showMachineVisionReadiness(liveStatus)
-            }
-        }
-        liveMachineVisionController = controller
-        runCatching { controller.start(spec) }.onFailure {
-            liveMachineVisionView.text = controller.snapshot()
-                ?.takeIf { snapshot -> snapshot.phase == LiveMachineVisionPhase.FAILED }
-                ?.accessibleSummary()
-                ?: getString(R.string.live_test_start_failed)
-            controller.close()
-            if (liveMachineVisionController === controller) liveMachineVisionController = null
-        }
+    private fun requiresNearbyWifiPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
+        return runCatching {
+            LiveLinkProvisioningStore(this)
+                .loadConfig(LiveLinkEndpointRole.POCO_HOST)
+                .networkTopology == LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED
+        }.getOrDefault(false)
+    }
+
+    private fun hasNearbyWifiPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.NEARBY_WIFI_DEVICES,
+            ) == PackageManager.PERMISSION_GRANTED
+
+    private fun announceLiveNodeStatus(messageResource: Int) {
+        val message = getString(messageResource)
+        liveMachineVisionView.text = message
+        speech.speak(message)
     }
 
     private fun stopLiveMachineVision() {
-        liveMachineVisionController?.close()
-        liveMachineVisionController = null
+        AndroidNodeForegroundService.stop(this)
+        liveMicrophoneButton.isEnabled = false
+        playRokidBrandButton.isEnabled = false
         liveMachineVisionView.text = getString(R.string.live_machine_vision_idle)
     }
 
-    private fun isDebuggableBuild(): Boolean =
-        applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    private fun requestLiveMicrophone() {
+        if (!liveMicrophoneButton.isEnabled) return
+        liveMicrophoneButton.isEnabled = false
+        AndroidNodeForegroundService.requestMicrophone(this)
+    }
+
+    private fun playRokidBrandSequence() {
+        if (!playRokidBrandButton.isEnabled) return
+        playRokidBrandButton.isEnabled = false
+        AndroidNodeForegroundService.playBrandSequence(this)
+        liveMachineVisionView.text = getString(R.string.rokid_brand_sequence_requested)
+    }
+
+    private fun updateLiveMicrophoneControl(status: LiveMachineVisionStatus?) {
+        liveMicrophoneButton.isEnabled = status?.let {
+            liveMicrophoneControlEnabled(it.phase, it.microphonePhase)
+        } ?: false
+    }
+
+    private fun updateLiveNodeControl(status: LiveMachineVisionStatus?) {
+        playRokidBrandButton.isEnabled = status?.phase == LiveMachineVisionPhase.STREAMING
+    }
 
     private fun showCapabilities(capabilities: RuntimeCapabilities) {
         capabilityView.text = getString(
@@ -812,26 +828,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private companion object {
-        const val ACTION_INITIALIZE_LIVE_IDENTITY =
-            "org.conceptflow.mpl.host.action.INITIALIZE_LIVE_IDENTITY"
-        const val ACTION_START_LIVE_TEST = "org.conceptflow.mpl.host.action.START_LIVE_TEST"
-        const val ACTION_STOP_LIVE_TEST = "org.conceptflow.mpl.host.action.STOP_LIVE_TEST"
-        const val EXTRA_ENVIRONMENT = "environment"
-        const val EXTRA_DURATION_SECONDS = "duration_seconds"
-        const val EXTRA_MAXIMUM_FRAMES = "maximum_frames"
-        const val DEFAULT_LIVE_DURATION_SECONDS = 30
-        const val DEFAULT_LIVE_MAXIMUM_FRAMES = 150
-        const val LIVE_IDENTITY_ALIAS = "org.conceptflow.mpl.androidhost.live-link.v1"
-        val DEBUG_LIVE_ACTIONS = setOf(
-            ACTION_INITIALIZE_LIVE_IDENTITY,
-            ACTION_START_LIVE_TEST,
-            ACTION_STOP_LIVE_TEST,
-        )
-        val ACTIVE_LIVE_PHASES = setOf(
-            LiveMachineVisionPhase.OPENING_QNN_HTP,
-            LiveMachineVisionPhase.LISTENING,
-            LiveMachineVisionPhase.STREAMING,
-        )
         const val ENVIRONMENT_MODE_KEY = "environment_selection_mode"
         const val GNSS_EVIDENCE_MAXIMUM_AGE_NANOS = 15_000_000_000L
         val SYNTHETIC_MASK_FINGERPRINT = "d".repeat(64)

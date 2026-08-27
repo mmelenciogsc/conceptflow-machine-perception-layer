@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.androidhost"
+readonly CONTROL_URI="content://org.conceptflow.mpl.androidhost.debug-control"
+readonly CONTROL_ACTIVITY="$PACKAGE_NAME/org.conceptflow.mpl.androidhost.AndroidNodeDebugControlActivity"
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/android-node-control --serial SERIAL COMMAND
+
+Shell-only controls exposed by the debuggable Android Node APK. These controls
+are absent from release builds and do not change TalkBack or device settings.
+
+Commands:
+  start-automatic  Start the persistent listener with automatic depth routing.
+  start-indoor     Start it with the indoor depth profile forced.
+  start-outdoor    Start it with the outdoor depth profile forced.
+  microphone       Request one bounded on-demand glasses microphone lease.
+  status           Return the current aggregate, content-free runtime status.
+  stop             Stop Android Node and release its listener/model resources.
+EOF
+}
+
+serial=""
+command_name=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        start-automatic|start-indoor|start-outdoor|microphone|status|stop)
+            [[ -z "$command_name" ]] || { printf 'error: only one command is allowed\n' >&2; exit 2; }
+            command_name="$1"
+            shift
+            ;;
+        *) printf 'error: unsupported argument; use --help\n' >&2; exit 2 ;;
+    esac
+done
+
+[[ -n "$serial" && -n "$command_name" ]] || { usage >&2; exit 2; }
+[[ "$serial" != *$'\n'* ]] || { printf 'error: malformed serial\n' >&2; exit 2; }
+[[ "$(adb -s "$serial" get-state 2>/dev/null || true)" == "device" ]] || {
+    printf 'error: selected Android device is not authorized and online\n' >&2
+    exit 1
+}
+adb -s "$serial" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1 || {
+    printf 'error: debuggable Android Node APK is not installed\n' >&2
+    exit 1
+}
+
+case "$command_name" in
+    start-automatic) action="org.conceptflow.mpl.host.debug.START_AUTOMATIC" ;;
+    start-indoor) action="org.conceptflow.mpl.host.debug.START_INDOOR" ;;
+    start-outdoor) action="org.conceptflow.mpl.host.debug.START_OUTDOOR" ;;
+    microphone) action="org.conceptflow.mpl.host.debug.REQUEST_MICROPHONE" ;;
+    stop) action="org.conceptflow.mpl.host.debug.STOP" ;;
+    status) action="" ;;
+esac
+if [[ -n "$action" ]]; then
+    adb -s "$serial" shell am start --user 0 -W -n "$CONTROL_ACTIVITY" -a "$action" >/dev/null
+    printf 'command=%s dispatched\n' "$command_name"
+    exit 0
+fi
+
+result="$(adb -s "$serial" shell content query --user 0 --uri "$CONTROL_URI/status" 2>/dev/null || true)"
+[[ "$result" == *"Row: 0 status="* ]] || {
+    printf 'error: Android Node debug control did not return a status\n' >&2
+    exit 1
+}
+printf '%s\n' "$result"

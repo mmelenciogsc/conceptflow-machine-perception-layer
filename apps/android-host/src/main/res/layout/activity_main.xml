@@ -113,9 +113,31 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
-            android:nextFocusDown="@id/stop_live_machine_vision"
+            android:nextFocusDown="@id/request_live_microphone"
             android:nextFocusUp="@id/machine_vision_diagnostic"
             android:text="@string/start_live_machine_vision" />
+
+        <Button
+            android:id="@+id/request_live_microphone"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:enabled="false"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/play_rokid_brand_sequence"
+            android:nextFocusUp="@id/start_live_machine_vision"
+            android:text="@string/request_live_microphone" />
+
+        <Button
+            android:id="@+id/play_rokid_brand_sequence"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:enabled="false"
+            android:minHeight="48dp"
+            android:nextFocusDown="@id/stop_live_machine_vision"
+            android:nextFocusUp="@id/request_live_microphone"
+            android:text="@string/play_rokid_brand_sequence" />
 
         <Button
             android:id="@+id/stop_live_machine_vision"
@@ -124,7 +146,7 @@
             android:layout_marginTop="12dp"
             android:minHeight="48dp"
             android:nextFocusDown="@id/environment_automatic"
-            android:nextFocusUp="@id/start_live_machine_vision"
+            android:nextFocusUp="@id/play_rokid_brand_sequence"
             android:text="@string/stop_live_machine_vision" />
 
         <Button

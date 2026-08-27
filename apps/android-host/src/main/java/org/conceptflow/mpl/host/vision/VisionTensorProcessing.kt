@@ -247,7 +247,7 @@ data class YoloMaskDetection(
     val maskFingerprint: String,
 )
 
-object YoloBvi40Postprocessor {
+object YoloFixedVocabularyPostprocessor {
     private data class PrototypeCoordinates(
         val targetX: DoubleArray,
         val targetY: DoubleArray,

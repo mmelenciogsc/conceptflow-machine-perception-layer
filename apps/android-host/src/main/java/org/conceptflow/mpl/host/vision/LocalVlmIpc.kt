@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.host.vision
+
+internal object LocalVlmIpc {
+    const val REQUEST_CLASSIFY = 1
+    const val RESPONSE_CLASSIFIED = 2
+    const val RESPONSE_FAILED = 3
+    const val REQUEST_PREWARM = 4
+    const val RESPONSE_PREWARMED = 5
+    const val RESPONSE_PREWARM_FAILED = 6
+    const val RESPONSE_DEFERRED = 7
+    const val REQUEST_CANCEL_ALL = 8
+
+    const val KEY_REQUEST_ID = "request_id"
+    const val KEY_FRAME_ID = "frame_id"
+    const val KEY_CAPTURE_NANOS = "capture_nanos"
+    const val KEY_IMAGE_PATH = "image_path"
+    const val KEY_IMAGE_SHA256 = "image_sha256"
+    const val KEY_TASK = "task"
+    const val KEY_LABEL = "label"
+    const val KEY_COMPLETED_NANOS = "completed_nanos"
+    const val KEY_FAILURE = "failure"
+    const val KEY_LEASE_WAIT_NANOS = "lease_wait_nanos"
+    const val KEY_LEASE_HOLD_NANOS = "lease_hold_nanos"
+}

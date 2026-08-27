@@ -24,6 +24,42 @@ class DepthProfileRouterTest {
     }
 
     @Test
+    fun defaultRouterAcceptsTwoConsistentHighConfidenceVlmResultsAtMeasuredLatency() {
+        val router = DepthProfileRouter()
+        val firstCapture = 1_000_000_000L
+        val secondCapture = 9_000_000_000L
+
+        val noEvidence = router.route(1L, 7_000_000_000L, 7_000_000_000L, null, true)
+
+        val first = router.route(
+            2L,
+            8_000_000_000L,
+            firstCapture + 7_000_000_000L,
+            evidence(firstCapture, 0.94, 0.06).copy(independentSignalCount = 1),
+            true,
+        )
+        val second = router.route(
+            3L,
+            16_000_000_000L,
+            secondCapture + 7_000_000_000L,
+            evidence(secondCapture, 0.94, 0.06).copy(independentSignalCount = 1),
+            true,
+        )
+
+        assertEquals("no_environment_evidence", noEvidence.reason)
+        assertNull(first.selectedProfile)
+        assertEquals(DepthEnvironment.INDOOR, second.selectedEnvironment)
+        val betweenStableRefreshes = router.route(
+            4L,
+            76_000_000_000L,
+            76_000_000_000L,
+            null,
+            true,
+        )
+        assertEquals(DepthEnvironment.INDOOR, betweenStableRefreshes.selectedEnvironment)
+    }
+
+    @Test
     fun manualOverrideIsImmediateAndReturningToAutomaticRequiresFreshEvidence() {
         val router = router()
         router.setMode(EnvironmentSelectionMode.FORCE_INDOOR)

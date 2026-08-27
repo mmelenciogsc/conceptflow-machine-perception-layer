@@ -7,13 +7,27 @@ import kotlin.math.sqrt
 import org.conceptflow.mpl.v1.CoordinateFrame
 import org.conceptflow.mpl.v1.ImuReading
 
-/** A separately verified rotation mapping camera-frame vectors into the glasses head frame. */
+enum class HeadCameraExtrinsicProvenance {
+    CAMERA2_SENSOR_COORDINATES,
+    GUIDED_HAND_EYE,
+}
+
+/** A verified rotation mapping camera-frame vectors into the rigid glasses/head sensor frame. */
 data class VerifiedHeadCameraExtrinsic(
     val headFromCameraRotation: UnitQuaternion,
     val verificationFingerprint: String,
+    val provenance: HeadCameraExtrinsicProvenance = HeadCameraExtrinsicProvenance.GUIDED_HAND_EYE,
+    val headFromCameraTranslationMeters: MetricVector3? = null,
+    val rotationUncertaintyDegrees: Double? = null,
+    val translationUncertaintyMeters: Double? = null,
 ) {
     init {
         require(SHA256.matches(verificationFingerprint))
+        require(rotationUncertaintyDegrees == null ||
+            rotationUncertaintyDegrees.isFinite() && rotationUncertaintyDegrees >= 0.0)
+        require((headFromCameraTranslationMeters == null) == (translationUncertaintyMeters == null))
+        require(translationUncertaintyMeters == null ||
+            translationUncertaintyMeters.isFinite() && translationUncertaintyMeters >= 0.0)
     }
 
     private companion object {
@@ -36,6 +50,7 @@ data class HeadPoseIngressResult(
     val accepted: Boolean,
     val reason: String,
     val temporalTrackCount: Int,
+    val cameraPose: TimestampedPose? = null,
 )
 
 /** Converts only normalized HEAD orientation; accelerometer and pose translation are intentionally unused. */
@@ -170,6 +185,7 @@ class BoundedHeadPoseBuffer(
 
 enum class LiveMetricFusionReason {
     METRIC_TRACKS_READY,
+    METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED,
     CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_MISSING,
     CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED,
     CAMERA_METRIC_TRACKS_READY_PROPAGATION_EXTRINSIC_MISSING,
@@ -186,6 +202,7 @@ data class LiveMetricFusionResult(
     val metricTracks: List<MetricSemanticTrack>,
     val temporalTracks: List<TemporalMetricTrack>,
     val metricProvenance: MetricDepthProvenance? = null,
+    val capturePose: TimestampedPose? = null,
 ) {
     val metricTrackCount: Int get() = metricTracks.size
     val propagatedTrackCount: Int get() = temporalTracks.count(TemporalMetricTrack::propagated)
@@ -199,13 +216,14 @@ data class LiveMetricFusionResult(
  */
 class LiveMetricTemporalFusion(
     private val calibrationProvider: MetricDepthCalibrationProvider,
-    private val headCameraExtrinsic: VerifiedHeadCameraExtrinsic?,
+    private val initialHeadCameraExtrinsic: VerifiedHeadCameraExtrinsic?,
     private val nativeMetricSemanticsProvider: NativeMetricDepthSemanticsProvider =
         OfficialDepthAnythingV2MetricSemanticsProvider,
     private val poseBuffer: BoundedHeadPoseBuffer = BoundedHeadPoseBuffer(),
     private val trackStore: TemporalMetricTrackStore = TemporalMetricTrackStore(),
     private val maximumSemanticAgeNanos: Long = 2_000_000_000L,
 ) {
+    private var activeHeadCameraExtrinsic = initialHeadCameraExtrinsic
     init {
         require(maximumSemanticAgeNanos in 1_000_000L..5_000_000_000L)
     }
@@ -213,11 +231,11 @@ class LiveMetricTemporalFusion(
     @Synchronized
     fun acceptPose(sample: HeadPoseObservation): HeadPoseIngressResult {
         if (!poseBuffer.add(sample)) return HeadPoseIngressResult(false, "non_monotonic_pose", 0)
-        val extrinsic = headCameraExtrinsic
+        val extrinsic = activeHeadCameraExtrinsic
             ?: return HeadPoseIngressResult(true, "head_camera_extrinsic_missing", 0)
         val pose = requireNotNull(poseBuffer.latestCameraPose(extrinsic))
         val update = trackStore.updatePose(pose)
-        return HeadPoseIngressResult(update.accepted, update.reason, update.tracks.size)
+        return HeadPoseIngressResult(update.accepted, update.reason, update.tracks.size, pose)
     }
 
     @Synchronized
@@ -225,12 +243,24 @@ class LiveMetricTemporalFusion(
         frame: VisionFrame,
         result: QnnLiveFrameResult,
         nowNanos: Long,
+        frameHeadCameraExtrinsic: VerifiedHeadCameraExtrinsic? = null,
     ): LiveMetricFusionResult {
         require(nowNanos >= frame.captureMonotonicTimestampNanos)
         val relativeCount = result.inference.observations.size
         if (result.frameId != frame.frameId || result.inference.frameId != frame.frameId ||
             result.inference.depthProfileId != result.selectedDepthProfileId
         ) return unavailable(LiveMetricFusionReason.INFERENCE_REJECTED, "frame_or_profile_mismatch", relativeCount)
+        if (frameHeadCameraExtrinsic != null) {
+            val current = activeHeadCameraExtrinsic
+            if (current != null && current.verificationFingerprint != frameHeadCameraExtrinsic.verificationFingerprint) {
+                return unavailable(
+                    LiveMetricFusionReason.INFERENCE_REJECTED,
+                    "head_camera_extrinsic_changed_within_session",
+                    relativeCount,
+                )
+            }
+            activeHeadCameraExtrinsic = frameHeadCameraExtrinsic
+        }
         val profile = MachineVisionModelProfiles.allProfiles.singleOrNull {
             it.id == result.selectedDepthProfileId && it.kind == MachineVisionModelKind.METRIC_DEPTH
         } ?: return unavailable(LiveMetricFusionReason.INFERENCE_REJECTED, "unknown_depth_profile", relativeCount)
@@ -275,16 +305,9 @@ class LiveMetricTemporalFusion(
             perception.tracks,
             calibration.provenance,
         )
-        if (intrinsics.source == CameraIntrinsicsSource.DERIVED && intrinsics.standardDeviation == null) {
-            return cameraMetricOnly(
-                LiveMetricFusionReason.CAMERA_METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED,
-                "camera_metric_ready_derived_intrinsics_uncertainty_unreported",
-                relativeCount,
-                perception.tracks,
-                calibration.provenance,
-            )
-        }
-        val extrinsic = headCameraExtrinsic ?: return cameraMetricOnly(
+        val intrinsicsUnquantified =
+            intrinsics.source == CameraIntrinsicsSource.DERIVED && intrinsics.standardDeviation == null
+        val extrinsic = activeHeadCameraExtrinsic ?: return cameraMetricOnly(
             LiveMetricFusionReason.CAMERA_METRIC_TRACKS_READY_PROPAGATION_EXTRINSIC_MISSING,
             "camera_metric_ready_head_camera_extrinsic_missing",
             relativeCount,
@@ -307,14 +330,24 @@ class LiveMetricTemporalFusion(
             perception.tracks,
             emptyList(),
             calibration.provenance,
+            capturePose,
         )
         return LiveMetricFusionResult(
-            LiveMetricFusionReason.METRIC_TRACKS_READY,
-            temporal.reason,
+            if (intrinsicsUnquantified) {
+                LiveMetricFusionReason.METRIC_TRACKS_READY_PROPAGATION_INTRINSICS_UNQUANTIFIED
+            } else {
+                LiveMetricFusionReason.METRIC_TRACKS_READY
+            },
+            if (intrinsicsUnquantified) {
+                "${temporal.reason}_derived_intrinsics_uncertainty_unreported"
+            } else {
+                temporal.reason
+            },
             relativeCount,
             perception.tracks,
             temporal.tracks,
             calibration.provenance,
+            capturePose,
         )
     }
 
@@ -322,6 +355,7 @@ class LiveMetricTemporalFusion(
     fun reset() {
         poseBuffer.reset()
         trackStore.reset()
+        activeHeadCameraExtrinsic = initialHeadCameraExtrinsic
     }
 
     private fun unavailable(

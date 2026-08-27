@@ -7,6 +7,13 @@ plugins {
 val qnnSdkRoot = providers.gradleProperty("qnnSdkRoot")
     .orElse(providers.environmentVariable("QNN_SDK_ROOT"))
     .orNull
+val requireQnn = providers.gradleProperty("requireQnn")
+    .map(String::toBooleanStrict)
+    .orElse(false)
+
+if (requireQnn.get() && qnnSdkRoot == null) {
+    error("-PrequireQnn=true requires -PqnnSdkRoot=DIR or QNN_SDK_ROOT=DIR")
+}
 
 android {
     namespace = "org.conceptflow.mpl.host"
@@ -54,6 +61,11 @@ android {
             }
         }
     }
+    packaging {
+        // GenieX resolves its runtime plug-ins through applicationInfo.nativeLibraryDir.
+        jniLibs.useLegacyPackaging = true
+    }
+    sourceSets.getByName("main").resources.srcDir(rootProject.file("config/machine-vision"))
 }
 
 dependencies {
@@ -63,5 +75,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.grpc.okhttp)
+    implementation(libs.geniex.android)
+    implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
 }

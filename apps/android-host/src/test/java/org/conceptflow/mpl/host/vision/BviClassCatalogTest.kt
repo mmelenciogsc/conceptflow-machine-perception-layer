@@ -10,13 +10,13 @@ class BviClassCatalogTest {
     @Test
     fun fixedVocabularyIsUniqueBoundedAndHasTwoReferenceRecordsPerClass() {
         val classes = BviClassCatalog.bviClassesList
-        assertTrue(classes.isNotEmpty())
-        assertTrue(classes.size <= 48)
+        assertEquals(330, classes.size)
         assertEquals(classes.size, classes.map { it.id }.toSet().size)
+        assertEquals(classes.size, classes.map { it.prompt }.toSet().size)
 
         val table = KnownDimensionVectorTable()
         assertEquals(
-            "2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44",
+            "f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6",
             MachineVisionModelProfiles.fixedVocabularySha256,
         )
         assertEquals(classes.size * 2, table.records.size)
@@ -30,6 +30,9 @@ class BviClassCatalogTest {
             assertTrue(near.expectedHorizontalAngularExtentRadians > far.expectedHorizontalAngularExtentRadians)
             assertTrue(near.expectedVerticalAngularExtentRadians > far.expectedVerticalAngularExtentRadians)
         }
+        assertEquals(660, table.records.size)
+        assertTrue(classes.filter { it.dimensionBasis.startsWith("family default") }
+            .all { it.calibrationWeight == 0.0 })
     }
 
     @Test

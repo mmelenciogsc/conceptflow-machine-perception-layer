@@ -18,15 +18,17 @@ SPEC.loader.exec_module(model_artifacts)
 
 
 def test_fixed_vocabulary_matches_android_catalog() -> None:
-    kotlin = (ROOT / "apps/android-host/src/main/java/org/conceptflow/mpl/host/vision/BviClassCatalog.kt").read_text(
-        encoding="utf-8"
+    catalog_rows = tuple(
+        line.split("\t")
+        for line in (ROOT / "config/machine-vision/bvi_catalog.tsv").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
     )
-    kotlin_prompts = tuple(re.findall(r'entry\("[^"]+",\s*"([^"]+)"', kotlin))
+    kotlin_prompts = tuple(row[2] for row in catalog_rows)
 
     assert model_artifacts.load_vocabulary() == kotlin_prompts
-    assert len(kotlin_prompts) == 40
+    assert len(kotlin_prompts) == 330
     assert model_artifacts.EXPECTED_VOCABULARY_SHA256 == (
-        "2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
+        "f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6"
     )
 
 
@@ -91,7 +93,7 @@ def test_private_artifacts_cannot_be_written_inside_repository() -> None:
 
 def test_export_manifest_verifies_exact_external_artifacts_and_detects_tampering(tmp_path: Path) -> None:
     names = [
-        "yoloe-26s-bvi40-seg.onnx",
+        "yoloe-26s-bvi330-seg.onnx",
         *(f"{source.output_stem}.onnx" for source in model_artifacts.DEPTH_SOURCES.values()),
     ]
     records = []

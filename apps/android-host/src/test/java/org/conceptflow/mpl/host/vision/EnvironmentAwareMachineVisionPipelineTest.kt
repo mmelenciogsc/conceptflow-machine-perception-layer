@@ -22,11 +22,15 @@ class EnvironmentAwareMachineVisionPipelineTest {
         val third = pipeline.process(frame(3L, 160L), 180L, bothDepthProfilesAvailable = true)
 
         assertEquals("environment_unresolved", first.reason)
-        assertEquals("environment_unresolved", second.reason)
+        assertEquals("processed", second.reason)
         assertNull(first.perception)
         assertEquals("processed", third.reason)
+        assertEquals(DepthEnvironment.OUTDOOR, second.profileDecision!!.selectedEnvironment)
         assertEquals(DepthEnvironment.OUTDOOR, third.profileDecision!!.selectedEnvironment)
-        assertEquals(listOf("segment", "segment", "segment", "depth:OUTDOOR"), adapter.calls)
+        assertEquals(
+            listOf("segment", "segment", "depth:OUTDOOR", "segment", "depth:OUTDOOR"),
+            adapter.calls,
+        )
         assertEquals(2, third.perception!!.tracks.size)
     }
 

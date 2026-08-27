@@ -1,0 +1,391 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+package org.conceptflow.mpl.host.vision
+
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.sqrt
+
+/** Stable task identifiers allow one local VLM runtime to acquire more typed capabilities later. */
+enum class LocalVlmTaskKind {
+    SCENE_ENVIRONMENT_CLASSIFICATION_V1,
+}
+
+enum class LocalVlmEnvironmentLabel {
+    INDOOR,
+    OUTDOOR,
+    TRANSITION,
+    UNKNOWN,
+}
+
+data class LocalVlmEnvironmentResult(
+    val requestId: Long,
+    val frameId: Long,
+    val captureMonotonicTimestampNanos: Long,
+    val completedMonotonicTimestampNanos: Long,
+    val label: LocalVlmEnvironmentLabel,
+    val modelId: String,
+    val runtimeId: String,
+    val computeUnit: String,
+) {
+    init {
+        require(requestId > 0L && frameId > 0L)
+        require(captureMonotonicTimestampNanos >= 0L)
+        require(completedMonotonicTimestampNanos >= captureMonotonicTimestampNanos)
+        require(modelId == LocalVlmModelProfile.MODEL_ID)
+        require(runtimeId == LocalVlmModelProfile.RUNTIME_ID)
+        require(computeUnit == LocalVlmModelProfile.COMPUTE_UNIT)
+    }
+
+    /** The score is a routing-policy weight, not a statistically calibrated model probability. */
+    fun toEnvironmentSignal(): EnvironmentSignal? = when (label) {
+        LocalVlmEnvironmentLabel.INDOOR -> signal(0.94)
+        LocalVlmEnvironmentLabel.OUTDOOR -> signal(0.06)
+        LocalVlmEnvironmentLabel.TRANSITION -> signal(0.50)
+        LocalVlmEnvironmentLabel.UNKNOWN -> null
+    }
+
+    private fun signal(indoorProbability: Double) = EnvironmentSignal(
+        sourceId = SOURCE_ID,
+        family = EnvironmentSignalFamily.VLM_CAMERA,
+        timestampNanos = captureMonotonicTimestampNanos,
+        indoorProbability = indoorProbability,
+        outdoorProbability = 1.0 - indoorProbability,
+        reliability = EVIDENCE_RELIABILITY,
+        originatingFrameId = frameId,
+    )
+
+    private companion object {
+        const val SOURCE_ID = "qwen3-vl-2b-environment"
+        const val EVIDENCE_RELIABILITY = 0.85
+    }
+}
+
+/** Strict parser for grammar-constrained output. Descriptive or multi-label output fails closed. */
+object LocalVlmEnvironmentOutputParser {
+    fun parse(output: String): LocalVlmEnvironmentLabel? {
+        if (output.length > MAX_OUTPUT_CHARACTERS) return null
+        val normalized = output.trim().uppercase()
+        return LocalVlmEnvironmentLabel.entries.singleOrNull { it.name == normalized }
+    }
+
+    const val GRAMMAR = "root ::= \"INDOOR\" | \"OUTDOOR\" | \"TRANSITION\" | \"UNKNOWN\""
+    private const val MAX_OUTPUT_CHARACTERS = 32
+}
+
+/**
+ * Admission and retry policy for a relatively expensive VLM that must never become a 3-5 FPS
+ * dependency. Bootstrap obtains two agreeing labels; after that, inference is admitted only for a
+ * confirmed visual-scene change. Only one request can be in flight and failures use bounded
+ * exponential backoff.
+ */
+class LocalVlmCadenceGate(
+    private val bootstrapIntervalNanos: Long = 1_000_000_000L,
+    private val minimumChangeIntervalNanos: Long = 5_000_000_000L,
+    private val initialFailureBackoffNanos: Long = 2_000_000_000L,
+    private val maximumFailureBackoffNanos: Long = 60_000_000_000L,
+    private val stableConfirmationsRequired: Int = 2,
+) {
+    private var inFlight = false
+    private var lastStartedNanos = Long.MIN_VALUE
+    private var nextAllowedNanos = 0L
+    private var confirmedLabel: LocalVlmEnvironmentLabel? = null
+    private var candidateLabel: LocalVlmEnvironmentLabel? = null
+    private var matchingCandidateResults = 0
+    private var sceneChangePending = false
+    private var consecutiveFailures = 0
+
+    init {
+        require(bootstrapIntervalNanos > 0L && minimumChangeIntervalNanos >= bootstrapIntervalNanos)
+        require(initialFailureBackoffNanos > 0L)
+        require(maximumFailureBackoffNanos >= initialFailureBackoffNanos)
+        require(stableConfirmationsRequired in 2..10)
+    }
+
+    @Synchronized
+    fun tryStart(nowNanos: Long, significantSceneChange: Boolean): Boolean {
+        require(nowNanos >= 0L)
+        if (inFlight || nowNanos < nextAllowedNanos) return false
+        if (isStable() && !sceneChangePending && !significantSceneChange) return false
+        val interval = if (isStable() && !sceneChangePending) {
+            minimumChangeIntervalNanos
+        } else {
+            bootstrapIntervalNanos
+        }
+        if (lastStartedNanos != Long.MIN_VALUE && nowNanos - lastStartedNanos < interval) return false
+        inFlight = true
+        lastStartedNanos = nowNanos
+        return true
+    }
+
+    @Synchronized
+    fun complete(label: LocalVlmEnvironmentLabel, nowNanos: Long): LocalVlmEnvironmentLabel? {
+        require(inFlight && nowNanos >= 0L)
+        inFlight = false
+        consecutiveFailures = 0
+        if (label == LocalVlmEnvironmentLabel.UNKNOWN || label == LocalVlmEnvironmentLabel.TRANSITION) {
+            candidateLabel = null
+            matchingCandidateResults = 0
+            sceneChangePending = confirmedLabel != null
+            nextAllowedNanos = nowNanos + bootstrapIntervalNanos
+            return confirmedLabel
+        }
+        if (label == confirmedLabel) {
+            candidateLabel = null
+            matchingCandidateResults = 0
+            sceneChangePending = false
+        } else {
+            if (candidateLabel == label) {
+                matchingCandidateResults += 1
+            } else {
+                candidateLabel = label
+                matchingCandidateResults = 1
+            }
+            sceneChangePending = confirmedLabel != null
+            if (matchingCandidateResults >= stableConfirmationsRequired) {
+                confirmedLabel = label
+                candidateLabel = null
+                matchingCandidateResults = 0
+                sceneChangePending = false
+            }
+        }
+        nextAllowedNanos = nowNanos + if (isStable() && !sceneChangePending) {
+            minimumChangeIntervalNanos
+        } else {
+            bootstrapIntervalNanos
+        }
+        return confirmedLabel
+    }
+
+    @Synchronized
+    fun fail(nowNanos: Long) {
+        require(nowNanos >= 0L)
+        inFlight = false
+        consecutiveFailures = (consecutiveFailures + 1).coerceAtMost(MAX_FAILURE_EXPONENT + 1)
+        val multiplier = 1L shl (consecutiveFailures - 1).coerceAtMost(MAX_FAILURE_EXPONENT)
+        val delay = multiplySaturated(initialFailureBackoffNanos, multiplier)
+            .coerceAtMost(maximumFailureBackoffNanos)
+        nextAllowedNanos = addSaturated(nowNanos, delay)
+    }
+
+    /** Cooperative HTP deferral is contention, not a model failure; preserve stable evidence. */
+    @Synchronized
+    fun defer(nowNanos: Long, retryAfterNanos: Long) {
+        require(nowNanos >= 0L && retryAfterNanos >= 0L)
+        require(inFlight)
+        inFlight = false
+        // No model work began, so the refused admission must not consume the scene-change interval.
+        lastStartedNanos = Long.MIN_VALUE
+        nextAllowedNanos = max(nextAllowedNanos, addSaturated(nowNanos, retryAfterNanos))
+    }
+
+    @Synchronized
+    fun cancel() {
+        inFlight = false
+    }
+
+    @Synchronized
+    fun reset() {
+        inFlight = false
+        lastStartedNanos = Long.MIN_VALUE
+        nextAllowedNanos = 0L
+        confirmedLabel = null
+        candidateLabel = null
+        matchingCandidateResults = 0
+        sceneChangePending = false
+        consecutiveFailures = 0
+    }
+
+    @Synchronized
+    fun invalidateForSceneChange(nowNanos: Long) {
+        require(nowNanos >= 0L)
+        candidateLabel = null
+        matchingCandidateResults = 0
+        sceneChangePending = confirmedLabel != null
+        nextAllowedNanos = max(nextAllowedNanos, nowNanos)
+    }
+
+    @Synchronized fun isStable(): Boolean = confirmedLabel != null
+    @Synchronized fun confirmedLabel(): LocalVlmEnvironmentLabel? = confirmedLabel
+
+    private fun multiplySaturated(value: Long, multiplier: Long): Long =
+        if (value > Long.MAX_VALUE / multiplier) Long.MAX_VALUE else value * multiplier
+
+    private fun addSaturated(value: Long, increment: Long): Long =
+        if (value > Long.MAX_VALUE - increment) Long.MAX_VALUE else max(0L, value + increment)
+
+    private companion object {
+        const val MAX_FAILURE_EXPONENT = 5
+    }
+}
+
+data class LocalVlmSceneDescriptor(
+    val meanLuma: Double,
+    val lumaStandardDeviation: Double,
+    val normalizedLumaTiles: List<Double>,
+    val lumaHistogram: List<Double>,
+) {
+    init {
+        require(meanLuma.isFinite() && meanLuma in 0.0..1.0)
+        require(lumaStandardDeviation.isFinite() && lumaStandardDeviation >= 0.0)
+        require(normalizedLumaTiles.isNotEmpty() && normalizedLumaTiles.all(Double::isFinite))
+        require(lumaHistogram.isNotEmpty() && lumaHistogram.all { it.isFinite() && it >= 0.0 })
+        require(abs(lumaHistogram.sum() - 1.0) <= 1e-6)
+    }
+}
+
+data class LocalVlmSceneChangeDecision(
+    val significantChange: Boolean,
+    val baselineMatched: Boolean,
+    val normalizedChangeScore: Double,
+)
+
+data class LocalVlmSceneComparison(
+    val materiallyDifferent: Boolean,
+    val normalizedChangeScore: Double,
+)
+
+/**
+ * Low-cost, exposure-aware gate over sparse luma samples. Global mean/histogram changes detect
+ * illumination transitions while exposure-normalized tile structure catches a new physical scene.
+ * Two consecutive changed frames reject flashes and camera auto-exposure transients.
+ */
+class LocalVlmSceneChangeGate(
+    private val requiredChangedFrames: Int = 2,
+    private val meanLumaThreshold: Double = 0.14,
+    private val histogramDistanceThreshold: Double = 0.28,
+    private val normalizedStructureThreshold: Double = 0.24,
+) {
+    private var baseline: LocalVlmSceneDescriptor? = null
+    private var changedFrames = 0
+
+    init {
+        require(requiredChangedFrames in 1..10)
+        require(meanLumaThreshold in 0.01..1.0)
+        require(histogramDistanceThreshold in 0.01..1.0)
+        require(normalizedStructureThreshold in 0.01..1.0)
+    }
+
+    @Synchronized
+    fun observe(current: LocalVlmSceneDescriptor): LocalVlmSceneChangeDecision {
+        val reference = baseline ?: return LocalVlmSceneChangeDecision(
+            significantChange = false,
+            baselineMatched = false,
+            normalizedChangeScore = 0.0,
+        )
+        val comparison = compare(reference, current)
+        changedFrames = if (comparison.materiallyDifferent) changedFrames + 1 else 0
+        return LocalVlmSceneChangeDecision(
+            significantChange = changedFrames >= requiredChangedFrames,
+            baselineMatched = !comparison.materiallyDifferent,
+            normalizedChangeScore = comparison.normalizedChangeScore,
+        )
+    }
+
+    /**
+     * Compares any two descriptors with the same thresholds used by the stable-scene gate. This is
+     * also used to reject a VLM response when the live scene moved materially after its source
+     * image was admitted.
+     */
+    fun compare(
+        reference: LocalVlmSceneDescriptor,
+        current: LocalVlmSceneDescriptor,
+    ): LocalVlmSceneComparison {
+        require(reference.normalizedLumaTiles.size == current.normalizedLumaTiles.size)
+        require(reference.lumaHistogram.size == current.lumaHistogram.size)
+        val meanDelta = abs(current.meanLuma - reference.meanLuma)
+        val histogramDistance = reference.lumaHistogram.zip(current.lumaHistogram)
+            .sumOf { (first, second) -> abs(first - second) } / 2.0
+        val structuralDistance = reference.normalizedLumaTiles.zip(current.normalizedLumaTiles)
+            .sumOf { (first, second) -> abs(first - second) } /
+            reference.normalizedLumaTiles.size.toDouble() / NORMALIZED_STRUCTURE_RANGE
+        return LocalVlmSceneComparison(
+            materiallyDifferent = meanDelta >= meanLumaThreshold ||
+                histogramDistance >= histogramDistanceThreshold ||
+                structuralDistance >= normalizedStructureThreshold,
+            normalizedChangeScore = maxOf(
+                meanDelta / meanLumaThreshold,
+                histogramDistance / histogramDistanceThreshold,
+                structuralDistance / normalizedStructureThreshold,
+            ),
+        )
+    }
+
+    @Synchronized
+    fun markClassified(descriptor: LocalVlmSceneDescriptor) {
+        baseline = descriptor
+        changedFrames = 0
+    }
+
+    @Synchronized
+    fun reset() {
+        baseline = null
+        changedFrames = 0
+    }
+
+    private companion object {
+        const val NORMALIZED_STRUCTURE_RANGE = 4.0
+    }
+}
+
+object LocalVlmSceneDescriptorExtractor {
+    private const val GRID_COLUMNS = 16
+    private const val GRID_ROWS = 16
+    private const val HISTOGRAM_BINS = 16
+    private const val MINIMUM_NORMALIZATION_SCALE = 0.08
+
+    fun fromRgb(rgb: ByteArray, width: Int, height: Int, rowStrideBytes: Int): LocalVlmSceneDescriptor {
+        require(width > 0 && height > 0 && rowStrideBytes >= width * 3)
+        require(rgb.size >= rowStrideBytes * height)
+        val luma = ArrayList<Double>(GRID_COLUMNS * GRID_ROWS)
+        for (row in 0 until GRID_ROWS) {
+            val y = ((row + 0.5) * height / GRID_ROWS).toInt().coerceIn(0, height - 1)
+            for (column in 0 until GRID_COLUMNS) {
+                val x = ((column + 0.5) * width / GRID_COLUMNS).toInt().coerceIn(0, width - 1)
+                val offset = y * rowStrideBytes + x * 3
+                val red = rgb[offset].toInt() and 0xff
+                val green = rgb[offset + 1].toInt() and 0xff
+                val blue = rgb[offset + 2].toInt() and 0xff
+                luma += (54 * red + 183 * green + 19 * blue) / (255.0 * 256.0)
+            }
+        }
+        return fromLumaSamples(luma)
+    }
+
+    fun fromLumaSamples(samples: List<Double>): LocalVlmSceneDescriptor {
+        require(samples.isNotEmpty() && samples.all { it.isFinite() && it in 0.0..1.0 })
+        val mean = samples.average()
+        val standardDeviation = sqrt(samples.sumOf { (it - mean) * (it - mean) } / samples.size)
+        val normalizationScale = max(standardDeviation, MINIMUM_NORMALIZATION_SCALE)
+        val histogram = DoubleArray(HISTOGRAM_BINS)
+        samples.forEach { value ->
+            histogram[(value * HISTOGRAM_BINS).toInt().coerceIn(0, HISTOGRAM_BINS - 1)] += 1.0
+        }
+        return LocalVlmSceneDescriptor(
+            meanLuma = mean,
+            lumaStandardDeviation = standardDeviation,
+            normalizedLumaTiles = samples.map { ((it - mean) / normalizationScale).coerceIn(-2.0, 2.0) },
+            lumaHistogram = histogram.map { it / samples.size },
+        )
+    }
+}
+
+object LocalVlmModelProfile {
+    const val MODEL_ID = "qwen3-vl-2b-instruct-q4_0"
+    const val UPSTREAM_REPOSITORY = "unsloth/Qwen3-VL-2B-Instruct-GGUF"
+    const val UPSTREAM_REVISION = "main"
+    const val MODEL_FILE = "Qwen3-VL-2B-Instruct-Q4_0.gguf"
+    const val PROJECTOR_FILE = "mmproj-F16.gguf"
+    const val MODEL_SHA256 = "d9ca31f524d063c04e49d1af7b0b37061b21e7f8a7e460141654efe287600234"
+    const val PROJECTOR_SHA256 = "cd5a851d3928697fa1bd76d459d2cc409b6cf40c9d9682b2f5c8e7c6a9f9630f"
+    const val MODEL_BYTES = 1_056_784_064L
+    const val PROJECTOR_BYTES = 819_395_232L
+    const val RUNTIME_ID = "llama_cpp"
+    const val COMPUTE_UNIT = "npu"
+    const val GENIEX_ANDROID_VERSION = "0.4.0"
+
+    const val ENVIRONMENT_PROMPT =
+        "Classify the physical setting shown. Output exactly one uppercase label: " +
+            "INDOOR for an enclosed building or vehicle interior; OUTDOOR for open exterior space; " +
+            "TRANSITION for a doorway or ambiguous indoor-outdoor boundary; UNKNOWN when the image " +
+            "does not support a reliable choice. Output only the label."
+}

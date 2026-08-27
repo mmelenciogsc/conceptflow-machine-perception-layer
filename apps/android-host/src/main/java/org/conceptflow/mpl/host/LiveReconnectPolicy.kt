@@ -6,7 +6,44 @@ import org.conceptflow.mpl.transport.LiveLinkDisconnectReason
 
 enum class LiveReconnectDecision { RETRY, FAIL_CLOSED, COMPLETE, IGNORE }
 
-class LiveReconnectPolicy(private val maximumInterruptions: Int = 5) {
+enum class LiveSessionArrival { FIRST_AUTHENTICATED, RECONNECT, REJECT_AFTER_TIMEOUT }
+
+internal fun LiveLinkDisconnectReason.isUnexpectedInterruption(): Boolean =
+    this == LiveLinkDisconnectReason.NETWORK || this == LiveLinkDisconnectReason.TIMEOUT
+
+/** Separates the bounded listener window from the one-shot active capture deadline. */
+class LiveSessionDeadlineGate {
+    private enum class State { WAITING, ACTIVE, RENDEZVOUS_TIMED_OUT }
+
+    private var state = State.WAITING
+
+    @Synchronized
+    fun reset() {
+        state = State.WAITING
+    }
+
+    @Synchronized
+    fun onSessionReady(): LiveSessionArrival = when (state) {
+        State.WAITING -> {
+            state = State.ACTIVE
+            LiveSessionArrival.FIRST_AUTHENTICATED
+        }
+        State.ACTIVE -> LiveSessionArrival.RECONNECT
+        State.RENDEZVOUS_TIMED_OUT -> LiveSessionArrival.REJECT_AFTER_TIMEOUT
+    }
+
+    @Synchronized
+    fun expireRendezvousIfUnauthenticated(): Boolean {
+        if (state != State.WAITING) return false
+        state = State.RENDEZVOUS_TIMED_OUT
+        return true
+    }
+}
+
+class LiveReconnectPolicy(
+    private val maximumInterruptions: Int = 5,
+    private val persistent: Boolean = false,
+) {
     private var interruptions = 0
 
     init { require(maximumInterruptions in 1..20) }
@@ -14,11 +51,16 @@ class LiveReconnectPolicy(private val maximumInterruptions: Int = 5) {
     @Synchronized
     fun onDisconnect(reason: LiveLinkDisconnectReason): LiveReconnectDecision = when (reason) {
         LiveLinkDisconnectReason.STOPPED -> LiveReconnectDecision.IGNORE
-        LiveLinkDisconnectReason.REMOTE_COMPLETED -> LiveReconnectDecision.COMPLETE
-        LiveLinkDisconnectReason.LEASE_EXPIRED -> LiveReconnectDecision.COMPLETE
+        LiveLinkDisconnectReason.REMOTE_COMPLETED,
+        LiveLinkDisconnectReason.LEASE_EXPIRED,
+        -> if (persistent) LiveReconnectDecision.RETRY else LiveReconnectDecision.COMPLETE
         LiveLinkDisconnectReason.NETWORK, LiveLinkDisconnectReason.TIMEOUT -> {
             interruptions += 1
-            if (interruptions <= maximumInterruptions) LiveReconnectDecision.RETRY else LiveReconnectDecision.FAIL_CLOSED
+            if (persistent || interruptions <= maximumInterruptions) {
+                LiveReconnectDecision.RETRY
+            } else {
+                LiveReconnectDecision.FAIL_CLOSED
+            }
         }
         else -> LiveReconnectDecision.FAIL_CLOSED
     }

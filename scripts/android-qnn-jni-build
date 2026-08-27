@@ -23,5 +23,21 @@ android_sdk="$(realpath -e -- "$android_sdk")"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 QNN_SDK_ROOT="$qnn_sdk" ANDROID_HOME="$android_sdk" ANDROID_SDK_ROOT="$android_sdk" \
-    ./gradlew :apps:android-host:assembleDebug
+    ./gradlew -PrequireQnn=true :apps:android-host:assembleDebug
+apk="apps/android-host/build/outputs/apk/debug/android-host-debug.apk"
+# Do not use grep -q here: with pipefail enabled it exits after the first
+# match, unzip observes SIGPIPE, and a valid APK is reported as a failure.
+unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libconceptflow_qnn_jni.so' >/dev/null || {
+    printf 'QNN-enabled APK is missing libconceptflow_qnn_jni.so.\n' >&2
+    exit 1
+}
+qnn_directory="apps/android-host/build/qnn"
+qnn_apk="$qnn_directory/android-host-qnn-debug.apk"
+mkdir -p -- "$qnn_directory"
+install -m 0644 -- "$apk" "$qnn_apk"
+unzip -Z1 "$qnn_apk" | grep -Fx 'lib/arm64-v8a/libconceptflow_qnn_jni.so' >/dev/null || {
+    printf 'Preserved QNN-enabled APK failed its JNI integrity check.\n' >&2
+    exit 1
+}
 printf 'Built opt-in arm64 JNI adapter against external QAIRT headers. Vendor runtime remains external.\n'
+printf 'Preserved QNN-enabled artifact: %s\n' "$qnn_apk"

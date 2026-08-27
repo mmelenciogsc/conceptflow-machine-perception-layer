@@ -8,6 +8,9 @@ import org.conceptflow.mpl.v1.AudioSampleEncoding
 import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImuBatch
 import org.conceptflow.mpl.v1.MicrophoneChunk
+import org.conceptflow.mpl.v1.RokidTouchAction
+import org.conceptflow.mpl.v1.RokidTouchEvent
+import org.conceptflow.mpl.v1.RokidTouchKey
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 
 data class GlassesIngressLimits(
@@ -17,6 +20,8 @@ data class GlassesIngressLimits(
     val cameraAssemblyTimeoutNanos: Long = 2_000_000_000L,
     val maximumImuSamplesPerBatch: Int = 64,
     val maximumMicrophoneChunkBytes: Int = 64 * 1_024,
+    val maximumMicrophoneChunks: Int = 8,
+    val maximumTouchEvents: Int = 128,
 ) {
     init {
         require(maximumCameraBytes in 1..8 * 1_024 * 1_024)
@@ -25,6 +30,8 @@ data class GlassesIngressLimits(
         require(cameraAssemblyTimeoutNanos in 20_000_000L..10_000_000_000L)
         require(maximumImuSamplesPerBatch in 1..64)
         require(maximumMicrophoneChunkBytes in 256..256 * 1_024)
+        require(maximumMicrophoneChunks in 1..64)
+        require(maximumTouchEvents in 1..512)
     }
 }
 
@@ -33,10 +40,12 @@ enum class StreamIngressDisposition {
     CAMERA_READY,
     IMU_READY,
     MICROPHONE_READY,
+    TOUCH_READY,
     REJECTED_IDENTITY,
     REJECTED_ORDER,
     REJECTED_MALFORMED,
     REJECTED_UNAUTHORIZED,
+    REJECTED_OVERFLOW,
 }
 
 data class GlassesIngressStatistics(
@@ -44,6 +53,9 @@ data class GlassesIngressStatistics(
     val rejectedEnvelopes: Long,
     val incompleteCameraFramesDropped: Long,
     val unreadCameraFramesReplaced: Long,
+    val unreadMicrophoneChunksReplaced: Long,
+    val microphoneOverflowChunks: Long,
+    val touchOverflowEvents: Long,
 )
 
 /**
@@ -62,14 +74,19 @@ class GlassesStreamIngress(
     private var lastImuSequence = 0L
     private var lastImuBatchId = 0L
     private var lastMicrophoneChunkId = 0L
+    private var lastTouchEventId = 0L
     private var cameraAssembly: CameraAssembly? = null
     private var latestCamera: FramePayload? = null
     private var latestImu: ImuBatch? = null
-    private var latestMicrophone: MicrophoneChunk? = null
+    private val microphoneChunks = ArrayDeque<MicrophoneChunk>()
+    private val touchEvents = ArrayDeque<RokidTouchEvent>()
     private var accepted = 0L
     private var rejected = 0L
     private var incompleteFramesDropped = 0L
     private var unreadFramesReplaced = 0L
+    private var unreadMicrophoneChunksReplaced = 0L
+    private var microphoneOverflowChunks = 0L
+    private var touchOverflowEvents = 0L
 
     init {
         require(expectedSessionId.isNotBlank() && expectedSessionId.length <= 128)
@@ -90,6 +107,7 @@ class GlassesStreamIngress(
             SensorStreamEnvelope.PayloadCase.CAMERA_CHUNK -> acceptCamera(envelope)
             SensorStreamEnvelope.PayloadCase.IMU_BATCH -> acceptImu(envelope.imuBatch)
             SensorStreamEnvelope.PayloadCase.MICROPHONE_CHUNK -> acceptMicrophone(envelope.microphoneChunk)
+            SensorStreamEnvelope.PayloadCase.TOUCH_EVENT -> acceptTouch(envelope.touchEvent)
             else -> StreamIngressDisposition.REJECTED_MALFORMED
         }
         if (result.name.startsWith("REJECTED_")) rejected += 1L else accepted += 1L
@@ -110,7 +128,8 @@ class GlassesStreamIngress(
         val result = when (envelope.payloadCase) {
             SensorStreamEnvelope.PayloadCase.CAMERA_CHUNK -> acceptCamera(envelope)
             SensorStreamEnvelope.PayloadCase.IMU_BATCH -> acceptImu(envelope.imuBatch)
-            SensorStreamEnvelope.PayloadCase.MICROPHONE_CHUNK -> StreamIngressDisposition.REJECTED_UNAUTHORIZED
+            SensorStreamEnvelope.PayloadCase.MICROPHONE_CHUNK -> acceptMicrophone(envelope.microphoneChunk)
+            SensorStreamEnvelope.PayloadCase.TOUCH_EVENT -> acceptTouch(envelope.touchEvent)
             else -> StreamIngressDisposition.REJECTED_MALFORMED
         }
         if (result.name.startsWith("REJECTED_")) rejected += 1L else accepted += 1L
@@ -124,7 +143,16 @@ class GlassesStreamIngress(
     fun takeLatestImu(): ImuBatch? = latestImu.also { latestImu = null }
 
     @Synchronized
-    fun takeLatestMicrophone(): MicrophoneChunk? = latestMicrophone.also { latestMicrophone = null }
+    fun takeLatestMicrophone(): MicrophoneChunk? =
+        if (microphoneChunks.isEmpty()) null else microphoneChunks.removeFirst()
+
+    @Synchronized
+    fun takeTouchEvents(maximum: Int = limits.maximumTouchEvents): List<RokidTouchEvent> {
+        require(maximum in 1..limits.maximumTouchEvents)
+        val result = ArrayList<RokidTouchEvent>(minOf(maximum, touchEvents.size))
+        repeat(minOf(maximum, touchEvents.size)) { result += touchEvents.removeFirst() }
+        return result
+    }
 
     @Synchronized
     fun statistics(): GlassesIngressStatistics = GlassesIngressStatistics(
@@ -132,12 +160,16 @@ class GlassesStreamIngress(
         rejectedEnvelopes = rejected,
         incompleteCameraFramesDropped = incompleteFramesDropped,
         unreadCameraFramesReplaced = unreadFramesReplaced,
+        unreadMicrophoneChunksReplaced = unreadMicrophoneChunksReplaced,
+        microphoneOverflowChunks = microphoneOverflowChunks,
+        touchOverflowEvents = touchOverflowEvents,
     )
 
     private fun acceptCamera(envelope: SensorStreamEnvelope): StreamIngressDisposition {
         val chunk = envelope.cameraChunk
         if (chunk.frameId == 0L || chunk.chunkCount == 0 || chunk.chunkCount > limits.maximumCameraChunks ||
             chunk.chunkIndex >= chunk.chunkCount || chunk.totalPayloadBytes == 0L ||
+            chunk.captureMonotonicTimestampNs == 0L ||
             chunk.totalPayloadBytes > limits.maximumCameraBytes || chunk.chunkData.isEmpty ||
             chunk.chunkData.size() > limits.maximumCameraChunkBytes || chunk.frameId <= lastCompletedCameraFrame
         ) {
@@ -161,7 +193,8 @@ class GlassesStreamIngress(
             }
             val metadata = chunk.frameMetadata
             if (metadata.frameId != chunk.frameId || !metadata.frameData.isEmpty ||
-                metadata.image.payloadBytes != chunk.totalPayloadBytes
+                metadata.image.payloadBytes != chunk.totalPayloadBytes ||
+                metadata.captureMonotonicTimestampNs != chunk.captureMonotonicTimestampNs
             ) {
                 return StreamIngressDisposition.REJECTED_MALFORMED
             }
@@ -176,6 +209,7 @@ class GlassesStreamIngress(
         }
         if (chunk.chunkIndex != assembly.nextChunkIndex || chunk.chunkCount != assembly.chunkCount ||
             chunk.totalPayloadBytes.toInt() != assembly.totalBytes ||
+            chunk.captureMonotonicTimestampNs != assembly.metadata.captureMonotonicTimestampNs ||
             chunk.chunkIndex > 0 && chunk.hasFrameMetadata() ||
             assembly.bytes.size() + chunk.chunkData.size() > assembly.totalBytes
         ) {
@@ -230,13 +264,34 @@ class GlassesStreamIngress(
             chunk.captureMonotonicTimestampNs == 0L || chunk.sampleRateHz !in 8_000..48_000 ||
             chunk.channelCount !in 1..2 ||
             chunk.encoding != AudioSampleEncoding.AUDIO_SAMPLE_ENCODING_PCM_S16LE ||
-            chunk.audioData.isEmpty || chunk.audioData.size() > limits.maximumMicrophoneChunkBytes
+            chunk.audioData.isEmpty || chunk.audioData.size() > limits.maximumMicrophoneChunkBytes ||
+            chunk.audioData.size() % (chunk.channelCount * Short.SIZE_BYTES) != 0
         ) {
             return StreamIngressDisposition.REJECTED_MALFORMED
         }
         lastMicrophoneChunkId = chunk.chunkId
-        latestMicrophone = chunk
+        if (microphoneChunks.size == limits.maximumMicrophoneChunks) {
+            microphoneOverflowChunks += 1L
+            return StreamIngressDisposition.REJECTED_OVERFLOW
+        }
+        microphoneChunks.addLast(chunk)
         return StreamIngressDisposition.MICROPHONE_READY
+    }
+
+    private fun acceptTouch(event: RokidTouchEvent): StreamIngressDisposition {
+        if (event.eventId == 0L || event.eventId <= lastTouchEventId ||
+            event.observedMonotonicTimestampNs == 0L || event.sourceUptimeMs == 0L ||
+            event.key == RokidTouchKey.ROKID_TOUCH_KEY_UNSPECIFIED ||
+            event.action == RokidTouchAction.ROKID_TOUCH_ACTION_UNSPECIFIED ||
+            event.repeatCount < 0 || event.scanCode <= 0
+        ) return StreamIngressDisposition.REJECTED_MALFORMED
+        if (touchEvents.size == limits.maximumTouchEvents) {
+            touchOverflowEvents += 1L
+            return StreamIngressDisposition.REJECTED_OVERFLOW
+        }
+        lastTouchEventId = event.eventId
+        touchEvents.addLast(event)
+        return StreamIngressDisposition.TOUCH_READY
     }
 
     private fun expireCameraAssembly() {

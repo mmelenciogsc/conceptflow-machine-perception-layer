@@ -38,6 +38,7 @@ class AuthenticatedLiveGlassesIngressTest {
                 .setChunkIndex(0)
                 .setChunkCount(1)
                 .setTotalPayloadBytes(jpeg.size.toLong())
+                .setCaptureMonotonicTimestampNs(metadata.captureMonotonicTimestampNs)
                 .setChunkData(ByteString.copyFrom(jpeg)),
         ).build()
 

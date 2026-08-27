@@ -50,6 +50,7 @@ enum class MetricDepthProvenanceKind {
 enum class MetricDepthUncertaintyBasis {
     GUIDED_RESIDUAL,
     UNQUANTIFIED_MODEL_ERROR,
+    DIMENSION_PRIOR_BOUND,
 }
 
 data class MetricDepthProvenance(
@@ -393,7 +394,15 @@ data class DimensionDistanceEstimate(
     val distanceMeters: Double,
     val uncertaintyMeters: Double,
     val classId: String,
-)
+    val calibrationWeight: Double = 1.0,
+) {
+    init {
+        require(distanceMeters.isFinite() && distanceMeters > 0.0)
+        require(uncertaintyMeters.isFinite() && uncertaintyMeters > 0.0)
+        require(classId.isNotBlank())
+        require(calibrationWeight.isFinite() && calibrationWeight in 0.0..1.0)
+    }
+}
 
 data class FusedMetricDepthEstimate(
     val estimate: MetricDepthEstimate,
@@ -424,7 +433,13 @@ object RobustMetricDepthFusion {
         }
 
         val quantifiedDepthUncertainty = calibratedDepth.uncertaintyMeters
-            ?: return FusedMetricDepthEstimate(calibratedDepth, false, false)
+        if (quantifiedDepthUncertainty == null) {
+            return fuseUnquantifiedNativeMetric(
+                calibratedDepth,
+                dimensionPrior,
+                dimensionConfidence,
+            )
+        }
         val depthSigma = max(MIN_SIGMA_METERS, quantifiedDepthUncertainty)
         val priorSigma = max(MIN_SIGMA_METERS, dimensionPrior.uncertaintyMeters)
         val difference = abs(calibratedDepth.distanceMeters - dimensionPrior.distanceMeters)
@@ -465,12 +480,63 @@ object RobustMetricDepthFusion {
         )
     }
 
+    /**
+     * Official metric checkpoints return metres but do not publish a calibrated error bound for
+     * this camera. A size prior may therefore make only a conservative, bounded correction. It
+     * never replaces the model value outright or upgrades monocular depth to sensor-grade truth.
+     */
+    private fun fuseUnquantifiedNativeMetric(
+        native: MetricDepthEstimate,
+        prior: DimensionDistanceEstimate,
+        dimensionConfidence: Double,
+    ): FusedMetricDepthEstimate {
+        val difference = prior.distanceMeters - native.distanceMeters
+        val absoluteDifference = abs(difference)
+        val ratio = prior.distanceMeters / native.distanceMeters
+        val disagreementGate = max(
+            MIN_NATIVE_DISAGREEMENT_METERS,
+            max(prior.uncertaintyMeters * 3.0, native.distanceMeters * MAX_NATIVE_RELATIVE_CORRECTION),
+        )
+        if (ratio !in MIN_NATIVE_PRIOR_RATIO..MAX_NATIVE_PRIOR_RATIO ||
+            absoluteDifference > disagreementGate
+        ) {
+            return FusedMetricDepthEstimate(native, false, true)
+        }
+        val trust = (dimensionConfidence * prior.calibrationWeight).coerceIn(0.0, 1.0)
+        if (trust <= 0.0) return FusedMetricDepthEstimate(native, false, false)
+        val correctionFraction = (trust * MAX_DIMENSION_CORRECTION_FRACTION)
+            .coerceAtMost(MAX_DIMENSION_CORRECTION_FRACTION)
+        val distance = native.distanceMeters + difference * correctionFraction
+        val uncertainty = maxOf(
+            prior.uncertaintyMeters,
+            absoluteDifference,
+            distance * MIN_NATIVE_OUTPUT_RELATIVE_UNCERTAINTY,
+        )
+        return FusedMetricDepthEstimate(
+            native.copy(
+                distanceMeters = distance,
+                uncertaintyMeters = uncertainty,
+                uncertaintyBasis = MetricDepthUncertaintyBasis.DIMENSION_PRIOR_BOUND,
+            ),
+            usedDimensionPrior = true,
+            rejectedDimensionPriorAsOutlier = false,
+        )
+    }
+
     private const val MIN_SIGMA_METERS = 0.01
     private const val MIN_CONFIDENCE = 1e-6
+    private const val MIN_NATIVE_DISAGREEMENT_METERS = 0.50
+    private const val MAX_NATIVE_RELATIVE_CORRECTION = 0.50
+    private const val MIN_NATIVE_PRIOR_RATIO = 0.50
+    private const val MAX_NATIVE_PRIOR_RATIO = 2.00
+    private const val MAX_DIMENSION_CORRECTION_FRACTION = 0.35
+    private const val MIN_NATIVE_OUTPUT_RELATIVE_UNCERTAINTY = 0.20
 }
 
 /** Produces optional calibration evidence; it is never a Tier 0 geometry source. */
 object PinholeDimensionEstimator {
+    private val knownDimensions = KnownDimensionVectorTable()
+
     fun estimate(observation: MaskExtentObservation): DimensionDistanceEstimate? {
         val definition = BviClassCatalog.find(observation.classId) ?: return null
         if (definition.calibrationAxis == CalibrationAxis.NONE || definition.calibrationWeight <= 0.0) return null
@@ -482,6 +548,7 @@ object PinholeDimensionEstimator {
             observation.maskHeightPixels.toDouble(),
             2.0 * observation.focalLengthYPixels,
         )
+        if (!withinTwoToEightFootAnchorEnvelope(definition, horizontalAngle, verticalAngle)) return null
         val candidates = buildList {
             if (definition.calibrationAxis == CalibrationAxis.WIDTH || definition.calibrationAxis == CalibrationAxis.BOTH) {
                 add(definition.dimensions.width / (2.0 * tan(horizontalAngle / 2.0)))
@@ -497,7 +564,37 @@ object PinholeDimensionEstimator {
             distanceMeters = distance,
             uncertaintyMeters = distance * definition.dimensions.relativeUncertainty * confidencePenalty,
             classId = definition.id,
+            calibrationWeight = definition.calibrationWeight,
         )
+    }
+
+    private fun withinTwoToEightFootAnchorEnvelope(
+        definition: BviClassDefinition,
+        horizontalAngle: Double,
+        verticalAngle: Double,
+    ): Boolean {
+        val near = requireNotNull(knownDimensions.get(definition.id, ReferenceDistance.NEAR_TWO_FEET))
+        val far = requireNotNull(knownDimensions.get(definition.id, ReferenceDistance.FAR_EIGHT_FEET))
+        fun accepted(observed: Double, farExtent: Double, nearExtent: Double): Boolean {
+            val relativePadding = definition.dimensions.relativeUncertainty.coerceAtMost(0.50)
+            return observed in (farExtent * (1.0 - relativePadding))..(nearExtent * (1.0 + relativePadding))
+        }
+        val horizontalAccepted = accepted(
+            horizontalAngle,
+            far.expectedHorizontalAngularExtentRadians,
+            near.expectedHorizontalAngularExtentRadians,
+        )
+        val verticalAccepted = accepted(
+            verticalAngle,
+            far.expectedVerticalAngularExtentRadians,
+            near.expectedVerticalAngularExtentRadians,
+        )
+        return when (definition.calibrationAxis) {
+            CalibrationAxis.WIDTH -> horizontalAccepted
+            CalibrationAxis.HEIGHT -> verticalAccepted
+            CalibrationAxis.BOTH -> horizontalAccepted && verticalAccepted
+            CalibrationAxis.NONE -> false
+        }
     }
 }
 

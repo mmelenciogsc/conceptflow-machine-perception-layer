@@ -13,3 +13,9 @@
 
 # qnn_jni.cpp uses statically named JNI exports for this one exact Kotlin object.
 -keep class org.conceptflow.mpl.host.vision.QnnNativeBridge { *; }
+
+# Unity's AndroidJavaClass calls these stable static entry points by name.
+-keep class org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge { *; }
+
+# GenieX exposes Kotlin wrappers over statically named JNI entry points.
+-keep class com.geniex.sdk.** { *; }

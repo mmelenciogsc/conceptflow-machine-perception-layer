@@ -76,10 +76,7 @@ class DepthProfileRouter(
                 "manual_override",
             )
         }
-        val automatic = selector.evaluate(
-            evidence ?: EnvironmentEvidence(frameTimestampNanos, 0.5, 0.5, 0),
-            nowNanos,
-        )
+        val automatic = selector.evaluate(evidence, nowNanos)
         val enteredTransition = automatic.sceneState == SceneEnvironmentState.TRANSITION &&
             lastSceneState != SceneEnvironmentState.TRANSITION
         if (enteredTransition) shadowComparisonsInTransition = 0
@@ -222,8 +219,17 @@ class EnvironmentDepthCoordinator(
             semanticDetections,
         )?.let(buffer::update)
         dedicatedVisualSignal?.let {
-            require(it.family == EnvironmentSignalFamily.CAMERA)
-            require(it.originatingFrameId == frame.frameId)
+            require(it.family == EnvironmentSignalFamily.CAMERA ||
+                it.family == EnvironmentSignalFamily.VLM_CAMERA)
+            val originatingFrameId = requireNotNull(it.originatingFrameId)
+            require(
+                if (it.family == EnvironmentSignalFamily.CAMERA) {
+                    originatingFrameId == frame.frameId
+                } else {
+                    originatingFrameId <= frame.frameId
+                },
+            )
+            require(it.timestampNanos <= frame.captureMonotonicTimestampNanos)
             buffer.update(it)
         }
         val evidence = fusion.fuse(frame.captureMonotonicTimestampNanos, buffer.snapshot())

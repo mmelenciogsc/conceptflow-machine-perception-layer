@@ -3,8 +3,8 @@
 set -euo pipefail
 
 readonly PACKAGE="org.conceptflow.mpl.androidhost"
-readonly VOCABULARY_SHA256="2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
-readonly YOLOE_SHA256="960f857f26798622021e92ee4a8deb73c6e8bcae3a9455de3e71e623c88682c2"
+readonly VOCABULARY_SHA256="f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6"
+readonly YOLOE_SHA256="4631e169dd0a335e48f9f3bb039be414810450ae232a1d1d1212bd457f954fd7"
 readonly DEPTH_INDOOR_392_SHA256="e79b4c0e3b38b815be47287b232137b4217097a7553da90869dfd482cd2a449d"
 readonly DEPTH_OUTDOOR_392_SHA256="f77804ac22fd6f7586e640b231df9e2e759e7325308f2430fae6f67be0be60c4"
 
@@ -141,8 +141,8 @@ write_sidecar() {
     adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "files/models/$target_name"
 }
 
-provision "$yoloe" "libyoloe_bvi40_fp16.so" $((256 * 1024 * 1024)) "$YOLOE_SHA256"
-write_sidecar "libyoloe_bvi40_fp16.so.vocabulary.sha256" "$VOCABULARY_SHA256"
+provision "$yoloe" "libyoloe_bvi330_fp16.so" $((256 * 1024 * 1024)) "$YOLOE_SHA256"
+write_sidecar "libyoloe_bvi330_fp16.so.vocabulary.sha256" "$VOCABULARY_SHA256"
 provision "$depth_indoor_392" "libdepth_indoor_392_fp16.so" $((512 * 1024 * 1024)) "$DEPTH_INDOOR_392_SHA256"
 provision "$depth_outdoor_392" "libdepth_outdoor_392_fp16.so" $((512 * 1024 * 1024)) "$DEPTH_OUTDOOR_392_SHA256"
 

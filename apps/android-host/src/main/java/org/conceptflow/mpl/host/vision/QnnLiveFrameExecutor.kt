@@ -52,7 +52,7 @@ data class QnnLiveFrameResult(
 }
 
 /**
- * Bounded live-test executor that opens exactly YOLOE-26S BVI40 and one selected 392 metric-depth
+ * Bounded live-test executor that opens exactly the pinned YOLOE-26S fixed-vocabulary graph and one selected 392 metric-depth
  * graph. Depth executes even when segmentation finds no eligible objects, so HTP validation cannot
  * accidentally become a YOLO-only test.
  */
@@ -85,18 +85,57 @@ class QnnLiveFrameExecutor(
         require(image.width == frame.width && image.height == frame.height) {
             "decoded JPEG dimensions do not match frame metadata"
         }
+        return processDecoded(
+            frame.frameId,
+            visionFrame,
+            image,
+            frameStarted,
+            decodeCompleted,
+            selectDepthProfile,
+        )
+    }
+
+    @Synchronized
+    fun process(
+        frame: RawRgbFrame,
+        visionFrame: VisionFrame,
+        selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
+    ): QnnLiveFrameResult? {
+        check(!closed) { "live QNN frame executor is closed" }
+        require(frame.matches(visionFrame)) { "RGB and vision frame metadata do not correlate" }
+        val frameStarted = clockNanos()
+        val image = RgbImage(frame.width, frame.height, frame.rgb)
+        val decodeCompleted = clockNanos()
+        return processDecoded(
+            frame.frameId,
+            visionFrame,
+            image,
+            frameStarted,
+            decodeCompleted,
+            selectDepthProfile,
+        )
+    }
+
+    private fun processDecoded(
+        frameId: Long,
+        visionFrame: VisionFrame,
+        image: RgbImage,
+        frameStarted: Long,
+        decodeCompleted: Long,
+        selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
+    ): QnnLiveFrameResult? {
 
         val segmentationInput = VisionTensorPreprocessor.yolo640(image)
         val segmentationPreprocessingCompleted = clockNanos()
         val segmentationOutputs = segmentationSession.execute(segmentationInput.bytes).outputs
         val segmentationCompleted = clockNanos()
         require(segmentationOutputs.size == 2) { "YOLO graph returned an unexpected tensor count" }
-        val detections = YoloBvi40Postprocessor.process(
+        val detections = YoloFixedVocabularyPostprocessor.process(
             segmentationOutputs[0],
             segmentationOutputs[1],
             segmentationInput.transform,
         )
-        val trackedDetections = tracker.update(frame.frameId, detections)
+        val trackedDetections = tracker.update(frameId, detections)
         val segmentationPostprocessingCompleted = clockNanos()
 
         val selectedDepthProfile = selectDepthProfile(
@@ -129,7 +168,7 @@ class QnnLiveFrameExecutor(
         val depthSamples = DepthMaskSampler.sample(depth, depthInput.transform, trackedDetections)
         val frameCompleted = clockNanos()
         val inference = MachineVisionInference(
-            frameId = frame.frameId,
+            frameId = frameId,
             completedMonotonicTimestampNanos = max(visionFrame.captureMonotonicTimestampNanos, frameCompleted),
             fixedVocabularySha256 = MachineVisionModelProfiles.fixedVocabularySha256,
             depthProfileId = selectedDepthProfile.id,
@@ -147,7 +186,7 @@ class QnnLiveFrameExecutor(
         )
 
         return QnnLiveFrameResult(
-            frameId = frame.frameId,
+            frameId = frameId,
             selectedDepthProfileId = selectedDepthProfile.id,
             segmentedObjectCount = trackedDetections.size,
             finiteYoloValues = QnnLiveFrameResult.YOLO_FINITE_VALUE_COUNT,

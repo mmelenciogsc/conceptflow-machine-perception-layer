@@ -98,15 +98,15 @@ object MachineVisionModelProfiles {
     val fixedVocabularySha256: String = sha256(BviClassCatalog.prompts.joinToString("\n").encodeToByteArray())
 
     val yoloe26sBvi = MachineVisionModelProfile(
-        id = "yoloe-26s-bvi40-seg-qnn-htp-fp16",
+        id = "yoloe-26s-bvi330-seg-qnn-htp-fp16",
         upstreamModelId = "ultralytics/yoloe-26s-seg.pt",
-        artifactFileName = "libyoloe_bvi40_fp16.so",
+        artifactFileName = "libyoloe_bvi330_fp16.so",
         kind = MachineVisionModelKind.INSTANCE_SEGMENTATION,
         inputWidth = 640,
         inputHeight = 640,
         numericProfile = QnnNumericProfile.FLOAT16,
         fixedVocabularySha256 = fixedVocabularySha256,
-        trustedArtifactSha256 = setOf("960f857f26798622021e92ee4a8deb73c6e8bcae3a9455de3e71e623c88682c2"),
+        trustedArtifactSha256 = setOf("4631e169dd0a335e48f9f3bb039be414810450ae232a1d1d1212bd457f954fd7"),
         maximumArtifactBytes = 256L * 1_024L * 1_024L,
     )
 

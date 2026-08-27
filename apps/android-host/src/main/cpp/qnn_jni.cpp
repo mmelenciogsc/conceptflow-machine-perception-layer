@@ -225,6 +225,9 @@ struct Session {
   FreeGraphsFn free_graphs = nullptr;
   std::vector<uint16_t> input;
   std::vector<std::vector<uint16_t>> outputs;
+  // Generated model libraries may declare named outputs in a different order.
+  // Keep graph buffers in native order and return them to Kotlin in the fixed ABI order.
+  std::vector<size_t> output_result_order;
 
   ~Session() {
     if (graph_info != nullptr && free_graphs != nullptr) free_graphs(&graph_info, graph_count);
@@ -308,12 +311,25 @@ bool validateAndAllocate(Session& session, jint model_kind) {
     fail(Failure::kTensorSchemaMismatch, "could not attach bounded input buffer");
     return false;
   }
-  session.outputs.resize(output_expected.size());
-  for (size_t index = 0; index < output_expected.size(); ++index) {
-    if (!tensorMatches(graph.outputTensors[index], output_expected[index])) {
+  session.output_result_order.resize(output_expected.size());
+  std::vector<bool> matched(graph.numOutputTensors, false);
+  for (size_t expected_index = 0; expected_index < output_expected.size(); ++expected_index) {
+    size_t actual_index = graph.numOutputTensors;
+    for (size_t candidate = 0; candidate < graph.numOutputTensors; ++candidate) {
+      if (!matched[candidate] && tensorMatches(graph.outputTensors[candidate], output_expected[expected_index])) {
+        actual_index = candidate;
+        break;
+      }
+    }
+    if (actual_index == graph.numOutputTensors) {
       fail(Failure::kTensorSchemaMismatch, "output FP16 type, name, or dimensions differ");
       return false;
     }
+    matched[actual_index] = true;
+    session.output_result_order[expected_index] = actual_index;
+  }
+  session.outputs.resize(output_expected.size());
+  for (size_t index = 0; index < session.outputs.size(); ++index) {
     const uint64_t output_elements = elementCount(graph.outputTensors[index]);
     if (output_elements == 0) {
       fail(Failure::kTensorSchemaMismatch, "invalid output element count");
@@ -513,8 +529,8 @@ Java_org_conceptflow_mpl_host_vision_QnnNativeBridge_execute(
   if (byte_array_class == nullptr) return nullptr;
   jobjectArray result = env->NewObjectArray(static_cast<jsize>(session->outputs.size()), byte_array_class, nullptr);
   if (result == nullptr) return nullptr;
-  for (size_t output_index = 0; output_index < session->outputs.size(); ++output_index) {
-    const auto& half_output = session->outputs[output_index];
+  for (size_t output_index = 0; output_index < session->output_result_order.size(); ++output_index) {
+    const auto& half_output = session->outputs[session->output_result_order[output_index]];
     std::vector<float> float_output(half_output.size());
     std::transform(half_output.begin(), half_output.end(), float_output.begin(), halfToFloat);
     const jsize output_bytes = static_cast<jsize>(float_output.size() * sizeof(float));

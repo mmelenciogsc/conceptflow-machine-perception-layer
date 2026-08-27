@@ -13,11 +13,12 @@ from __future__ import annotations
 import argparse
 import ast
 from array import array
-from contextlib import chdir
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,9 +26,20 @@ import sys
 from typing import Any, Sequence
 
 
+@contextmanager
+def chdir(path: Path):
+    """Python 3.10-compatible equivalent of contextlib.chdir."""
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 VOCABULARY_PATH = REPOSITORY_ROOT / "config/machine-vision/bvi_classes.txt"
-EXPECTED_VOCABULARY_SHA256 = "2ca8ebc9d1b7914e1dfd1d288e517e78e1b24be75ad04cd6bc0df3e0455aca44"
+EXPECTED_VOCABULARY_SHA256 = "f4d5aee2124ee9a65f337337004062b15273939ff0ce7f96740fc3cb28d6a9a6"
 EXPECTED_YOLOE_CHECKPOINT_SHA256 = "48f24206bc8680d60cbbfa296b0140da849669b9515058b72f5a945142df0654"
 DEPTH_SOURCE_REVISION = "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf"
 DEPTH_INPUT_SIZES = (336, 392, 518)
@@ -101,8 +113,8 @@ def load_vocabulary(path: Path = VOCABULARY_PATH) -> tuple[str, ...]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     )
-    if len(prompts) != 40 or len(set(prompts)) != len(prompts):
-        raise ValueError("BVI vocabulary must contain exactly 40 unique prompts")
+    if len(prompts) != 330 or len(set(prompts)) != len(prompts):
+        raise ValueError("BVI vocabulary must contain exactly 330 unique prompts")
     fingerprint = hashlib.sha256("\n".join(prompts).encode()).hexdigest()
     if fingerprint != EXPECTED_VOCABULARY_SHA256:
         raise ValueError(f"BVI vocabulary fingerprint mismatch: {fingerprint}")
@@ -206,7 +218,7 @@ def write_calibration_set(
     device_input_list.write_text((device_input.name + "\n") * device_runs, encoding="utf-8")
     manifest = {
         "schema_version": 1,
-        "created_utc": datetime.now(UTC).isoformat(),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
         "purpose": "qnn_converter_compatibility_smoke_only",
         "accuracy_claim": False,
         "representative_dataset": False,
@@ -306,7 +318,7 @@ def write_image_calibration_set(
     device_input_list.write_text((device_input.name + "\n") * device_runs, encoding="utf-8")
     manifest = {
         "schema_version": 1,
-        "created_utc": datetime.now(UTC).isoformat(),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
         "purpose": "qnn_representative_range_candidate",
         "accuracy_claim": False,
         "representative_dataset": False,
@@ -415,7 +427,7 @@ def verify_export_manifest(directory: Path) -> dict[str, Any]:
                 raise ValueError(f"model export source mismatch: {name}.{field}")
 
     expected_files = {
-        "yoloe-26s-bvi40-seg.onnx",
+        "yoloe-26s-bvi330-seg.onnx",
         *(f"{source.output_stem}.onnx" for source in DEPTH_SOURCES.values()),
     }
     artifacts = manifest.get("artifacts")
@@ -630,7 +642,7 @@ def export_depth_variants(args: argparse.Namespace) -> dict[str, Any]:
 
     manifest = {
         "schema_version": 1,
-        "created_utc": datetime.now(UTC).isoformat(),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
         "distribution": "private_external_artifacts_only",
         "purpose": "static_metric_depth_resolution_comparison",
         "accuracy_claim": False,
@@ -671,7 +683,7 @@ def export_models(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"expected ultralytics 8.4.90, found {ultralytics.__version__}")
 
     prompts = list(load_vocabulary())
-    fixed_checkpoint = output / "yoloe-26s-bvi40-seg.pt"
+    fixed_checkpoint = output / "yoloe-26s-bvi330-seg.pt"
     with chdir(output):
         yoloe = YOLOE(str(args.yoloe_checkpoint))
         yoloe.set_classes(prompts)
@@ -695,7 +707,7 @@ def export_models(args: argparse.Namespace) -> dict[str, Any]:
                 device="cpu",
             )
         )
-    yoloe_onnx = output / "yoloe-26s-bvi40-seg.onnx"
+    yoloe_onnx = output / "yoloe-26s-bvi330-seg.onnx"
     if exported.resolve() != yoloe_onnx.resolve():
         shutil.move(exported, yoloe_onnx)
 
@@ -713,7 +725,7 @@ def export_models(args: argparse.Namespace) -> dict[str, Any]:
     artifacts.extend(inspect_onnx(path, "depth") for path in depth_outputs)
     manifest = {
         "schema_version": 1,
-        "created_utc": datetime.now(UTC).isoformat(),
+        "created_utc": datetime.now(timezone.utc).isoformat(),
         "distribution": "private_external_artifacts_only",
         "ultralytics_version": ultralytics.__version__,
         "torch_version": torch.__version__,
