@@ -1443,3 +1443,53 @@ after this repair. The rebuilt and replacement-installed Rokid APK is
 (10,401,127 bytes). This post-soak change affects only the explicitly enabled
 diagnostic persistence route; the 600-second RAM-streaming evidence above
 belongs to the preceding exact soak artifact and was not relabelled.
+
+## Relative spatial beacon and Unity Android player — 2026-08-28
+
+Android Node now admits an orientation-stabilized relative bearing when a
+fresh metric HEAD vector exists but translated WORLD evidence does not. The
+record freezes the activation-time head quaternion and observation vector for
+at most 30 seconds. Unity keeps the source at the current listener origin while
+using the captured orientation for direction, so later head rotation changes
+the perceived relative direction without fabricating listener translation.
+The source frame/time, confidence, distance, optional uncertainty, track and
+activation identities remain correlated. Object-facing orientation is not
+claimed because the current perception output does not measure it.
+
+Review found and repaired one cross-language defect before device deployment:
+the Unity Android Java cache initially accepted only snapshot ABI version 1,
+which would have discarded valid `CFFS` version 2 beacon state before the C#
+decoder. It now accepts versions 1 and 2 only for `CFFS`, while all other
+snapshot types remain version 1. Dependency-free Java tests cover legacy,
+beacon, unknown-version, and cross-message cases. The C# decoder additionally
+rejects a beacon whose track differs from focused track or whose reference
+orientation is newer than or over 250 ms older than activation.
+
+The locally installed Unity Hub editor version `6000.3.22f1` is operational.
+It is the same editor version used by the existing FiveAgainstWhen project.
+Running it as the licensed desktop user produced 27/27 passing EditMode tests
+and 3/3 passing PlayMode tests. It then built a launchable ARM64 IL2CPP player
+for package `org.conceptflow.mpl.unitylab`, minimum API 29 and target API 36.
+The final temporary APK was 30,063,626 bytes with SHA-256
+`ecc69b5d5729694dbaccca1613dd75b84ecd5feabf5bf066bb3ac3752aeb0e39`.
+Manifest inspection confirmed the launcher, Android Node package query, and
+signature-level perception-bus permission.
+
+FMOD Studio 2.03.14 validated the four-event project and built Desktop and
+Mobile banks. Its validator reported one-instance focused-object policy,
+`BeaconMode` support, limiter presence, and three Resonance sources. The typed
+Unity FMOD backend separately compiled against the installed FiveAgainstWhen
+FMOD Unity 2.03.14 assembly. The public Unity player intentionally omits that
+proprietary package and uses the inspectable backend, so no audible playback,
+open-ear localization, or perceptual-accuracy claim is made.
+
+The complete Android build/test pass compiled both node APKs and ran 270
+Android-host, 242 Rokid-client, 125 live-transport, and one Android-protocol JVM
+test with zero failures. The QNN-enabled Android Node JNI build also completed
+against the external QAIRT SDK. An attempted Poco installation of the Unity
+player was rejected by Android with `INSTALL_FAILED_USER_RESTRICTED`; the
+application was therefore not installed or launched, and no physical
+same-signature Binder or audio test is claimed. The next device gate is a
+user-approved install of a final Unity player signed by the same trusted
+development identity as Android Node, followed by Binder restart and open-ear
+FMOD listening tests.

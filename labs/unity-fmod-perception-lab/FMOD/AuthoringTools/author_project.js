@@ -38,7 +38,8 @@ function makeFocusedEvent(folder,bank,bus,parameters) {
     event.note="At most one focused-object auditory icon. Android supplies HEAD or WORLD coordinates; Camera coordinates fail closed. Provisional calibration asset.";
     var concept=localDiscreteParameter(event,"IconConcept",5);
     var salience=attachParameter(event,parameters.iconSalience); attachParameter(event,parameters.iconConfidence);
-    attachParameter(event,parameters.distanceMeters); var dwell=attachParameter(event,parameters.dwellSpeechActive);
+    attachParameter(event,parameters.distanceMeters); attachParameter(event,parameters.beaconMode);
+    var dwell=attachParameter(event,parameters.dwellSpeechActive);
     var track=event.addGroupTrack("Focused Object Icon"); track.mixerGroup.output=event.mixer.masterBus;
     var source=requireValue(studio.project.workspace.createPlugin("Resonance Audio Source"),"Missing focused-object Resonance Audio Source"); source.owner=track.mixerGroup.effectChain;
     pluginParameter(source,"Spread").value=0; pluginParameter(source,"Near-Field FX").value=false; pluginParameter(source,"Bypass Room").value=true;
@@ -87,7 +88,7 @@ if(!studio.project.lookup("event:/Ambience/Forest")||studio.project.lookup("even
 deleteAll("Event"); deleteAll("Snapshot"); deleteAll("SnapshotGroup"); deleteAll("PluginEffect"); deleteAll("MixerReturn"); deleteAll("MixerGroup"); deleteAll("ParameterPreset"); deleteAll("ParameterPresetFolder"); deleteAll("EffectPreset"); deleteAll("EventFolder");
 deleteAll("Bank",function(item){return item.isMasterBank||item.name==="Master";}); deleteAll("AudioFile"); deleteAll("EncodableAsset"); deleteAll("AudioTable"); deleteAll("DataFile"); deleteAll("DAWAsset"); deleteAll("DAWProject"); deleteAll("ProfilerSession"); deleteAll("SandboxScene"); deleteAll("UiMixerView"); deleteAll("MixerVCA"); deleteAll("Locale",function(item){return item.name==="English";});
 var workspace=studio.project.workspace; workspace.builtBanksOutputDirectory="Build"; workspace.builtBanksSeparateAssets=false; workspace.builtBanksSeparateStreams=false; workspace.builtBanksIncludeFileNames=false; workspace.builtBanksIncludeReferencedEvents=true; workspace.builtBanksIncludeHash=false;
-var parameters={proximity:parameter(workspace,"BubbleProximity"),motion:parameter(workspace,"MotionIntensity"),soundSize:parameter(workspace,"SoundSize"),envelopment:parameter(workspace,"Envelopment"),iconSalience:parameter(workspace,"IconSalience"),iconConfidence:parameter(workspace,"IconConfidence"),distanceMeters:parameter(workspace,"DistanceMeters",0,8),dwellSpeechActive:parameter(workspace,"DwellSpeechActive")};
+var parameters={proximity:parameter(workspace,"BubbleProximity"),motion:parameter(workspace,"MotionIntensity"),soundSize:parameter(workspace,"SoundSize"),envelopment:parameter(workspace,"Envelopment"),iconSalience:parameter(workspace,"IconSalience"),iconConfidence:parameter(workspace,"IconConfidence"),distanceMeters:parameter(workspace,"DistanceMeters",0,8),beaconMode:parameter(workspace,"BeaconMode",0,3,studio.project.parameterType.UserDiscrete),dwellSpeechActive:parameter(workspace,"DwellSpeechActive")};
 var mobile=workspace.platforms.filter(function(item){return item.name==="Mobile"||item.name==="HTML5";}); if(mobile.length!==1) fail("Expected one Mobile/HTML5 platform"); mobile[0].name="Mobile"; mobile[0].subDirectory="Mobile";
 var listener=requireValue(workspace.createPlugin("Resonance Audio Listener"),"Missing Resonance Audio Listener"); listener.owner=workspace.mixer.masterBus.effectChain;
 var accessible=studio.project.create("MixerGroup"); accessible.name="Accessible Sonification"; accessible.output=workspace.mixer.masterBus; accessible.maxInstances=10;

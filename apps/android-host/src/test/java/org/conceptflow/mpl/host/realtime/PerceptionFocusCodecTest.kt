@@ -5,6 +5,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.conceptflow.mpl.host.focus.BeaconQuality
 import org.conceptflow.mpl.host.focus.BeaconQualityReason
+import org.conceptflow.mpl.host.focus.BeaconAnchorMode
+import org.conceptflow.mpl.host.focus.BeaconHeadOrientation
+import org.conceptflow.mpl.host.focus.SpatialBeacon
 import org.conceptflow.mpl.host.focus.SpatialFocusDwell
 import org.conceptflow.mpl.host.focus.SpatialFocusItem
 import org.conceptflow.mpl.host.focus.SpatialFocusMenuOption
@@ -23,7 +26,7 @@ class PerceptionFocusCodecTest {
         val focus = PerceptionBusBinaryCodec.encodeFocus(focusState())
         val focusBuffer = ByteBuffer.wrap(focus).order(ByteOrder.BIG_ENDIAN)
         assertEquals(0x43464653, focusBuffer.int)
-        assertEquals(1, focusBuffer.short.toInt())
+        assertEquals(2, focusBuffer.short.toInt())
         assertEquals(1, focusBuffer.short.toInt())
         assertEquals(1L, focusBuffer.long)
         assertEquals(1L, focusBuffer.long)
@@ -31,7 +34,13 @@ class PerceptionFocusCodecTest {
         assertEquals(20L, focusBuffer.long)
         assertEquals(2_000_000_000L, focusBuffer.long)
         assertEquals(5, focusBuffer.short.toInt())
-        assertEquals("track", Charsets.UTF_8.decode(focusBuffer.slice()).toString())
+        val trackBytes = ByteArray(5)
+        focusBuffer.get(trackBytes)
+        assertEquals("track", trackBytes.toString(Charsets.UTF_8))
+        assertEquals(SpatialFocusMode.ACTION_MENU.wireValue, focusBuffer.get().toInt())
+        assertEquals(0, focusBuffer.get().toInt())
+        assertEquals(0, focusBuffer.short.toInt())
+        assertEquals(0, focusBuffer.remaining())
         val head = PerceptionBusBinaryCodec.encodeHead(
             PerceptionHeadSnapshot(4L, 2L, PerceptionHeadState(10L, 3, 1f, 0f, 0f, 0f)),
         )
@@ -105,11 +114,76 @@ class PerceptionFocusCodecTest {
         assertTrue(rejected)
     }
 
+    @Test
+    fun `focus codec emits complete relative beacon anchor evidence`() {
+        val beacon = SpatialBeacon(
+            activationId = 9L,
+            stableTrackId = "track",
+            classId = "chair",
+            anchorMode = BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE,
+            activatedTimestampNanos = 20L,
+            validUntilTimestampNanos = 2_000_000_000L,
+            sourceFrameId = 7L,
+            sourceCaptureTimestampNanos = 10L,
+            confidence = 0.9,
+            distanceMeters = 1.5,
+            distanceUncertaintyMeters = 0.2,
+            anchorVectorMeters = MetricVector3(-0.5, 0.25, 1.4),
+            displayHeadVectorMeters = MetricVector3(-0.5, 0.25, 1.4),
+            referenceHeadOrientation = BeaconHeadOrientation(19L, 3, 1.0, 0.0, 0.0, 0.0),
+        )
+        val bytes = PerceptionBusBinaryCodec.encodeFocus(
+            focusState().copy(
+                mode = SpatialFocusMode.BEACON_ACTIVE,
+                validUntilTimestampNanos = beacon.validUntilTimestampNanos,
+                beacon = beacon,
+            ),
+        )
+        val input = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+        assertEquals(0x43464653, input.int)
+        assertEquals(2, input.short.toInt())
+        assertEquals(3, input.short.toInt())
+        repeat(5) { input.long }
+        val focusedLength = input.short.toInt()
+        input.position(input.position() + focusedLength)
+        assertEquals(SpatialFocusMode.BEACON_ACTIVE.wireValue, input.get().toInt())
+        assertEquals(BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE.wireValue, input.get().toInt())
+        assertEquals(3, input.short.toInt())
+        val trackLength = input.short.toInt()
+        input.position(input.position() + trackLength)
+        val classLength = input.short.toInt()
+        input.position(input.position() + classLength)
+        assertEquals(9L, input.long)
+        assertEquals(20L, input.long)
+        assertEquals(2_000_000_000L, input.long)
+        assertEquals(7L, input.long)
+        assertEquals(10L, input.long)
+        assertEquals(0.9f, input.float)
+        assertEquals(1.5f, input.float)
+        assertEquals(0.2f, input.float)
+        assertEquals(-0.5f, input.float)
+        assertEquals(0.25f, input.float)
+        assertEquals(1.4f, input.float)
+        assertEquals(19L, input.long)
+        assertEquals(3, input.int)
+        assertEquals(1f, input.float)
+        assertEquals(0f, input.float)
+        assertEquals(0f, input.float)
+        assertEquals(0f, input.float)
+        assertEquals(0, input.remaining())
+    }
+
     private fun focusState(): SpatialFocusState {
         val target = SpatialFocusItem(
             "track", "chair", 7L, 10L, 2_000_000_000L, 0.9,
             MetricVector3(-0.8, 0.0, 1.0), 1.0, 0.1,
-            BeaconQuality(true, BeaconQualityReason.ELIGIBLE, MetricVector3(1.0, 2.0, 3.0)),
+            BeaconQuality(
+                true,
+                BeaconQualityReason.ELIGIBLE,
+                org.conceptflow.mpl.host.focus.BeaconAnchorMode.WORLD_ANCHORED,
+                worldAnchorMeters = MetricVector3(1.0, 2.0, 3.0),
+                validUntilTimestampNanos = 2_000_000_000L,
+            ),
         )
         return SpatialFocusState(
             1L, 1L, 1L, 2L, 20L, 2_000_000_000L, 3L,

@@ -13,15 +13,16 @@ import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.core.ElapsedHostClock
 import org.conceptflow.mpl.host.core.GlassesStreamIngress
 import org.conceptflow.mpl.host.core.StreamIngressDisposition
-import org.conceptflow.mpl.host.focus.SpatialFocusCommand
-import org.conceptflow.mpl.host.focus.SpatialFocusDwell
+import org.conceptflow.mpl.host.focus.BeaconHeadOrientation
+import org.conceptflow.mpl.host.focus.DisabledSpatialFocusTouchAdmission
 import org.conceptflow.mpl.host.focus.FocusedVqaCorrelation
 import org.conceptflow.mpl.host.focus.FocusedVqaRejection
 import org.conceptflow.mpl.host.focus.ReplaceableFocusedVqaGateway
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
+import org.conceptflow.mpl.host.focus.SpatialFocusDwell
 import org.conceptflow.mpl.host.focus.SpatialFocusManager
 import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.focus.SpatialFocusTouchAdmission
-import org.conceptflow.mpl.host.focus.DisabledSpatialFocusTouchAdmission
 import org.conceptflow.mpl.host.realtime.SensorTimeline
 import org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge
 import org.conceptflow.mpl.host.realtime.PerceptionBus
@@ -1095,7 +1096,18 @@ class LiveMachineVisionController(
 
     fun handleFocusCommand(command: SpatialFocusCommand): SpatialFocusState? {
         if (!active.get() || currentIngressGeneration <= 0L) return null
-        return publishFocusTransition(spatialFocus.command(command, ElapsedHostClock.nowNanos()).state)
+        val nowNanos = ElapsedHostClock.nowNanos()
+        val head = perceptionBus.latestHeadSnapshot()?.state?.let {
+            BeaconHeadOrientation(
+                timestampNanos = it.timestampNs,
+                accuracy = it.orientationAccuracy,
+                w = it.w.toDouble(),
+                x = it.x.toDouble(),
+                y = it.y.toDouble(),
+                z = it.z.toDouble(),
+            )
+        }
+        return publishFocusTransition(spatialFocus.command(command, nowNanos, head).state)
     }
 
     fun playRokidBrandSequence(): RokidNodeCommandDispatch {

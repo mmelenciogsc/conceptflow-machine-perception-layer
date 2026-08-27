@@ -16,9 +16,9 @@ does not imply physical usability, perceptual accuracy, or release readiness.
 | --- | --- | --- | --- |
 | Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, and TalkBack-facing state | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, and reset | The complete focus workflow has not had a target-user or TalkBack device acceptance run |
 | Android focused VQA | Explicit-only typed request, bounded exact-frame retention, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, exact source lookup, asynchronous gateway behavior, stale response rejection, reset, and HTP admission | Focused VQA through GenieX on HTP has not been run on the target device |
-| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads | Android dispatcher/codec tests and Unity decoder tests exercise valid and malformed packets | A same-certificate, two-APK Binder session has not been physically accepted |
-| Unity focused sonification | Strict world/focus/head joins, fail-closed coordinate adapter, and at most one active focused icon | Unity EditMode and PlayMode tests cover correlation, freshness, mapping failure, replacement, dwell cancellation, and voice limits | Focused-icon FMOD playback, localization, loudness, and open-ear listening are not physically validated |
-| Beacon | Quality gate and menu state/effect | Android JVM tests cover eligible and rejected quality states | No end-to-end guidance renderer is claimed, and current physical data lacks verified WORLD translation |
+| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads | Android dispatcher/codec tests, Java lifecycle/version tests, and Unity decoder tests exercise valid and malformed packets; the Java cache explicitly admits legacy `CFFS` v1 and beacon `CFFS` v2 only | The launchable Unity APK was built, but Poco installation was rejected by the system/user confirmation boundary; a same-certificate, two-APK Binder session has not been physically accepted |
+| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, and at most one active focused icon | Unity 6000.3.22f1 physically ran 27/27 EditMode and 3/3 PlayMode tests and produced an ARM64 IL2CPP Android player | The public player uses the inspectable backend because the proprietary FMOD Unity package is not vendored; focused-icon playback, localization, loudness, and open-ear listening are not physically validated |
+| Beacon | Two-tier admission, immutable bounded anchor, Binder encoding, and Unity/FMOD rendering | Android JVM and Unity tests cover world preference, no-world fallback, reference-pose freshness, source-track expiry, decoder rejection, head-turn stability, pulse cadence, and TTL | The orientation-stabilized relative tier is executable without WORLD translation; it does not track user translation and has not had open-ear localization acceptance testing |
 | Glasses input | Ordered touch transport and separately governed Rokid observation code | Kotlin tests cover device identity, sequence grammar, timing, reset, and observe-only policy | Several raw gestures were observed on one RV203 firmware, but focus-command admission remains disabled because collision-free semantics were not established |
 
 The relevant deterministic suites are `SpatialFocusTest`,
@@ -36,7 +36,7 @@ Accessible phone controls
         v
 Android SpatialFocusManager -----> Android focus status + TalkBack announcement
         |                                      |
-        | CFFS focus identity                  | explicit VQA request
+        | CFFS v2 focus + optional beacon      | explicit VQA request
         v                                      v
 signature-protected Binder             isolated GenieX VLM service
         |
@@ -47,9 +47,9 @@ Unity strict join and coordinate adapter -----> one FMOD focused icon
 
 Android is authoritative for the selected item, focus generation, menu state,
 VQA correlation, beacon admission, and spoken accessible state. Unity receives
-only enough compact state to render a correlated auditory icon. Unity does not
-select an object, interpret raw touch as a focus command, call VQA, start
-beacon guidance, or replace Android TalkBack.
+only enough compact state to render a correlated auditory icon or an immutable
+time-bounded beacon. Unity does not select an object, interpret raw touch as a
+focus command, call VQA, choose an anchor tier, or replace Android TalkBack.
 
 ## Exact linear focus model
 
@@ -97,9 +97,11 @@ cancels the exactly correlated pending VQA or deactivates the beacon. Movement
 commands do nothing while VQA is pending. Moving from a VQA result clears the
 answer; moving from an active beacon first deactivates it.
 
-Focus state is short lived. Published state is bounded to 1.5 seconds and the
-selected track's earlier expiry wins. A new session or explicit reset clears
-selection, dwell, VQA, notices, and the prior snapshot.
+Ordinary focus state is short lived. Published state is bounded to 1.5 seconds
+and the selected track's earlier expiry wins. An admitted beacon instead owns
+an immutable maximum 30-second lifetime so detector-track expiry does not erase
+the user-requested bearing immediately. A new session or explicit reset clears
+selection, dwell, VQA, notices, and every beacon.
 
 ## Android TalkBack ownership
 
@@ -139,19 +141,25 @@ or a malformed Binder reply that raises in the plug-in clears the caches and
 revision counters before bounded rebind. The C# decoders independently reject
 malformed cached payloads.
 
-The focus and head signatures are version-1, big-endian payloads:
+The focus and head signatures are deterministic big-endian payloads:
 
 | Signature | Transaction | Bound | Payload |
 | --- | ---: | ---: | --- |
-| `CFFS` | 2 | 1,024 bytes | flags, focus revision, session generation, source world revision, update time, expiry, and focused stable track ID |
+| `CFFS` v2 | 2 | 1,024 bytes | v1 focus fields plus explicit mode and an optional immutable world or relative beacon record |
 | `CFHP` | 3 | 256 bytes | reserved flags, sequence, session generation, monotonic sample time, accuracy, and normalized quaternion `w,x,y,z` |
 
 Both decoders require exact magic and version, complete consumption with no
 trailing bytes, legal lengths and numeric fields, and coherent presence flags.
-`CFFS` is a focus pointer into `CFWS`; it does not carry a duplicate position,
-menu state, spoken phrase, VQA question, or VQA answer. `CFHP` carries no raw
-IMU history. Camera frames, microphone samples, model tensors, and inference
-controls have no Binder transaction.
+Outside beacon mode, `CFFS` is a focus pointer into `CFWS`. In beacon mode it
+also carries the exact frozen anchor needed after the source track expires:
+anchor tier, label and stable identity, source frame/time, activation and
+expiry, confidence, distance, optional uncertainty, vector, and, for a relative
+anchor, the activation-time head quaternion. It never carries menu state,
+spoken phrase, VQA content, raw IMU history, camera frames, microphone samples,
+or model tensors. The Unity decoder accepts v1 only as legacy browsing state.
+The Java cache in front of that decoder independently accepts `CFFS` versions
+1 and 2 while retaining version 1 for every other snapshot type. Unknown or
+cross-message versions fail closed before reaching Unity.
 
 ## Unity and FMOD focused-object contract
 
@@ -161,24 +169,32 @@ future world revision, a missing position, invalid numbers, stale entities,
 and unmatched tracks. Only HEAD and WORLD positions are eligible; CAMERA
 positions are deliberately not guessed.
 
-The default coordinate adapter is `unverified/fail-closed/v1` and maps
-nothing. A usable adapter must provide a named, finite, affine, orthonormal,
-handedness-changing HEAD and WORLD basis. Rendering in either frame requires a
-successfully mapped, matching-session head pose within 250 ms of the entity and
-no more than 250 ms old. If any check fails, Unity stops the focused icon.
+Direct `FocusedObjectSonification` construction still defaults to
+`unverified/fail-closed/v1`, which maps nothing. The Android-backed laboratory
+controller explicitly installs
+`conceptflow-canonical-rh-to-unity-lh/z-reflection/v1`. That adapter performs
+the documented protocol handedness conversion and nothing more. Rendering
+requires a successfully mapped, matching-session head pose no more than 250 ms
+old. Ordinary focused entities also require a pose within 250 ms of their
+output. If any check fails, Unity stops the focused icon.
 
 `FocusedObjectSonification` creates at most one `FocusedIconCommand`.
 Changing the track or event replaces the prior FMOD event; clearing or expiry
 stops it. The authored `FocusedObject` event and its `AuditoryIcons` bus are
 also configured for one instance. The 3D event accepts only the bounded
 parameters `IconConcept`, `IconSalience`, `IconConfidence`, `DistanceMeters`,
-and `DwellSpeechActive`; distance is clamped to the authored 0–8 m range. The
+`BeaconMode`, and `DwellSpeechActive`; distance is clamped to the authored
+0–8 m range. `BeaconMode` distinguishes ordinary focus, world anchors, and
+relative bearings. The
 authored `DwellSpeechActive` curve is the sole focused-icon gain reduction, and
 the runtime initializes that parameter even when an icon is created during
 active dwell speech. The interface-state event is nonspatial.
 `FmodStudioPerceptionAudioBackend` is compiled only when a consumer installs
 the licensed FMOD Unity integration and defines `CONCEPTFLOW_FMOD_UNITY`;
 otherwise the lab uses the inspectable command backend.
+The backend source was also compiled against the locally installed FMOD Unity
+2.03.14 assembly from the existing FiveAgainstWhen project. That verifies the
+typed API surface, not runtime playback or listening quality.
 
 The registry contains four representational concepts and one neutral fallback:
 
@@ -249,23 +265,27 @@ is made.
 
 ## Beacon boundary
 
-The `Start beacon` option is an admission request, not a navigation claim.
-`BeaconQualityGate` requires all of the following:
+The `Start beacon` option is a request for a supplemental spatial bearing, not
+a navigation claim. Every admission requires a non-expired observation no
+more than 500 ms old, confidence of at least 0.65, fresh metric depth, and a
+usable HEAD vector. Android then selects one of two truthful tiers:
 
-- a non-expired observation no more than 500 ms old;
-- confidence of at least 0.65 and fresh metric depth;
-- a usable HEAD-relative vector;
-- quantified WORLD uncertainty no greater than the smaller of 0.75 m and 25%
-  of object distance; and
-- a WORLD position explicitly marked
-  `TRANSLATION_EVIDENCE_PROPAGATED`.
+- `WORLD_ANCHORED` is preferred only when a WORLD point is marked
+  `TRANSLATION_EVIDENCE_PROPAGATED` and its quantified uncertainty is no more
+  than the smaller of 0.75 m and 25% of object distance.
+- `ORIENTATION_STABILIZED_RELATIVE` is admitted otherwise, but only with a
+  normalized HEAD orientation sampled no more than 250 ms before activation.
+  It freezes the metric HEAD vector in the activation orientation. Later head
+  turns do not rotate the bearing, but the origin follows the listener because
+  translation is unavailable.
 
-Orientation-only head propagation cannot satisfy the WORLD requirement. The
-current physical camera-to-head evidence is rotation-only and its zero
-translation is not a measured camera-to-anatomical-head translation. Until a
-VIO or external-tracking origin supplies verified translation and uncertainty,
-the live target must fail with `WORLD_ANCHOR_UNAVAILABLE`. No end-to-end beacon
-guidance or navigation behavior is claimed.
+The second tier directly supports bearing retention on current rotation-only
+hardware without inventing WORLD coordinates. It is announced as a relative
+bearing with translation not tracked. It remains active for at most 30 seconds,
+survives the source detector track's short TTL, emits a brief spatial pulse at
+most every 1.5 seconds, and stops on Back, focus movement, session change, or
+expiry. Object-facing pose is not inferred because the current perception
+contract does not measure it. See [Spatial beacon anchoring](BEACON_ANCHORING.md).
 
 ## Why glasses focus gestures are disabled
 
@@ -308,7 +328,7 @@ object truth, or autonomous assistance. Before a release claim, run the full
 TalkBack workflow with blind and low-vision participants; exercise the signed
 two-APK Binder path; measure focused-icon localization and masking with the
 actual open-ear output; establish a collision-free glasses input vocabulary;
-validate WORLD translation and beacon uncertainty; and run focused VQA through
+validate relative-beacon localization and, separately, WORLD translation and beacon uncertainty; and run focused VQA through
 GenieX/HTP under representative latency, cancellation, thermal, and failure
 conditions.
 

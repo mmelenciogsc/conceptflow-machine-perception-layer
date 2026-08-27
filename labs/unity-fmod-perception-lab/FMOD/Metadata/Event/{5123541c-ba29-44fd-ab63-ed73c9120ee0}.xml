@@ -2,7 +2,7 @@
 <objects serializationModel="Studio.02.03.00">
 	<object class="Event" id="{5123541c-ba29-44fd-ab63-ed73c9120ee0}">
 		<property name="note">
-			<value>At most one focused-object auditory icon. Android supplies HEAD or WORLD coordinates; Camera coordinates fail closed. Provisional calibration asset.</value>
+			<value>At most one focused-object or spatial-beacon auditory icon. BeaconMode 0 is ordinary focus, 1 is a measured WORLD anchor, and 2 is an orientation-stabilized relative bearing whose origin follows the listener. Supplemental awareness only.</value>
 		</property>
 		<property name="name">
 			<value>FocusedObject</value>
@@ -40,6 +40,7 @@
 			<destination>{eb413ad3-05e5-4bf1-b8e9-9978cc9627fa}</destination>
 			<destination>{7ef1119c-2b07-4914-b9cf-65eb7962cf8f}</destination>
 			<destination>{80db9b8d-d7c0-47e2-9d02-f590b2dcfa30}</destination>
+			<destination>{c65efcfb-06a2-44ba-bfad-e523d8e89726}</destination>
 		</relationship>
 		<relationship name="banks">
 			<destination>{1008c754-ee7e-4fbb-b41a-bf1f280231af}</destination>
@@ -111,6 +112,11 @@
 	<object class="ParameterProxy" id="{80db9b8d-d7c0-47e2-9d02-f590b2dcfa30}">
 		<relationship name="preset">
 			<destination>{bfdcd937-3778-45dc-881b-5d6c3ab6384b}</destination>
+		</relationship>
+	</object>
+	<object class="ParameterProxy" id="{c65efcfb-06a2-44ba-bfad-e523d8e89726}">
+		<relationship name="preset">
+			<destination>{86d48fd7-08f9-4d4c-8503-4d2e229feade}</destination>
 		</relationship>
 	</object>
 	<object class="EventMixerMaster" id="{a4296b28-1f17-4d8a-b232-dfe8d387cc6e}">
@@ -668,7 +674,6 @@
 		<property name="name">
 			<value>Attenuation Ran</value>
 		</property>
-		<property name="value" />
 		<property name="dataType">
 			<value>-6</value>
 		</property>
@@ -677,7 +682,6 @@
 		<property name="name">
 			<value>3D Attributes</value>
 		</property>
-		<property name="value" />
 		<property name="dataType">
 			<value>-2</value>
 		</property>
@@ -713,7 +717,6 @@
 		<property name="name">
 			<value>Overall Gain</value>
 		</property>
-		<property name="value" />
 		<property name="dataType">
 			<value>-1</value>
 		</property>

@@ -33,6 +33,7 @@ import org.conceptflow.mpl.host.feedback.HostCueDispatcher
 import org.conceptflow.mpl.host.feedback.PlatformHostAudioFeedback
 import org.conceptflow.mpl.host.feedback.PlatformHostHapticFeedback
 import org.conceptflow.mpl.host.focus.SpatialFocusCommand
+import org.conceptflow.mpl.host.focus.BeaconAnchorMode
 import org.conceptflow.mpl.host.focus.SpatialFocusAnnouncementPolicy
 import org.conceptflow.mpl.host.focus.SpatialFocusDwell
 import org.conceptflow.mpl.host.focus.SpatialFocusMenuOption
@@ -333,7 +334,6 @@ open class MainActivity : AppCompatActivity() {
     private fun showSpatialFocus(state: SpatialFocusState?) {
         val message = when {
             state == null || state.mode == SpatialFocusMode.INACTIVE -> getString(R.string.spatial_focus_inactive)
-            state.itemCount == 0 -> getString(R.string.spatial_focus_empty)
             state.operatorNotice is SpatialFocusOperatorNotice.VqaRejected -> getString(
                 R.string.spatial_focus_vqa_rejected,
                 state.operatorNotice.reason.name.lowercase().replace('_', ' '),
@@ -354,10 +354,14 @@ open class MainActivity : AppCompatActivity() {
             )
             state.mode == SpatialFocusMode.VQA_PENDING -> getString(R.string.spatial_focus_vqa_pending)
             state.mode == SpatialFocusMode.VQA_RESULT -> state.vqaAnswer
-            state.mode == SpatialFocusMode.BEACON_ACTIVE -> getString(
-                R.string.spatial_focus_beacon_active,
-                state.talkBackPhrase,
-            )
+            state.mode == SpatialFocusMode.BEACON_ACTIVE -> when (state.beacon?.anchorMode) {
+                BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE -> getString(
+                    R.string.spatial_focus_relative_beacon_active,
+                    state.talkBackPhrase,
+                )
+                else -> getString(R.string.spatial_focus_beacon_active, state.talkBackPhrase)
+            }
+            state.itemCount == 0 -> getString(R.string.spatial_focus_empty)
             state.dwell == SpatialFocusDwell.READY -> state.talkBackPhrase
             else -> getString(R.string.spatial_focus_moving, state.selectedIndex + 1, state.itemCount)
         }

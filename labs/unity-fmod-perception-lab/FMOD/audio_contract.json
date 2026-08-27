@@ -1,5 +1,5 @@
 {
-  "schema": "conceptflow.mpl.audio-contract.v1",
+  "schema": "conceptflow.mpl.audio-contract.v2",
   "events": {
     "focusedObject": {
       "path": "event:/MachinePerception/AuditoryIcons/FocusedObject",
@@ -11,6 +11,7 @@
         "IconSalience": { "type": "continuous", "minimum": 0, "maximum": 1 },
         "IconConfidence": { "type": "continuous", "minimum": 0, "maximum": 1 },
         "DistanceMeters": { "type": "continuous", "minimum": 0, "maximum": 8 },
+        "BeaconMode": { "type": "integer", "minimum": 0, "maximumExclusive": 3 },
         "DwellSpeechActive": { "type": "continuous", "minimum": 0, "maximum": 1 }
       },
       "ducking": {

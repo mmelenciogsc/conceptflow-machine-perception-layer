@@ -6,6 +6,14 @@ using System.Text;
 namespace ConceptFlow.Mpl.PerceptionLab
 {
     public enum PerceptionFrame : byte { Camera = 1, Head = 2, World = 3 }
+    public enum PerceptionFocusMode : byte
+    {
+        Inactive=0, Browsing=1, ActionMenu=2, VqaPending=3, VqaResult=4, BeaconActive=5
+    }
+    public enum PerceptionBeaconAnchorMode : byte
+    {
+        None=0, WorldAnchored=1, OrientationStabilizedRelative=2
+    }
     public enum PerceptionValidity : ushort
     {
         SessionStarting = 1, SensorStreamActive = 2, PerceptionReady = 3,
@@ -52,7 +60,33 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public readonly List<PerceptionEntitySnapshot> Entities = new(64);
     }
 
-    /** A focused object references a world snapshot; it never duplicates or relabels coordinates. */
+    public sealed class PerceptionBeaconSnapshot
+    {
+        public string TrackId=string.Empty;
+        public string ClassId=string.Empty;
+        public PerceptionBeaconAnchorMode AnchorMode;
+        public long ActivationId;
+        public long ActivatedTimestampNs;
+        public long ValidUntilTimestampNs;
+        public long SourceFrameId;
+        public long SourceCaptureTimestampNs;
+        public float Confidence;
+        public float DistanceMeters;
+        public bool HasDistanceUncertainty;
+        public float DistanceUncertaintyMeters;
+        public float X;
+        public float Y;
+        public float Z;
+        public bool HasReferenceHeadOrientation;
+        public long ReferenceHeadTimestampNs;
+        public int ReferenceHeadAccuracy;
+        public float ReferenceHeadW;
+        public float ReferenceHeadX;
+        public float ReferenceHeadY;
+        public float ReferenceHeadZ;
+    }
+
+    /** Focus references world state; an active beacon carries a bounded immutable anchor snapshot. */
     public sealed class PerceptionFocusSnapshot
     {
         public long Revision;
@@ -62,6 +96,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public long ValidUntilTimestampNs;
         public bool HasFocus;
         public string FocusedTrackId = string.Empty;
+        public PerceptionFocusMode Mode;
+        public PerceptionBeaconSnapshot Beacon;
     }
 
     /** Latest bounded head pose supplied by Android on an independently polled lane. */
@@ -97,8 +133,10 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private const uint FocusMagic = 0x43464653; // CFFS
         private const uint HeadPoseMagic = 0x43464850; // CFHP
         private const ushort Version = 1;
+        private const ushort FocusVersion = 2;
         private const int MaximumEntities = 64;
         private const int MaximumStringBytes = 128;
+        private const long MaximumBeaconReferenceAgeNs = 250_000_000L;
 
         public static bool TryDecodeWorld(byte[] bytes, out PerceptionWorldSnapshot state)
         {
@@ -179,8 +217,11 @@ namespace ConceptFlow.Mpl.PerceptionLab
             try
             {
                 var input=new BigEndianReader(bytes);
-                if(input.ReadUInt32()!=FocusMagic || input.ReadUInt16()!=Version) return false;
-                ushort flags=input.ReadUInt16(); if((flags&~1)!=0) return false;
+                if(input.ReadUInt32()!=FocusMagic) return false;
+                ushort version=input.ReadUInt16();
+                if(version!=Version && version!=FocusVersion) return false;
+                ushort flags=input.ReadUInt16();
+                if((flags&~(version==Version?1:3))!=0) return false;
                 var candidate=new PerceptionFocusSnapshot
                 {
                     HasFocus=(flags&1)!=0,
@@ -191,6 +232,53 @@ namespace ConceptFlow.Mpl.PerceptionLab
                     ValidUntilTimestampNs=input.ReadInt64(),
                     FocusedTrackId=input.ReadString(MaximumStringBytes),
                 };
+                if(version==Version)
+                {
+                    candidate.Mode=candidate.HasFocus?PerceptionFocusMode.Browsing:PerceptionFocusMode.Inactive;
+                }
+                else
+                {
+                    candidate.Mode=(PerceptionFocusMode)input.ReadByte();
+                    var anchorMode=(PerceptionBeaconAnchorMode)input.ReadByte();
+                    ushort beaconFlags=input.ReadUInt16();
+                    if(!Enum.IsDefined(typeof(PerceptionFocusMode),candidate.Mode) ||
+                       !Enum.IsDefined(typeof(PerceptionBeaconAnchorMode),anchorMode) ||
+                       (beaconFlags&~3)!=0) return false;
+                    bool hasBeacon=(flags&2)!=0;
+                    if(hasBeacon)
+                    {
+                        var beacon=new PerceptionBeaconSnapshot
+                        {
+                            TrackId=input.ReadString(MaximumStringBytes),
+                            ClassId=input.ReadString(MaximumStringBytes),
+                            AnchorMode=anchorMode,
+                            ActivationId=input.ReadInt64(),
+                            ActivatedTimestampNs=input.ReadInt64(),
+                            ValidUntilTimestampNs=input.ReadInt64(),
+                            SourceFrameId=input.ReadInt64(),
+                            SourceCaptureTimestampNs=input.ReadInt64(),
+                            Confidence=input.ReadSingle(),
+                            DistanceMeters=input.ReadSingle(),
+                            HasDistanceUncertainty=(beaconFlags&1)!=0,
+                            DistanceUncertaintyMeters=input.ReadSingle(),
+                            X=input.ReadSingle(), Y=input.ReadSingle(), Z=input.ReadSingle(),
+                            HasReferenceHeadOrientation=(beaconFlags&2)!=0,
+                        };
+                        if(beacon.HasReferenceHeadOrientation)
+                        {
+                            beacon.ReferenceHeadTimestampNs=input.ReadInt64();
+                            beacon.ReferenceHeadAccuracy=input.ReadInt32();
+                            beacon.ReferenceHeadW=input.ReadSingle(); beacon.ReferenceHeadX=input.ReadSingle();
+                            beacon.ReferenceHeadY=input.ReadSingle(); beacon.ReferenceHeadZ=input.ReadSingle();
+                        }
+                        if(!ValidBeacon(beacon) || beacon.TrackId!=candidate.FocusedTrackId ||
+                           beacon.ActivatedTimestampNs>candidate.UpdatedTimestampNs ||
+                           beacon.ValidUntilTimestampNs!=candidate.ValidUntilTimestampNs) return false;
+                        candidate.Beacon=beacon;
+                    }
+                    else if(anchorMode!=PerceptionBeaconAnchorMode.None || beaconFlags!=0) return false;
+                    if((candidate.Mode==PerceptionFocusMode.BeaconActive)!=hasBeacon) return false;
+                }
                 if(!input.AtEnd || candidate.Revision<=0 || candidate.SessionGeneration<0 ||
                    candidate.WorldRevision<=0 || candidate.UpdatedTimestampNs<0 ||
                    candidate.ValidUntilTimestampNs<candidate.UpdatedTimestampNs ||
@@ -199,6 +287,33 @@ namespace ConceptFlow.Mpl.PerceptionLab
             }
             catch(Exception error) when(error is IndexOutOfRangeException || error is ArgumentException || error is DecoderFallbackException)
             { return false; }
+        }
+
+        private static bool ValidBeacon(PerceptionBeaconSnapshot value)
+        {
+            if(value==null || value.AnchorMode==PerceptionBeaconAnchorMode.None ||
+               string.IsNullOrWhiteSpace(value.TrackId) || string.IsNullOrWhiteSpace(value.ClassId) ||
+               value.ActivationId<=0 || value.ActivatedTimestampNs<0 ||
+               value.ValidUntilTimestampNs<=value.ActivatedTimestampNs || value.SourceFrameId<=0 ||
+               value.SourceCaptureTimestampNs<0 ||
+               value.SourceCaptureTimestampNs>value.ActivatedTimestampNs ||
+               !IsFinite(value.Confidence) || value.Confidence<0f ||
+               value.Confidence>1f || !IsFinite(value.DistanceMeters) || value.DistanceMeters<=0f ||
+               !IsFinite(value.DistanceUncertaintyMeters) ||
+               (value.HasDistanceUncertainty&&value.DistanceUncertaintyMeters<0f) ||
+               !IsFinite(value.X) || !IsFinite(value.Y) || !IsFinite(value.Z)) return false;
+            bool relative=value.AnchorMode==PerceptionBeaconAnchorMode.OrientationStabilizedRelative;
+            if(relative!=value.HasReferenceHeadOrientation) return false;
+            if(!relative) return true;
+            float norm=value.ReferenceHeadW*value.ReferenceHeadW+value.ReferenceHeadX*value.ReferenceHeadX+
+                value.ReferenceHeadY*value.ReferenceHeadY+value.ReferenceHeadZ*value.ReferenceHeadZ;
+            return value.ReferenceHeadTimestampNs>=0 &&
+                value.ReferenceHeadTimestampNs<=value.ActivatedTimestampNs &&
+                value.ActivatedTimestampNs-value.ReferenceHeadTimestampNs<=MaximumBeaconReferenceAgeNs &&
+                value.ReferenceHeadAccuracy>=1 &&
+                value.ReferenceHeadAccuracy<=3 && IsFinite(value.ReferenceHeadW) &&
+                IsFinite(value.ReferenceHeadX) && IsFinite(value.ReferenceHeadY) &&
+                IsFinite(value.ReferenceHeadZ) && Math.Abs(norm-1f)<=.04f;
         }
 
         public static bool TryDecodeHeadPose(byte[] bytes, out PerceptionHeadPoseSnapshot state)

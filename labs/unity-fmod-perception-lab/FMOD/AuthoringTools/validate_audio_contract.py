@@ -12,7 +12,7 @@ import sys
 def main() -> int:
     contract_path = Path(__file__).resolve().parents[1] / "audio_contract.json"
     value = json.loads(contract_path.read_text(encoding="utf-8"))
-    assert value["schema"] == "conceptflow.mpl.audio-contract.v1"
+    assert value["schema"] == "conceptflow.mpl.audio-contract.v2"
     focused = value["events"]["focusedObject"]
     interface = value["events"]["interfaceState"]
     assert focused["path"] == "event:/MachinePerception/AuditoryIcons/FocusedObject"
@@ -24,9 +24,15 @@ def main() -> int:
         "IconSalience",
         "IconConfidence",
         "DistanceMeters",
+        "BeaconMode",
         "DwellSpeechActive",
     }
     assert focused["parameters"]["DistanceMeters"] == {"type": "continuous", "minimum": 0, "maximum": 8}
+    assert focused["parameters"]["BeaconMode"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximumExclusive": 3,
+    }
     assert focused["ducking"] == {
         "owner": "authored_parameter_curve",
         "parameter": "DwellSpeechActive",
@@ -49,7 +55,7 @@ def main() -> int:
     assert len(aliases) == len(set(aliases))
     assert {"car", "van", "bus", "truck", "motorcycle"}.issubset(set(aliases))
     assert len(value["interfaceStates"]) == 6
-    print("[MPL_AUDIO_CONTRACT] status=Pass schema=v1 icons=5 aliasesUnique=True")
+    print("[MPL_AUDIO_CONTRACT] status=Pass schema=v2 icons=5 aliasesUnique=True")
     return 0
 
 

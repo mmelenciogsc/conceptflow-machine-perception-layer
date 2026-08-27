@@ -26,7 +26,8 @@
     <string name="spatial_focus_vqa_pending">Focused visual question is pending.</string>
     <string name="spatial_focus_vqa_rejected">Focused question not started: %1$s.</string>
     <string name="spatial_focus_beacon_rejected">Beacon not started: %1$s.</string>
-    <string name="spatial_focus_beacon_active">Beacon active for %1$s</string>
+    <string name="spatial_focus_beacon_active">World anchor beacon active for %1$s</string>
+    <string name="spatial_focus_relative_beacon_active">Relative bearing beacon active for %1$s Translation is not tracked.</string>
     <string name="spatial_focus_option_vqa">Ask about this object</string>
     <string name="spatial_focus_option_beacon">Start beacon</string>
     <string name="spatial_focus_option_back">Back</string>

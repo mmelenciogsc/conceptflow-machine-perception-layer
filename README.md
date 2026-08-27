@@ -149,6 +149,14 @@ and deterministic scenes are in `labs/unity-fmod-perception-lab`. The Sound
 Bubble is a calibrated body-surface offset field with an exact default radius of
 `0.9144` m, not a head-centered sphere.
 
+Focused objects can now become bounded spatial beacons without fabricated
+world coordinates. When translated WORLD evidence is unavailable, Android Node
+freezes the object's metric HEAD vector with a fresh activation-time head
+orientation. Unity preserves that bearing through later head turns while
+explicitly allowing the origin to follow the listener because user translation
+is not tracked. This is bearing reinforcement, not route guidance; see
+[Spatial beacon anchoring](docs/BEACON_ANCHORING.md).
+
 ## Verified baseline versus planned work
 
 | Area | Verified locally | Not yet verified or implemented |
@@ -158,7 +166,7 @@ Bubble is a calibrated body-surface offset field with an exact default radius of
 | Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; exact native 648×648 YUV acquisition with the validated darkness/blur/motion gate and 640×640 RGB output; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; bounded camera-only recovery with session-continuous frame IDs; observed 4032×3024 equal pixel/active/pre-correction arrays, CENTER_ONLY crop, NONE-only rotate-and-crop, and OFF-only OIS; narrow-fingerprint `DERIVED` intrinsics with request/result consistency guards; nominal 100 Hz fused head-IMU acquisition with duplicate suppression, ≤20 ms batches, and ≤1 s absolute refresh; explicit short microphone lease; strict Wi-Fi Direct client transport; ten-minute P2P and current exact-build private-LAN camera/IMU soaks with authenticated close and zero session transport-queue drops; no vendor SDK | Sustained physical 5 FPS motion-tier validation, forced physical Camera2 recovery, empirical camera calibration, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, reboot recovery, and sustained thermal/energy validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
-| Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity EditMode/PlayMode lab and authored FMOD project; scalar native-metric depth values physically produced from Rokid frames | Physical open-ear localization, Unity FMOD runtime listening, representative metric-depth accuracy, calibrated spatial/angular accuracy, target-user validation |
+| Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity 6000.3.22f1 ran 27/27 EditMode and 3/3 PlayMode tests and built a launchable ARM64 IL2CPP Android player; FMOD Studio 2.03.14 validated and built the authored banks; scalar native-metric depth values were physically produced from Rokid frames | Same-signature Unity/Android Node Binder session, physical open-ear localization, Unity FMOD runtime listening, representative metric-depth accuracy, calibrated spatial/angular accuracy, target-user validation |
 
 See [`VALIDATION.md`](VALIDATION.md) for the evidence ledger and exact caveats.
 
@@ -517,6 +525,8 @@ creation only. Each product must remain independently operable. See
 - [Accessible reality interaction](docs/ACCESSIBLE_REALITY_INTERACTION.md) —
   linear focused-object browsing, TalkBack ownership, Binder/Unity/FMOD
   boundaries, VQA, beacon, and physical-input validation limits.
+- [Spatial beacon anchoring](docs/BEACON_ANCHORING.md) — translated-world and
+  orientation-stabilized relative tiers, lifetimes, IPC, and truthful limits.
 - [Privacy architecture](docs/PRIVACY_ARCHITECTURE.md) — data inventory,
   minimization, consent, transport, logs, and retention.
 - [Brand architecture](docs/BRAND_ARCHITECTURE.md) — canonical external source

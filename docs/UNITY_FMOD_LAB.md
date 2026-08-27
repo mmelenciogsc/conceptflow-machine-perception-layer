@@ -33,6 +33,15 @@ invalid numeric fields or trailing bytes. Camera coordinates remain +X right,
 +Y down and +Z optical-forward; camera vectors are never mislabeled BODY or
 WORLD.
 
+The Android-backed controller installs the named canonical mapping
+`conceptflow-canonical-rh-to-unity-lh/z-reflection/v1`. It reflects canonical Z
+to cross the right-handed protocol/left-handed Unity boundary. That mapping is
+not camera-to-anatomical calibration and does not create world translation.
+`CFFS` version 2 relative beacons instead freeze a fresh activation-time HEAD
+orientation and metric HEAD vector; Unity can render that bearing without a
+live `CFWS` object while accurately reporting that listener translation is not
+tracked.
+
 The FMOD-facing backend consumes semantic/spatial commands after world-state
 interpretation. Capture, network and inference threads never call FMOD. The
 proprietary FMOD Unity package is intentionally not committed.
@@ -67,9 +76,29 @@ $UNITY -batchmode -nographics -projectPath "$PWD/labs/unity-fmod-perception-lab"
   -logFile /tmp/mpl-playmode.log
 ```
 
-Do not add `-quit`; the Unity test runner exits after writing results. Current
-tests verify body clearance, head/body separation, ring generation/normalization,
-and a running broad-wall status path.
+Do not add `-quit`; the Unity test runner exits after writing results. On this
+machine the installed `6000.3.22f1` editor—the same version used by the working
+FiveAgainstWhen project—ran 27/27 EditMode and 3/3 PlayMode tests. Coverage
+includes body clearance, head/body separation, ring generation/normalization,
+the broad-wall path, strict Binder decoding, coordinate conversion, focused
+voice limits, and relative-beacon head-turn/expiry behavior.
+
+Build the standalone ARM64 Android development player with the same installed
+Unity editor:
+
+```bash
+$UNITY -batchmode -nographics \
+  -projectPath "$PWD/labs/unity-fmod-perception-lab" \
+  -executeMethod ConceptFlow.Mpl.PerceptionLab.Editor.PerceptionLabAndroidBuild.Build \
+  -quit -logFile /tmp/mpl-unity-android-build.log
+```
+
+The output is
+`labs/unity-fmod-perception-lab/Builds/Android/MachinePerceptionLab-Development.apk`.
+It uses package `org.conceptflow.mpl.unitylab`, Android API 29 minimum, ARM64,
+IL2CPP, and an explicit launcher activity. Device-side Binder validation additionally requires this player and
+Android Node to use the same development or release signing identity; the
+build does not weaken the signature permission to accommodate mismatched keys.
 
 ## FMOD authoring
 
@@ -78,12 +107,19 @@ and a running broad-wall status path.
 ./scripts/fmod-lab build
 ```
 
-FMOD Studio 2.03.14 was used to create and validate the source project. Generated
-tones and banks are intentionally ignored. The public Unity lab compiles without
+FMOD Studio 2.03.14 was used to create and validate the source project. Its
+`FocusedObject` event includes bounded `BeaconMode` values for ordinary focus,
+WORLD anchor, and orientation-stabilized relative bearing. Generated tones and
+banks are intentionally ignored. The public Unity lab compiles without
 the proprietary FMOD Unity package and exposes exact runtime commands through
 the inspectable adapter. Live Update, listening tests, and FMOD Unity playback
 remain hardware/user evaluation work; they are not implied by a successful
 headless run.
+
+The typed `FmodStudioPerceptionAudioBackend` also compiles against the installed
+FMOD Unity 2.03.14 assembly used by FiveAgainstWhen. The final public-player
+build still excludes that licensed integration and therefore does not constitute
+an audible FMOD runtime test.
 
 ## Diagnostic visual language
 

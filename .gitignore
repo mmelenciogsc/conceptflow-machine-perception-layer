@@ -93,6 +93,7 @@ Desktop.ini
 **/[Ll]ogs/
 **/[Uu]ser[Ss]ettings/
 **/MemoryCaptures/
+**/.utmp/
 **/.cache/
 **/.user/
 **/Build/*.bank

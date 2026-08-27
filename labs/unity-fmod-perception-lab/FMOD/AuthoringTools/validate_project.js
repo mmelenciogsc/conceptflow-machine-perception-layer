@@ -34,7 +34,7 @@ requireCondition(focused.mixerInput.output.id===icons.id&&interfaceState.mixerIn
 requireCondition(icons.output.id===accessible.id&&interfaceBus.output.id===accessible.id,"Accessible bus hierarchy invalid");
 requireCondition(focused.banks.length===1&&focused.banks[0].id===bank.id&&interfaceState.banks.length===1&&interfaceState.banks[0].id===bank.id,"Focused/interface bank assignment invalid");
 parameterByName(focused,"IconConcept"); var iconSalience=parameterByName(focused,"IconSalience"); parameterByName(focused,"IconConfidence");
-parameterByName(focused,"DistanceMeters"); var dwellSpeech=parameterByName(focused,"DwellSpeechActive"); parameterByName(interfaceState,"InterfaceState");
+parameterByName(focused,"DistanceMeters"); parameterByName(focused,"BeaconMode"); var dwellSpeech=parameterByName(focused,"DwellSpeechActive"); parameterByName(interfaceState,"InterfaceState");
 var anchorSources=sources(anchor); var fieldSources=sources(field);
 var focusedSources=sources(focused);
 requireCondition(anchorSources.length===1&&fieldSources.length===1&&focusedSources.length===1,"Each spatial event requires one Resonance source");

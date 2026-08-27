@@ -29,7 +29,8 @@ public final class AndroidPerceptionBridge {
     private static final int FOCUS_MAGIC = 0x43464653; // CFFS
     private static final int HEAD_POSE_MAGIC = 0x43464850; // CFHP
     private static final int TOUCH_MAGIC = 0x43465442; // CFTB
-    private static final int PAYLOAD_VERSION = 1;
+    private static final int BASE_PAYLOAD_VERSION = 1;
+    private static final int FOCUS_PAYLOAD_VERSION = 2;
     private static final int TOUCH_HEADER_BYTES = 8;
     private static final int TOUCH_EVENT_BYTES = 36;
     private static final int MAXIMUM_TOUCH_EVENTS = 128;
@@ -597,9 +598,11 @@ public final class AndroidPerceptionBridge {
         }
     }
 
-    private static long readSnapshotCounter(byte[] bytes, int expectedMagic) {
+    static long readSnapshotCounter(byte[] bytes, int expectedMagic) {
         if (bytes == null || bytes.length < 16 || readInt(bytes, 0) != expectedMagic) return -1L;
-        if (readUnsignedShort(bytes, 4) != PAYLOAD_VERSION) return -1L;
+        int version = readUnsignedShort(bytes, 4);
+        if (version != BASE_PAYLOAD_VERSION
+                && !(expectedMagic == FOCUS_MAGIC && version == FOCUS_PAYLOAD_VERSION)) return -1L;
         long value = 0L;
         for (int index = 8; index < 16; index++) value = (value << 8) | (bytes[index] & 0xffL);
         return value > 0L ? value : -1L;
@@ -607,7 +610,7 @@ public final class AndroidPerceptionBridge {
 
     private static int touchCount(byte[] bytes) {
         if (bytes == null || bytes.length < TOUCH_HEADER_BYTES || readInt(bytes, 0) != TOUCH_MAGIC) return -1;
-        if (readUnsignedShort(bytes, 4) != PAYLOAD_VERSION) return -1;
+        if (readUnsignedShort(bytes, 4) != BASE_PAYLOAD_VERSION) return -1;
         int count = readUnsignedShort(bytes, 6);
         if (count > MAXIMUM_TOUCH_EVENTS || bytes.length != TOUCH_HEADER_BYTES + count * TOUCH_EVENT_BYTES) return -1;
         return count;

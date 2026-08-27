@@ -40,6 +40,36 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
         }
 
         [Test]
+        public void VersionTwoRelativeBeaconDecodesWithBoundedOrientationEvidence()
+        {
+            var bytes=new List<byte>();
+            U32(bytes,0x43464653); U16(bytes,2); U16(bytes,3);
+            I64(bytes,8); I64(bytes,2); I64(bytes,6); I64(bytes,200); I64(bytes,2_000);
+            String(bytes,"track-8"); bytes.Add(5); bytes.Add(2); U16(bytes,3);
+            int beaconTrackOffset=bytes.Count;
+            String(bytes,"track-8"); String(bytes,"door");
+            I64(bytes,4); I64(bytes,200); I64(bytes,2_000); I64(bytes,7); I64(bytes,100);
+            F32(bytes,.9f); F32(bytes,2f); F32(bytes,.2f);
+            F32(bytes,1f); F32(bytes,0f); F32(bytes,2f);
+            int referenceTimestampOffset=bytes.Count;
+            I64(bytes,190); I32(bytes,3); F32(bytes,1f); F32(bytes,0f); F32(bytes,0f); F32(bytes,0f);
+
+            Assert.IsTrue(PerceptionBusBinaryDecoder.TryDecodeFocus(bytes.ToArray(),out PerceptionFocusSnapshot focus));
+            Assert.AreEqual(PerceptionFocusMode.BeaconActive,focus.Mode);
+            Assert.AreEqual(PerceptionBeaconAnchorMode.OrientationStabilizedRelative,focus.Beacon.AnchorMode);
+            Assert.AreEqual("door",focus.Beacon.ClassId);
+            Assert.AreEqual(2f,focus.Beacon.DistanceMeters);
+
+            byte[] mismatchedTrack=bytes.ToArray();
+            mismatchedTrack[beaconTrackOffset+2]=(byte)'x';
+            Assert.IsFalse(PerceptionBusBinaryDecoder.TryDecodeFocus(mismatchedTrack,out _));
+
+            byte[] futureReference=bytes.ToArray();
+            OverwriteI64(futureReference,referenceTimestampOffset,201);
+            Assert.IsFalse(PerceptionBusBinaryDecoder.TryDecodeFocus(futureReference,out _));
+        }
+
+        [Test]
         public void HeadPoseDecodesAndRejectsNonUnitQuaternion()
         {
             var bytes=new List<byte>();
@@ -97,6 +127,12 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
         }
         private static void F32(List<byte> destination,float value) =>
             I32(destination,BitConverter.SingleToInt32Bits(value));
+        private static void OverwriteI64(byte[] destination,int offset,long value)
+        {
+            ulong bits=unchecked((ulong)value);
+            for(int index=0,shift=56;shift>=0;index++,shift-=8)
+                destination[offset+index]=(byte)(bits>>shift);
+        }
         private static void String(List<byte> destination,string value)
         {
             byte[] encoded=Encoding.UTF8.GetBytes(value); U16(destination,(ushort)encoded.Length);

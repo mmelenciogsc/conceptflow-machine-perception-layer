@@ -19,14 +19,14 @@ var accessible=requireValue(studio.project.lookup("bus:/Accessible Sonification"
 var bank=requireValue(studio.project.lookup("bank:/MachinePerception"),"Missing bank");
 var machineFolder=requireValue(existingAnchor.folder.folder,"Missing event folder");
 var iconSalience=parameter(workspace,"IconSalience",0,1), iconConfidence=parameter(workspace,"IconConfidence",0,1);
-var distanceMeters=parameter(workspace,"DistanceMeters",0,8), dwellSpeechActive=parameter(workspace,"DwellSpeechActive",0,1);
+var distanceMeters=parameter(workspace,"DistanceMeters",0,8), beaconMode=requireValue(workspace.addGameParameter({name:"BeaconMode",type:studio.project.parameterType.UserDiscrete,min:0,max:3}),"Could not create BeaconMode"), dwellSpeechActive=parameter(workspace,"DwellSpeechActive",0,1);
 var icons=studio.project.create("MixerGroup");icons.name="Focused Object Icons";icons.output=accessible;icons.maxInstances=1;
 var interfaceBus=studio.project.create("MixerGroup");interfaceBus.name="Interface";interfaceBus.output=accessible;interfaceBus.maxInstances=2;
 var iconFolder=folder(machineFolder,"AuditoryIcons"), interfaceFolder=folder(machineFolder,"Interface");
 
 var focused=workspace.addEvent("FocusedObject",false);focused.folder=iconFolder;focused.relationships.banks.add(bank);focused.mixerInput.output=icons;focused.masterTrack.mixerGroup.maxInstances=1;
 focused.note="At most one focused-object auditory icon. Android supplies HEAD or WORLD coordinates; Camera coordinates fail closed. Provisional calibration asset.";
-var concept=localDiscreteParameter(focused,"IconConcept",5), salience=attachParameter(focused,iconSalience);attachParameter(focused,iconConfidence);attachParameter(focused,distanceMeters);var dwell=attachParameter(focused,dwellSpeechActive);
+var concept=localDiscreteParameter(focused,"IconConcept",5), salience=attachParameter(focused,iconSalience);attachParameter(focused,iconConfidence);attachParameter(focused,distanceMeters);attachParameter(focused,beaconMode);var dwell=attachParameter(focused,dwellSpeechActive);
 var focusedTrack=focused.addGroupTrack("Focused Object Icon");focusedTrack.mixerGroup.output=focused.mixer.masterBus;
 var source=requireValue(workspace.createPlugin("Resonance Audio Source"),"Missing focused-object Resonance Audio Source");source.owner=focusedTrack.mixerGroup.effectChain;pluginParameter(source,"Spread").value=0;pluginParameter(source,"Near-Field FX").value=false;pluginParameter(source,"Bypass Room").value=true;
 [["neutral_presence.wav",.22],["soft_footfall_pair.wav",.32],["restrained_latch.wav",.26],["short_freewheel.wav",.30],["subdued_tire_texture.wav",.30]].forEach(function(item,index){var sound=requireValue(focusedTrack.addSound(concept,"SingleSound",index,1),"Could not add "+item[0]);sound.audioFile=importAsset("AuditoryIcons",item[0]);sound.setFadeInCurve(.01,-.2);sound.setFadeOutCurve(.04,-.2);});

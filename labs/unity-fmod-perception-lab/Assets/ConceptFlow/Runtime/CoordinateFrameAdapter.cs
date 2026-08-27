@@ -25,6 +25,34 @@ namespace ConceptFlow.Mpl.PerceptionLab
     }
 
     /**
+     * The protocol's canonical coordinates are right-handed (+X right, +Y up,
+     * +Z forward). Unity uses the same semantic axes with opposite handedness,
+     * so the one required basis change is a Z reflection. This maps protocol
+     * coordinates only; it does not claim camera/anatomical calibration or a
+     * translated world-tracking origin.
+     */
+    public sealed class CanonicalProtocolCoordinateFrameAdapterV1 : IPerceptionCoordinateFrameAdapterV1
+    {
+        public static readonly CanonicalProtocolCoordinateFrameAdapterV1 Instance=new();
+        private readonly ExplicitBasisCoordinateFrameAdapterV1 implementation;
+
+        private CanonicalProtocolCoordinateFrameAdapterV1()
+        {
+            Matrix4x4 canonicalToUnity=Matrix4x4.Scale(new Vector3(1f,1f,-1f));
+            implementation=new ExplicitBasisCoordinateFrameAdapterV1(
+                "conceptflow-canonical-rh-to-unity-lh/z-reflection/v1",
+                canonicalToUnity,
+                canonicalToUnity);
+        }
+
+        public string MappingId => implementation.MappingId;
+        public bool TryMapPosition(PerceptionFrame frame,Vector3 source,out Vector3 unity) =>
+            implementation.TryMapPosition(frame,source,out unity);
+        public bool TryMapHeadOrientation(PerceptionHeadPoseSnapshot pose,out Quaternion unity) =>
+            implementation.TryMapHeadOrientation(pose,out unity);
+    }
+
+    /**
      * Explicit affine basis mapping. Construction requires a named, orthonormal,
      * handedness-changing HEAD and WORLD basis; callers own the measurement evidence.
      */

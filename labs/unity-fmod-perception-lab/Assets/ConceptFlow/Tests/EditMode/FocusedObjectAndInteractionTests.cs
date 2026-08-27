@@ -142,6 +142,55 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
         }
 
         [Test]
+        public void RelativeBeaconRendersWithoutWorldAndKeepsBearingAcrossHeadTurn()
+        {
+            var backend=new InspectableFmodBackend();
+            var renderer=new FocusedObjectSonification(backend,coordinateAdapter:SyntheticAdapter());
+            renderer.AcceptFocus(RelativeBeaconFocus(1,2_000_000_000L));
+            renderer.AcceptHeadPose(HeadPose(1,200_000_000L));
+            Assert.IsTrue(renderer.Render(300_000_000L));
+            Vector3 initial=backend.LastFocusedIconCommand.Value.Position;
+            Assert.AreEqual(new Vector3(1f,0f,-2f),initial);
+            Assert.AreEqual(2f,backend.LastFocusedIconCommand.Value.Parameters[4].Value);
+
+            Quaternion turn=Quaternion.AngleAxis(90f,Vector3.up);
+            renderer.AcceptHeadPose(new PerceptionHeadPoseSnapshot
+            {
+                Sequence=2,SessionGeneration=9,TimestampNs=350_000_000L,Accuracy=3,
+                W=turn.w,X=turn.x,Y=turn.y,Z=turn.z,
+            });
+            Assert.IsTrue(renderer.Render(400_000_000L));
+            Assert.Less(Vector3.Distance(initial,backend.LastFocusedIconCommand.Value.Position),.0001f);
+            Assert.Less(Vector3.Distance(Vector3.left,backend.LastListenerPoseCommand.Value.Forward),.001f);
+
+            renderer.AcceptHeadPose(HeadPose(3,1_700_000_000L));
+            Assert.IsTrue(renderer.Render(1_700_000_000L));
+            Assert.AreEqual(0,backend.FocusedStopCount);
+            Assert.IsTrue(renderer.Render(1_800_000_000L));
+            Assert.AreEqual(1,backend.FocusedStopCount);
+            Assert.AreEqual(1,backend.ActiveFocusedIconCount);
+        }
+
+        [Test]
+        public void RelativeBeaconRejectsStaleReferenceAndExpiresDeterministically()
+        {
+            var backend=new InspectableFmodBackend();
+            var renderer=new FocusedObjectSonification(backend,coordinateAdapter:SyntheticAdapter());
+            PerceptionFocusSnapshot focus=RelativeBeaconFocus(1,800_000_000L);
+            focus.Beacon.ReferenceHeadTimestampNs=0L;
+            focus.Beacon.ActivatedTimestampNs=300_000_001L;
+            renderer.AcceptFocus(focus);
+            renderer.AcceptHeadPose(HeadPose(1,400_000_000L));
+            Assert.IsFalse(renderer.Render(500_000_000L));
+
+            focus=RelativeBeaconFocus(2,800_000_000L);
+            renderer.AcceptFocus(focus);
+            Assert.IsTrue(renderer.Render(500_000_000L));
+            Assert.IsFalse(renderer.Render(800_000_001L));
+            Assert.AreEqual(0,backend.ActiveFocusedIconCount);
+        }
+
+        [Test]
         public void DefaultCoordinateAdapterFailsClosed()
         {
             var backend=new InspectableFmodBackend();
@@ -176,6 +225,23 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
         }
 
         [Test]
+        public void CanonicalProtocolAdapterReflectsZAndMapsIdentityHeadPoseToUnityIdentity()
+        {
+            IPerceptionCoordinateFrameAdapterV1 adapter=CanonicalProtocolCoordinateFrameAdapterV1.Instance;
+            Assert.AreEqual("conceptflow-canonical-rh-to-unity-lh/z-reflection/v1",adapter.MappingId);
+            Assert.IsTrue(adapter.TryMapPosition(
+                PerceptionFrame.Head,new Vector3(1f,2f,3f),out Vector3 mapped));
+            Assert.That(mapped.x,Is.EqualTo(1f).Within(.0001f));
+            Assert.That(mapped.y,Is.EqualTo(2f).Within(.0001f));
+            Assert.That(mapped.z,Is.EqualTo(-3f).Within(.0001f));
+            Assert.IsTrue(adapter.TryMapHeadOrientation(new PerceptionHeadPoseSnapshot
+            {
+                Sequence=1, SessionGeneration=1, TimestampNs=1, Accuracy=3, W=1f,
+            },out Quaternion orientation));
+            Assert.That(Quaternion.Angle(Quaternion.identity,orientation),Is.LessThan(.001f));
+        }
+
+        [Test]
         public void PresenterCancelsOldDwellGenerationAndDucksOnlyCurrentSpeech()
         {
             var backend=new InspectableFmodBackend();
@@ -192,7 +258,7 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
             presenter.Tick(1_700_000_000L);
             Assert.IsTrue(backend.DwellSpeechActive);
             Assert.IsTrue(presenter.TryTakeAnnouncement(out NonvisualAnnouncement transition));
-            Assert.AreEqual("Beacon, guidance active",transition.Text);
+            Assert.AreEqual("Beacon, bearing active",transition.Text);
             Assert.IsTrue(presenter.TryTakeAnnouncement(out NonvisualAnnouncement dwell));
             Assert.IsTrue(dwell.IsDwell); Assert.AreEqual(second,dwell.Generation);
 
@@ -264,8 +330,26 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
             {
                 Revision=revision,SessionGeneration=9,WorldRevision=worldRevision,
                 UpdatedTimestampNs=200_000_000L,ValidUntilTimestampNs=validUntil,
-                HasFocus=true,FocusedTrackId=trackId,
+                HasFocus=true,FocusedTrackId=trackId,Mode=PerceptionFocusMode.Browsing,
             };
+
+        private static PerceptionFocusSnapshot RelativeBeaconFocus(long revision,long validUntil) => new()
+        {
+            Revision=revision,SessionGeneration=9,WorldRevision=2,
+            UpdatedTimestampNs=200_000_000L,ValidUntilTimestampNs=validUntil,
+            HasFocus=true,FocusedTrackId="beacon-track",Mode=PerceptionFocusMode.BeaconActive,
+            Beacon=new PerceptionBeaconSnapshot
+            {
+                TrackId="beacon-track",ClassId="door",
+                AnchorMode=PerceptionBeaconAnchorMode.OrientationStabilizedRelative,
+                ActivationId=7,ActivatedTimestampNs=200_000_000L,
+                ValidUntilTimestampNs=validUntil,SourceFrameId=3,
+                SourceCaptureTimestampNs=100_000_000L,Confidence=.9f,DistanceMeters=2.236f,
+                HasDistanceUncertainty=true,DistanceUncertaintyMeters=.2f,
+                X=1f,Y=0f,Z=2f,HasReferenceHeadOrientation=true,
+                ReferenceHeadTimestampNs=200_000_000L,ReferenceHeadAccuracy=3,ReferenceHeadW=1f,
+            },
+        };
 
         private static PerceptionEntitySnapshot Entity(string trackId,string classId,PerceptionFrame frame,float x,float y,float z) =>
             new()

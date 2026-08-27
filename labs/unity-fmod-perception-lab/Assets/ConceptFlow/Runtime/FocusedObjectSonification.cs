@@ -8,6 +8,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
     {
         private const long MaximumHeadPoseAgeNs = 250_000_000L;
         private const long MaximumEntityAgeNs = 1_500_000_000L;
+        private const long BeaconPulseIntervalNs = 1_500_000_000L;
 
         private readonly IPerceptionAudioBackend backend;
         private readonly AuditoryIconRegistry registry;
@@ -22,6 +23,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private long renderedWorldRevision = -1;
         private long renderedFocusRevision = -1;
         private long renderedHeadSequence = -1;
+        private long renderedBeaconActivationId = -1;
+        private long nextBeaconPulseTimestampNs;
 
         public FocusedObjectSonification(
             IPerceptionAudioBackend backend,
@@ -66,16 +69,25 @@ namespace ConceptFlow.Mpl.PerceptionLab
             }
 
             backend.SetListenerPose(listener);
+            long worldRevision=hasWorld?world.Revision:-1L;
+            long beaconActivation=focus.Beacon?.ActivationId??-1L;
+            bool beaconPulseDue=beaconActivation>0L &&
+                (renderedBeaconActivationId!=beaconActivation || nowNs>=nextBeaconPulseTimestampNs);
             bool unchanged = iconActive
-                && renderedWorldRevision == world.Revision
+                && renderedWorldRevision == worldRevision
                 && renderedFocusRevision == focus.Revision
-                && renderedHeadSequence == headPose.Sequence;
+                && renderedHeadSequence == headPose.Sequence
+                && renderedBeaconActivationId == beaconActivation
+                && !beaconPulseDue;
             if (!unchanged)
             {
+                if(beaconPulseDue && iconActive) backend.StopFocusedIcon("beacon-pulse");
                 backend.UpsertFocusedIcon(command);
-                renderedWorldRevision = world.Revision;
+                renderedWorldRevision = worldRevision;
                 renderedFocusRevision = focus.Revision;
                 renderedHeadSequence = headPose.Sequence;
+                renderedBeaconActivationId = beaconActivation;
+                if(beaconPulseDue) nextBeaconPulseTimestampNs=nowNs+BeaconPulseIntervalNs;
             }
 
             iconActive = true;
@@ -98,16 +110,23 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             command = default;
             listener = default;
-            if (!hasWorld || !hasFocus || nowNs < 0L
-                || world.Revision <= 0L
+            if (!hasFocus || nowNs < 0L
                 || focus.Revision <= 0L
-                || world.Validity != PerceptionValidity.PerceptionReady
-                || world.PublishedTimestampNs > nowNs
-                || world.ValidUntilTimestampNs < nowNs
                 || focus.ValidUntilTimestampNs < nowNs
                 || focus.UpdatedTimestampNs > nowNs
                 || !focus.HasFocus
-                || string.IsNullOrWhiteSpace(focus.FocusedTrackId)
+                || string.IsNullOrWhiteSpace(focus.FocusedTrackId))
+            {
+                return false;
+            }
+
+            if(focus.Mode==PerceptionFocusMode.BeaconActive && focus.Beacon!=null)
+                return TryBuildBeaconCommand(nowNs,out command,out listener);
+
+            if (!hasWorld || world.Revision <= 0L
+                || world.Validity != PerceptionValidity.PerceptionReady
+                || world.PublishedTimestampNs > nowNs
+                || world.ValidUntilTimestampNs < nowNs
                 || world.SessionGeneration != focus.SessionGeneration
                 || focus.WorldRevision > world.Revision)
             {
@@ -201,6 +220,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 new AudioParameter("IconSalience", salience),
                 new AudioParameter("IconConfidence", entity.Confidence),
                 new AudioParameter("DistanceMeters", Mathf.Clamp(entity.DistanceMeters,0f,8f)),
+                new AudioParameter("BeaconMode", 0f),
             };
 
             command = new FocusedIconCommand(
@@ -214,6 +234,86 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 sourceTimestampNs,
                 validUntilTimestampNs,
                 parameters);
+            return true;
+        }
+
+        private bool TryBuildBeaconCommand(
+            long nowNs,
+            out FocusedIconCommand command,
+            out ListenerPoseCommand listener)
+        {
+            command=default; listener=default;
+            PerceptionBeaconSnapshot beacon=focus.Beacon;
+            if(beacon==null || beacon.ActivatedTimestampNs<0L || beacon.ActivatedTimestampNs>nowNs ||
+               beacon.ValidUntilTimestampNs<=beacon.ActivatedTimestampNs ||
+               beacon.ValidUntilTimestampNs!=focus.ValidUntilTimestampNs ||
+               beacon.ValidUntilTimestampNs<nowNs ||
+               beacon.ActivationId<=0L || beacon.SourceFrameId<=0L ||
+               beacon.SourceCaptureTimestampNs<0L ||
+               beacon.SourceCaptureTimestampNs>beacon.ActivatedTimestampNs ||
+               beacon.DistanceMeters<=0f ||
+               !IsFinite(beacon.DistanceMeters) || !IsFinite(beacon.Confidence) ||
+               beacon.Confidence<0f || beacon.Confidence>1f ||
+               string.IsNullOrWhiteSpace(beacon.TrackId) || string.IsNullOrWhiteSpace(beacon.ClassId) ||
+               beacon.TrackId!=focus.FocusedTrackId || !hasHeadPose ||
+               headPose.SessionGeneration!=focus.SessionGeneration || headPose.TimestampNs>nowNs ||
+               nowNs-headPose.TimestampNs>MaximumHeadPoseAgeNs || !IsFinite(ListenerPosition) ||
+               !coordinateAdapter.TryMapHeadOrientation(headPose,out Quaternion listenerRotation)) return false;
+
+            Vector3 listenerForward=listenerRotation*Vector3.forward;
+            Vector3 listenerUp=listenerRotation*Vector3.up;
+            if(!IsOrientation(listenerForward,listenerUp)) return false;
+            Vector3 source=new(beacon.X,beacon.Y,beacon.Z);
+            Vector3 position;
+            if(beacon.AnchorMode==PerceptionBeaconAnchorMode.WorldAnchored)
+            {
+                if(!coordinateAdapter.TryMapPosition(PerceptionFrame.World,source,out position)) return false;
+            }
+            else if(beacon.AnchorMode==PerceptionBeaconAnchorMode.OrientationStabilizedRelative)
+            {
+                if(!beacon.HasReferenceHeadOrientation || beacon.ReferenceHeadTimestampNs<0L ||
+                   beacon.ReferenceHeadTimestampNs>beacon.ActivatedTimestampNs ||
+                   beacon.ActivatedTimestampNs-beacon.ReferenceHeadTimestampNs>MaximumHeadPoseAgeNs ||
+                   !coordinateAdapter.TryMapPosition(PerceptionFrame.Head,source,out Vector3 mappedVector)) return false;
+                var reference=new PerceptionHeadPoseSnapshot
+                {
+                    Sequence=beacon.ActivationId,
+                    SessionGeneration=focus.SessionGeneration,
+                    TimestampNs=beacon.ReferenceHeadTimestampNs,
+                    Accuracy=beacon.ReferenceHeadAccuracy,
+                    W=beacon.ReferenceHeadW, X=beacon.ReferenceHeadX,
+                    Y=beacon.ReferenceHeadY, Z=beacon.ReferenceHeadZ,
+                };
+                if(!coordinateAdapter.TryMapHeadOrientation(reference,out Quaternion referenceRotation)) return false;
+                // Translation is intentionally unavailable: the origin follows the listener while
+                // the captured orientation keeps the bearing stable through subsequent head turns.
+                position=ListenerPosition+referenceRotation*mappedVector;
+            }
+            else return false;
+            if(!IsFinite(position)) return false;
+
+            listener=new ListenerPoseCommand(ListenerPosition,listenerForward,listenerUp,headPose.TimestampNs);
+            Vector3 towardListener=ListenerPosition-position;
+            Vector3 forward=towardListener.sqrMagnitude>.000001f?towardListener.normalized:listenerForward;
+            Vector3 up=Vector3.ProjectOnPlane(listenerUp,forward);
+            if(up.sqrMagnitude<.000001f) up=Vector3.ProjectOnPlane(Vector3.up,forward);
+            if(up.sqrMagnitude<.000001f) up=Vector3.right;
+            up.Normalize();
+            AuditoryIconDefinition icon=registry.Resolve(beacon.ClassId);
+            float distanceWeight=1f-Mathf.Clamp01(beacon.DistanceMeters/8f);
+            float salience=Mathf.Clamp01(.55f*beacon.Confidence+.45f*distanceWeight);
+            float gain=Mathf.Clamp(.08f+.18f*salience,.08f,.26f);
+            AudioParameter[] parameters=
+            {
+                new AudioParameter("IconConcept",icon.ConceptIndex),
+                new AudioParameter("IconSalience",salience),
+                new AudioParameter("IconConfidence",beacon.Confidence),
+                new AudioParameter("DistanceMeters",Mathf.Clamp(beacon.DistanceMeters,0f,8f)),
+                new AudioParameter("BeaconMode",(float)beacon.AnchorMode),
+            };
+            command=new FocusedIconCommand(
+                beacon.TrackId,AuditoryIconRegistry.FocusedObjectEvent,icon.AssetKey,position,forward,up,
+                gain,beacon.ActivatedTimestampNs,beacon.ValidUntilTimestampNs,parameters);
             return true;
         }
 
@@ -238,6 +338,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
             renderedWorldRevision = -1;
             renderedFocusRevision = -1;
             renderedHeadSequence = -1;
+            renderedBeaconActivationId = -1;
+            nextBeaconPulseTimestampNs = 0L;
         }
 
         private static bool IsHeadPoseNear(long headTimestampNs, long entityTimestampNs)

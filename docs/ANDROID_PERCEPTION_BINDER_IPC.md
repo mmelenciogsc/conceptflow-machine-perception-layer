@@ -54,9 +54,20 @@ events are never drained without an acknowledgement path. Source exceptions are 
 status `4`; malformed parcels are converted to status `5`. No exception text or internal state is
 returned.
 
-The payload bytes retain the existing deterministic big-endian ABI: `CFWS` for world snapshots,
-`CFFS` for focus, `CFHP` for head pose, and `CFTB` for touch batches. Their embedded revision or
-sequence is the monotonic cache key. Binder adds no alternate sensor framing.
+The payload bytes retain the deterministic big-endian ABI: `CFWS` version 1 for world snapshots,
+`CFFS` version 2 for focus and immutable beacon state, `CFHP` version 1 for head pose, and `CFTB`
+version 1 for touch batches. Their embedded revision or sequence is the monotonic cache key.
+The Unity decoder continues to accept `CFFS` version 1 as a browsing-only compatibility payload.
+Binder adds no alternate sensor framing.
+
+`CFFS` version 2 adds an explicit focus mode and optional bounded beacon record. Beacon anchor
+mode `1` is a translated WORLD anchor. Mode `2` is an orientation-stabilized relative bearing:
+the vector is in canonical HEAD coordinates and includes the activation-time normalized head
+quaternion and its monotonic timestamp. The latter follows the listener origin because no
+translation is claimed, but it does not rotate with later head turns. Its lifetime is bounded and
+it cannot be presented as a fixed world point or navigation instruction. Presence flags, legal
+enum values, finite numeric fields, quaternion normalization, exact track correlation, payload
+length, and complete consumption are all validated before Unity accepts either anchor form.
 
 ## Unity client behavior
 

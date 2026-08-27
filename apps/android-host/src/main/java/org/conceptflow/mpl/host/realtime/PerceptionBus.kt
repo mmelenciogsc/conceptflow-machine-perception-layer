@@ -215,6 +215,9 @@ class PerceptionBus(
     fun latestHeadAfter(revision: Long): PerceptionHeadSnapshot? =
         latestHeadSnapshot.get()?.takeIf { it.revision > revision }
 
+    /** Latest valid orientation for short-lived focus actions; never exposes mutable bus state. */
+    fun latestHeadSnapshot(): PerceptionHeadSnapshot? = latestHeadSnapshot.get()
+
     fun latestFocusAfter(revision: Long, nowNanos: Long): SpatialFocusState? =
         latestFocus.get()?.takeIf { it.revision > revision && nowNanos <= it.validUntilTimestampNanos }
 
@@ -452,6 +455,7 @@ object PerceptionBusBinaryCodec {
     private const val FOCUS_MAGIC = 0x43464653 // CFFS
     private const val HEAD_MAGIC = 0x43464850 // CFHP
     private const val VERSION = 1
+    private const val FOCUS_VERSION = 2
 
     fun encodeWorld(state: PerceptionWorldState): ByteArray = output { data ->
         data.writeInt(WORLD_MAGIC)
@@ -530,14 +534,47 @@ object PerceptionBusBinaryCodec {
 
     fun encodeFocus(state: SpatialFocusState): ByteArray = output { data ->
         data.writeInt(FOCUS_MAGIC)
-        data.writeShort(VERSION)
-        data.writeShort(if (state.target == null) 0 else 1)
+        data.writeShort(FOCUS_VERSION)
+        var flags = 0
+        if (state.target != null) flags = flags or 1
+        if (state.beacon != null) flags = flags or 2
+        data.writeShort(flags)
         data.writeLong(state.revision)
         data.writeLong(state.sessionGeneration)
         data.writeLong(state.sourceWorldRevision)
         data.writeLong(state.publishedTimestampNanos)
         data.writeLong(state.validUntilTimestampNanos)
         writeString(data, state.target?.stableTrackId.orEmpty())
+        data.writeByte(state.mode.wireValue)
+        val beacon = state.beacon
+        data.writeByte(beacon?.anchorMode?.wireValue ?: 0)
+        var beaconFlags = 0
+        if (beacon?.distanceUncertaintyMeters != null) beaconFlags = beaconFlags or 1
+        if (beacon?.referenceHeadOrientation != null) beaconFlags = beaconFlags or 2
+        data.writeShort(beaconFlags)
+        if (beacon != null) {
+            writeString(data, beacon.stableTrackId)
+            writeString(data, beacon.classId)
+            data.writeLong(beacon.activationId)
+            data.writeLong(beacon.activatedTimestampNanos)
+            data.writeLong(beacon.validUntilTimestampNanos)
+            data.writeLong(beacon.sourceFrameId)
+            data.writeLong(beacon.sourceCaptureTimestampNanos)
+            data.writeFloat(beacon.confidence.toFloat())
+            data.writeFloat(beacon.distanceMeters.toFloat())
+            data.writeFloat(beacon.distanceUncertaintyMeters?.toFloat() ?: 0f)
+            data.writeFloat(beacon.anchorVectorMeters.x.toFloat())
+            data.writeFloat(beacon.anchorVectorMeters.y.toFloat())
+            data.writeFloat(beacon.anchorVectorMeters.z.toFloat())
+            beacon.referenceHeadOrientation?.let { reference ->
+                data.writeLong(reference.timestampNanos)
+                data.writeInt(reference.accuracy)
+                data.writeFloat(reference.w.toFloat())
+                data.writeFloat(reference.x.toFloat())
+                data.writeFloat(reference.y.toFloat())
+                data.writeFloat(reference.z.toFloat())
+            }
+        }
     }
 
     private inline fun output(block: (DataOutputStream) -> Unit): ByteArray {

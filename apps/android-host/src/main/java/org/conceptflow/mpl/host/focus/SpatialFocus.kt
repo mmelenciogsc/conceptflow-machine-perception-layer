@@ -2,9 +2,11 @@
 package org.conceptflow.mpl.host.focus
 
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.realtime.TimedTouchEvent
 import org.conceptflow.mpl.host.vision.InstanceMaskGeometry
@@ -13,9 +15,15 @@ import org.conceptflow.mpl.host.vision.MetricVector3
 import org.conceptflow.mpl.host.vision.TrackEstimateValidity
 
 enum class SpatialFocusCommand { NEXT, PREVIOUS, ACTIVATE, BACK }
-enum class SpatialFocusMode { INACTIVE, BROWSING, ACTION_MENU, VQA_PENDING, VQA_RESULT, BEACON_ACTIVE }
+enum class SpatialFocusMode(val wireValue: Int) {
+    INACTIVE(0), BROWSING(1), ACTION_MENU(2), VQA_PENDING(3), VQA_RESULT(4), BEACON_ACTIVE(5),
+}
 enum class SpatialFocusMenuOption { VQA, BEACON, BACK }
 enum class SpatialFocusDwell { NONE, PENDING, READY }
+
+enum class BeaconAnchorMode(val wireValue: Int) {
+    NONE(0), WORLD_ANCHORED(1), ORIENTATION_STABILIZED_RELATIVE(2),
+}
 
 fun interface SpatialFocusTouchAdmission {
     /** Receives the complete raw event; production remains disabled until mappings are validated. */
@@ -34,6 +42,7 @@ enum class BeaconQualityReason {
     DEPTH_NOT_FRESH,
     WORLD_ANCHOR_UNAVAILABLE,
     HEAD_VECTOR_UNAVAILABLE,
+    HEAD_ORIENTATION_UNAVAILABLE,
     UNCERTAINTY_UNQUANTIFIED,
     UNCERTAINTY_TOO_HIGH,
 }
@@ -41,9 +50,76 @@ enum class BeaconQualityReason {
 data class BeaconQuality(
     val eligible: Boolean,
     val reason: BeaconQualityReason,
+    val anchorMode: BeaconAnchorMode = BeaconAnchorMode.NONE,
     val worldAnchorMeters: MetricVector3? = null,
+    val relativeHeadVectorMeters: MetricVector3? = null,
+    val distanceUncertaintyMeters: Double? = null,
     val validUntilTimestampNanos: Long = 0L,
-)
+) {
+    init {
+        require(eligible == (anchorMode != BeaconAnchorMode.NONE))
+        require((anchorMode == BeaconAnchorMode.WORLD_ANCHORED) == (worldAnchorMeters != null))
+        require((anchorMode == BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE) ==
+            (relativeHeadVectorMeters != null && worldAnchorMeters == null))
+        require(distanceUncertaintyMeters == null ||
+            distanceUncertaintyMeters.isFinite() && distanceUncertaintyMeters >= 0.0)
+        require(!eligible || validUntilTimestampNanos > 0L)
+    }
+}
+
+/** Monotonic, glasses-side orientation sample used to freeze a relative bearing at activation. */
+data class BeaconHeadOrientation(
+    val timestampNanos: Long,
+    val accuracy: Int,
+    val w: Double,
+    val x: Double,
+    val y: Double,
+    val z: Double,
+) {
+    init {
+        require(timestampNanos >= 0L && accuracy in 1..3)
+        require(listOf(w, x, y, z).all(Double::isFinite))
+        val normSquared = w * w + x * x + y * y + z * z
+        require(abs(normSquared - 1.0) <= 0.001)
+    }
+}
+
+/**
+ * A bounded audio bearing. Relative mode deliberately follows the listener origin because
+ * translation is unavailable; it preserves orientation only and is not a navigation anchor.
+ */
+data class SpatialBeacon(
+    val activationId: Long,
+    val stableTrackId: String,
+    val classId: String,
+    val anchorMode: BeaconAnchorMode,
+    val activatedTimestampNanos: Long,
+    val validUntilTimestampNanos: Long,
+    val sourceFrameId: Long,
+    val sourceCaptureTimestampNanos: Long,
+    val confidence: Double,
+    val distanceMeters: Double,
+    val distanceUncertaintyMeters: Double?,
+    val anchorVectorMeters: MetricVector3,
+    val displayHeadVectorMeters: MetricVector3,
+    val referenceHeadOrientation: BeaconHeadOrientation?,
+) {
+    init {
+        require(activationId > 0L && stableTrackId.isNotBlank() && classId.isNotBlank())
+        require(activatedTimestampNanos >= 0L && validUntilTimestampNanos > activatedTimestampNanos)
+        require(sourceFrameId > 0L && sourceCaptureTimestampNanos >= 0L)
+        require(sourceCaptureTimestampNanos <= activatedTimestampNanos)
+        require(confidence.isFinite() && confidence in 0.0..1.0)
+        require(distanceMeters.isFinite() && distanceMeters > 0.0)
+        require(distanceUncertaintyMeters == null ||
+            distanceUncertaintyMeters.isFinite() && distanceUncertaintyMeters >= 0.0)
+        require(anchorMode != BeaconAnchorMode.NONE)
+        require((anchorMode == BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE) ==
+            (referenceHeadOrientation != null))
+        require(referenceHeadOrientation == null ||
+            referenceHeadOrientation.timestampNanos <= activatedTimestampNanos)
+    }
+}
 
 class BeaconQualityGate(
     private val maximumAgeNanos: Long = 500_000_000L,
@@ -68,24 +144,42 @@ class BeaconQualityGate(
         }
         if (track.confidence < minimumConfidence) return rejected(BeaconQualityReason.LOW_CONFIDENCE)
         if (!track.depthFresh) return rejected(BeaconQualityReason.DEPTH_NOT_FRESH)
-        val world = track.localWorldPositionMeters
-        if (track.coordinateValidity.localWorld != TrackEstimateValidity.TRANSLATION_EVIDENCE_PROPAGATED ||
-            world == null
-        ) return rejected(BeaconQualityReason.WORLD_ANCHOR_UNAVAILABLE)
-        if (track.headRelativeVectorMeters == null ||
+        val head = track.headRelativeVectorMeters
+        if (head == null ||
             track.coordinateValidity.headRelative == TrackEstimateValidity.UNAVAILABLE
         ) return rejected(BeaconQualityReason.HEAD_VECTOR_UNAVAILABLE)
-        val uncertainty = track.covariance.localWorldVarianceMetersSquared?.let { kotlin.math.sqrt(it) }
-            ?: return rejected(BeaconQualityReason.UNCERTAINTY_UNQUANTIFIED)
         val distance = track.metricDepth?.distanceMeters
             ?: return rejected(BeaconQualityReason.UNCERTAINTY_UNQUANTIFIED)
+        val validUntil = minOf(
+            track.expiresAtTimestampNanos,
+            Math.addExact(track.outputTimestampNanos, maximumAgeNanos),
+        )
+        val world = track.localWorldPositionMeters
+        val worldUncertainty = track.covariance.localWorldVarianceMetersSquared?.let(::sqrt)
         val allowed = max(0.05, minOf(maximumAbsoluteUncertaintyMeters, distance * maximumRelativeUncertainty))
-        if (uncertainty > allowed) return rejected(BeaconQualityReason.UNCERTAINTY_TOO_HIGH)
+        if (track.coordinateValidity.localWorld == TrackEstimateValidity.TRANSLATION_EVIDENCE_PROPAGATED &&
+            world != null && worldUncertainty != null && worldUncertainty <= allowed
+        ) {
+            return BeaconQuality(
+                true,
+                BeaconQualityReason.ELIGIBLE,
+                BeaconAnchorMode.WORLD_ANCHORED,
+                worldAnchorMeters = world,
+                relativeHeadVectorMeters = head,
+                distanceUncertaintyMeters = track.metricDepth.uncertaintyMeters,
+                validUntilTimestampNanos = validUntil,
+            )
+        }
+        // A relative bearing is useful without translation. Its origin follows the listener,
+        // while activation-time orientation keeps the direction stable as the head turns.
         return BeaconQuality(
             true,
             BeaconQualityReason.ELIGIBLE,
-            world,
-            minOf(track.expiresAtTimestampNanos, Math.addExact(track.outputTimestampNanos, maximumAgeNanos)),
+            BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE,
+            worldAnchorMeters = null,
+            relativeHeadVectorMeters = head,
+            distanceUncertaintyMeters = track.metricDepth.uncertaintyMeters,
+            validUntilTimestampNanos = validUntil,
         )
     }
 
@@ -136,7 +230,14 @@ data class SpatialFocusState(
     val statusReason: String,
     val vqaAnswer: String = "",
     val operatorNotice: SpatialFocusOperatorNotice = SpatialFocusOperatorNotice.None,
-)
+    val beacon: SpatialBeacon? = null,
+) {
+    init {
+        require((mode == SpatialFocusMode.BEACON_ACTIVE) == (beacon != null))
+        require(beacon == null || target?.stableTrackId == beacon.stableTrackId)
+        require(beacon == null || validUntilTimestampNanos == beacon.validUntilTimestampNanos)
+    }
+}
 
 data class FocusedVqaCorrelation(
     val requestId: Long,
@@ -176,6 +277,8 @@ class SpatialFocusAnnouncementPolicy {
 
     private fun meaningfulToken(state: SpatialFocusState?): String? = when {
         state == null || state.mode == SpatialFocusMode.INACTIVE -> "inactive"
+        state.mode == SpatialFocusMode.BEACON_ACTIVE ->
+            "beacon:${state.focusGeneration}:${state.beacon?.activationId ?: 0L}"
         state.itemCount == 0 -> "empty:${state.sessionGeneration}"
         state.operatorNotice !is SpatialFocusOperatorNotice.None ->
             "notice:${state.focusGeneration}:${state.operatorNotice}"
@@ -184,7 +287,6 @@ class SpatialFocusAnnouncementPolicy {
         state.mode == SpatialFocusMode.VQA_PENDING -> "vqa-pending:${state.focusGeneration}"
         state.mode == SpatialFocusMode.VQA_RESULT ->
             "vqa-result:${state.focusGeneration}:${state.vqaAnswer}"
-        state.mode == SpatialFocusMode.BEACON_ACTIVE -> "beacon:${state.focusGeneration}"
         state.dwell == SpatialFocusDwell.READY -> "ready:${state.focusGeneration}"
         else -> null
     }
@@ -323,6 +425,8 @@ class SpatialFocusManager(
     private val vqaGateway: FocusedVqaGateway = UnavailableFocusedVqaGateway,
     private val dwellNanos: Long = 750_000_000L,
     private val stateTtlNanos: Long = 1_500_000_000L,
+    private val beaconTtlNanos: Long = 30_000_000_000L,
+    private val maximumBeaconHeadPoseAgeNanos: Long = 250_000_000L,
 ) {
     private var revision = 0L
     private var snapshotCounter = 0L
@@ -339,10 +443,14 @@ class SpatialFocusManager(
     private var currentSessionGeneration = 0L
     private var currentSourceWorldRevision = 0L
     private var operatorNotice: SpatialFocusOperatorNotice = SpatialFocusOperatorNotice.None
+    private var activeBeacon: SpatialBeacon? = null
+    private var beaconActivationCounter = 0L
 
     init {
         require(dwellNanos == 750_000_000L)
         require(stateTtlNanos >= dwellNanos)
+        require(beaconTtlNanos in 1_000_000_000L..300_000_000_000L)
+        require(maximumBeaconHeadPoseAgeNanos in 1_000_000L..1_000_000_000L)
     }
 
     @Synchronized
@@ -358,6 +466,8 @@ class SpatialFocusManager(
             .mapNotNull { toItem(it, nowNanos) }
             .associateBy(SpatialFocusItem::stableTrackId)
         val prior = snapshot
+        if (prior != null && prior.sessionGeneration != sessionGeneration) clearSelection()
+        if (activeBeacon?.let { nowNanos >= it.validUntilTimestampNanos } == true) clearSelection()
         currentSourceWorldRevision = sourceWorldRevision
         if (prior == null || prior.sessionGeneration != sessionGeneration) {
             currentSessionGeneration = sessionGeneration
@@ -366,7 +476,7 @@ class SpatialFocusManager(
                 snapshotCounter, sessionGeneration, sourceWorldRevision, nowNanos,
                 candidates.values.sortedWith(ITEM_ORDER),
             )
-            if (snapshot!!.items.isEmpty()) {
+            if (snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
                 resetInternal(sessionGeneration)
             } else if (mode != SpatialFocusMode.INACTIVE) {
                 select(0, nowNanos)
@@ -381,8 +491,9 @@ class SpatialFocusManager(
             val targetId = prior.items.getOrNull(selectedIndex)?.stableTrackId
             val retainedIndex = targetId?.let { id -> snapshot!!.items.indexOfFirst { it.stableTrackId == id } }
             when {
-                snapshot!!.items.isEmpty() -> resetInternal(sessionGeneration)
-                targetId != null && retainedIndex == -1 -> clearSelection()
+                snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE -> resetInternal(sessionGeneration)
+                targetId != null && retainedIndex == -1 && mode != SpatialFocusMode.BEACON_ACTIVE -> clearSelection()
+                mode == SpatialFocusMode.BEACON_ACTIVE && retainedIndex == -1 -> selectedIndex = -1
                 retainedIndex != null -> selectedIndex = retainedIndex
                 else -> selectedIndex = -1
             }
@@ -391,7 +502,11 @@ class SpatialFocusManager(
     }
 
     @Synchronized
-    fun command(command: SpatialFocusCommand, nowNanos: Long): SpatialFocusTransition {
+    fun command(
+        command: SpatialFocusCommand,
+        nowNanos: Long,
+        headOrientation: BeaconHeadOrientation? = null,
+    ): SpatialFocusTransition {
         if (pruneExpired(nowNanos)) {
             return SpatialFocusTransition(
                 publish(nowNanos, "focus_target_expired"),
@@ -399,7 +514,9 @@ class SpatialFocusManager(
             )
         }
         val items = snapshot?.items.orEmpty()
-        if (items.isEmpty()) return SpatialFocusTransition(publish(nowNanos, "no_spatial_targets"), SpatialFocusEffect.None)
+        if (items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
+            return SpatialFocusTransition(publish(nowNanos, "no_spatial_targets"), SpatialFocusEffect.None)
+        }
         var effect: SpatialFocusEffect = SpatialFocusEffect.None
         var reason = command.name.lowercase()
         operatorNotice = SpatialFocusOperatorNotice.None
@@ -409,9 +526,13 @@ class SpatialFocusManager(
                 SpatialFocusMode.INACTIVE -> { mode = SpatialFocusMode.BROWSING; select(0, nowNanos) }
                 SpatialFocusMode.VQA_PENDING -> Unit
                 SpatialFocusMode.BEACON_ACTIVE -> {
-                    effect = SpatialFocusEffect.BeaconChanged(false, items[selectedIndex].beaconQuality)
-                    mode = SpatialFocusMode.BROWSING
-                    select((selectedIndex + 1).coerceAtMost(items.lastIndex), nowNanos)
+                    val prior = requireNotNull(activeBeacon)
+                    effect = SpatialFocusEffect.BeaconChanged(false, beaconQuality(prior))
+                    activeBeacon = null
+                    if (items.isEmpty()) clearSelection() else {
+                        mode = SpatialFocusMode.BROWSING
+                        select((selectedIndex.coerceAtLeast(-1) + 1).coerceAtMost(items.lastIndex), nowNanos)
+                    }
                 }
                 SpatialFocusMode.VQA_RESULT -> {
                     mode = SpatialFocusMode.BROWSING
@@ -428,9 +549,13 @@ class SpatialFocusManager(
                 SpatialFocusMode.INACTIVE -> { mode = SpatialFocusMode.BROWSING; select(0, nowNanos) }
                 SpatialFocusMode.VQA_PENDING -> Unit
                 SpatialFocusMode.BEACON_ACTIVE -> {
-                    effect = SpatialFocusEffect.BeaconChanged(false, items[selectedIndex].beaconQuality)
-                    mode = SpatialFocusMode.BROWSING
-                    select((selectedIndex - 1).coerceAtLeast(0), nowNanos)
+                    val prior = requireNotNull(activeBeacon)
+                    effect = SpatialFocusEffect.BeaconChanged(false, beaconQuality(prior))
+                    activeBeacon = null
+                    if (items.isEmpty()) clearSelection() else {
+                        mode = SpatialFocusMode.BROWSING
+                        select((if (selectedIndex < 0) items.lastIndex else selectedIndex - 1).coerceAtLeast(0), nowNanos)
+                    }
                 }
                 SpatialFocusMode.VQA_RESULT -> {
                     mode = SpatialFocusMode.BROWSING
@@ -473,12 +598,21 @@ class SpatialFocusManager(
                     }
                     SpatialFocusMenuOption.BEACON -> {
                         val item = items[selectedIndex]
-                        val quality = when {
+                        var quality = when {
                             !item.beaconQuality.eligible -> item.beaconQuality
                             nowNanos <= item.beaconQuality.validUntilTimestampNanos -> item.beaconQuality
                             else -> BeaconQuality(false, BeaconQualityReason.STALE_OBSERVATION)
                         }
-                        if (quality.eligible) mode = SpatialFocusMode.BEACON_ACTIVE
+                        val beacon = if (quality.eligible) {
+                            createBeacon(item, quality, headOrientation, nowNanos)
+                        } else null
+                        if (quality.eligible && beacon == null) {
+                            quality = BeaconQuality(false, BeaconQualityReason.HEAD_ORIENTATION_UNAVAILABLE)
+                        }
+                        if (quality.eligible && beacon != null) {
+                            activeBeacon = beacon
+                            mode = SpatialFocusMode.BEACON_ACTIVE
+                        }
                         if (!quality.eligible) {
                             operatorNotice = SpatialFocusOperatorNotice.BeaconRejected(quality.reason)
                         }
@@ -499,7 +633,9 @@ class SpatialFocusManager(
                     runCatching { vqaGateway.cancel(activeVqa) }
                     effect = SpatialFocusEffect.CancelVqa(activeVqa)
                 } else if (mode == SpatialFocusMode.BEACON_ACTIVE) {
-                    effect = SpatialFocusEffect.BeaconChanged(false, items[selectedIndex].beaconQuality)
+                    val prior = requireNotNull(activeBeacon)
+                    effect = SpatialFocusEffect.BeaconChanged(false, beaconQuality(prior))
+                    activeBeacon = null
                 }
                 when (mode) {
                     SpatialFocusMode.INACTIVE -> Unit
@@ -559,6 +695,7 @@ class SpatialFocusManager(
         require(sessionGeneration >= 0L && nowNanos >= 0L && sourceWorldRevision >= 0L)
         vqaGate.cancel()?.let { correlation -> runCatching { vqaGateway.cancel(correlation) } }
         vqaGate.reset()
+        beaconActivationCounter = 0L
         currentSourceWorldRevision = sourceWorldRevision
         resetInternal(sessionGeneration)
         return publish(nowNanos, "reset")
@@ -586,15 +723,25 @@ class SpatialFocusManager(
     /** Returns true only when the selected target expired, so a command cannot retarget silently. */
     private fun pruneExpired(nowNanos: Long): Boolean {
         val current = snapshot ?: return false
+        val beacon = activeBeacon
+        if (mode == SpatialFocusMode.BEACON_ACTIVE && beacon != null &&
+            nowNanos >= beacon.validUntilTimestampNanos
+        ) {
+            activeBeacon = null
+            clearSelection()
+            return true
+        }
         val selectedId = current.items.getOrNull(selectedIndex)?.stableTrackId
         val survivors = current.items.filter { nowNanos < it.expiresAtTimestampNanos }
         if (survivors.size == current.items.size) return false
         snapshot = current.copy(items = survivors)
-        if (survivors.isEmpty()) {
+        if (survivors.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
             resetInternal(current.sessionGeneration)
             return selectedId != null
         }
-        if (selectedId != null && survivors.none { it.stableTrackId == selectedId }) {
+        if (selectedId != null && survivors.none { it.stableTrackId == selectedId } &&
+            mode != SpatialFocusMode.BEACON_ACTIVE
+        ) {
             clearSelection()
             return true
         }
@@ -605,6 +752,7 @@ class SpatialFocusManager(
     private fun resetInternal(sessionGeneration: Long) {
         currentSessionGeneration = sessionGeneration.coerceAtLeast(0L)
         snapshot = null
+        activeBeacon = null
         clearSelection()
     }
 
@@ -616,19 +764,26 @@ class SpatialFocusManager(
         cancelDwell()
         vqaAnswer = ""
         operatorNotice = SpatialFocusOperatorNotice.None
+        activeBeacon = null
         focusGeneration += 1L
     }
 
     private fun publish(nowNanos: Long, reason: String): SpatialFocusState {
         val current = snapshot
-        val target = current?.items?.getOrNull(selectedIndex)
+        val beacon = activeBeacon?.takeIf { mode == SpatialFocusMode.BEACON_ACTIVE }
+        val target = if (beacon != null) {
+            current?.items?.firstOrNull { it.stableTrackId == beacon.stableTrackId }
+                ?: beacon.asFocusItem()
+        } else {
+            current?.items?.getOrNull(selectedIndex)
+        }
         val state = SpatialFocusState(
             revision = ++revision,
             sessionGeneration = current?.sessionGeneration ?: currentSessionGeneration,
             snapshotId = current?.snapshotId ?: 0L,
             sourceWorldRevision = current?.sourceWorldRevision ?: currentSourceWorldRevision,
             publishedTimestampNanos = nowNanos,
-            validUntilTimestampNanos = target?.expiresAtTimestampNanos?.let {
+            validUntilTimestampNanos = beacon?.validUntilTimestampNanos ?: target?.expiresAtTimestampNanos?.let {
                 minOf(Math.addExact(nowNanos, stateTtlNanos), it)
             } ?: Math.addExact(nowNanos, stateTtlNanos),
             focusGeneration = focusGeneration,
@@ -646,6 +801,7 @@ class SpatialFocusManager(
             statusReason = reason,
             vqaAnswer = vqaAnswer,
             operatorNotice = operatorNotice,
+            beacon = beacon,
         )
         latestState = state
         return state
@@ -662,6 +818,69 @@ class SpatialFocusManager(
             track.imageGeometry,
         )
     }
+
+    private fun createBeacon(
+        item: SpatialFocusItem,
+        quality: BeaconQuality,
+        headOrientation: BeaconHeadOrientation?,
+        nowNanos: Long,
+    ): SpatialBeacon? {
+        val anchor = when (quality.anchorMode) {
+            BeaconAnchorMode.WORLD_ANCHORED -> quality.worldAnchorMeters
+            BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE -> quality.relativeHeadVectorMeters
+            BeaconAnchorMode.NONE -> null
+        } ?: return null
+        val reference = if (quality.anchorMode == BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE) {
+            headOrientation?.takeIf {
+                it.timestampNanos <= nowNanos &&
+                    nowNanos - it.timestampNanos <= maximumBeaconHeadPoseAgeNanos
+            } ?: return null
+        } else null
+        val expiry = Math.addExact(nowNanos, beaconTtlNanos)
+        return SpatialBeacon(
+            activationId = ++beaconActivationCounter,
+            stableTrackId = item.stableTrackId,
+            classId = item.classId,
+            anchorMode = quality.anchorMode,
+            activatedTimestampNanos = nowNanos,
+            validUntilTimestampNanos = expiry,
+            sourceFrameId = item.sourceFrameId,
+            sourceCaptureTimestampNanos = item.sourceCaptureTimestampNanos,
+            confidence = item.confidence,
+            distanceMeters = item.distanceMeters,
+            distanceUncertaintyMeters = quality.distanceUncertaintyMeters,
+            anchorVectorMeters = anchor,
+            displayHeadVectorMeters = item.headVectorMeters,
+            referenceHeadOrientation = reference,
+        )
+    }
+
+    private fun beaconQuality(beacon: SpatialBeacon) = BeaconQuality(
+        eligible = true,
+        reason = BeaconQualityReason.ELIGIBLE,
+        anchorMode = beacon.anchorMode,
+        worldAnchorMeters = beacon.anchorVectorMeters.takeIf {
+            beacon.anchorMode == BeaconAnchorMode.WORLD_ANCHORED
+        },
+        relativeHeadVectorMeters = beacon.anchorVectorMeters.takeIf {
+            beacon.anchorMode == BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE
+        },
+        distanceUncertaintyMeters = beacon.distanceUncertaintyMeters,
+        validUntilTimestampNanos = beacon.validUntilTimestampNanos,
+    )
+
+    private fun SpatialBeacon.asFocusItem() = SpatialFocusItem(
+        stableTrackId = stableTrackId,
+        classId = classId,
+        sourceFrameId = sourceFrameId,
+        sourceCaptureTimestampNanos = sourceCaptureTimestampNanos,
+        expiresAtTimestampNanos = validUntilTimestampNanos,
+        confidence = confidence,
+        headVectorMeters = displayHeadVectorMeters,
+        distanceMeters = distanceMeters,
+        uncertaintyMeters = distanceUncertaintyMeters,
+        beaconQuality = beaconQuality(this),
+    )
 
     private companion object {
         val MENU = SpatialFocusMenuOption.entries

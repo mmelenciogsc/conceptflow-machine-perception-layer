@@ -189,9 +189,9 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private static string BeaconText(BeaconInteractionState value) => value switch
         {
             BeaconInteractionState.Off => "off",
-            BeaconInteractionState.Selecting => "selecting destination",
-            BeaconInteractionState.Guiding => "guidance active",
-            BeaconInteractionState.Arrived => "arrived",
+            BeaconInteractionState.Selecting => "selecting bearing",
+            BeaconInteractionState.Guiding => "bearing active",
+            BeaconInteractionState.Arrived => "bearing complete",
             _ => "unavailable",
         };
     }

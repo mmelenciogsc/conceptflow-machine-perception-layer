@@ -203,10 +203,10 @@ class SpatialFocusTest {
         manager.command(SpatialFocusCommand.NEXT, 5L)
         val beacon = manager.command(SpatialFocusCommand.ACTIVATE, 6L).state
         assertEquals(
-            SpatialFocusOperatorNotice.BeaconRejected(BeaconQualityReason.WORLD_ANCHOR_UNAVAILABLE),
+            SpatialFocusOperatorNotice.BeaconRejected(BeaconQualityReason.HEAD_ORIENTATION_UNAVAILABLE),
             beacon.operatorNotice,
         )
-        assertEquals("beacon_rejected_world_anchor_unavailable", beacon.statusReason)
+        assertEquals("beacon_rejected_head_orientation_unavailable", beacon.statusReason)
     }
 
     @Test
@@ -217,7 +217,7 @@ class SpatialFocusTest {
     }
 
     @Test
-    fun `beacon rejects uncalibrated world and unquantified quality`() {
+    fun `beacon falls back to relative bearing without world translation`() {
         val gate = BeaconQualityGate()
         val noWorld = track("a", 2.0).copy(
             localWorldPositionMeters = null,
@@ -225,12 +225,46 @@ class SpatialFocusTest {
                 localWorld = TrackEstimateValidity.UNAVAILABLE,
             ),
         )
-        assertEquals(BeaconQualityReason.WORLD_ANCHOR_UNAVAILABLE, gate.evaluate(noWorld, 1L).reason)
+        val relative = gate.evaluate(noWorld, 1L)
+        assertTrue(relative.eligible)
+        assertEquals(BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE, relative.anchorMode)
+        assertEquals(noWorld.headRelativeVectorMeters, relative.relativeHeadVectorMeters)
         val noQuality = track("b", 2.0).copy(
             covariance = track("b", 2.0).covariance.copy(localWorldVarianceMetersSquared = null),
         )
-        assertEquals(BeaconQualityReason.UNCERTAINTY_UNQUANTIFIED, gate.evaluate(noQuality, 1L).reason)
+        assertEquals(
+            BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE,
+            gate.evaluate(noQuality, 1L).anchorMode,
+        )
         assertTrue(gate.evaluate(track("c", 2.0), 1L).eligible)
+    }
+
+    @Test
+    fun `relative beacon captures orientation and survives source track expiry`() {
+        val manager = SpatialFocusManager(beaconTtlNanos = 10_000_000_000L)
+        val noWorld = track("one", 1.0).copy(
+            localWorldPositionMeters = null,
+            coordinateValidity = track("one", 1.0).coordinateValidity.copy(
+                localWorld = TrackEstimateValidity.UNAVAILABLE,
+            ),
+        )
+        manager.updateTracks(1L, 1L, 0L, listOf(noWorld))
+        manager.command(SpatialFocusCommand.ACTIVATE, 1L)
+        manager.command(SpatialFocusCommand.ACTIVATE, 2L)
+        manager.command(SpatialFocusCommand.NEXT, 3L)
+        val active = manager.command(
+            SpatialFocusCommand.ACTIVATE,
+            4L,
+            BeaconHeadOrientation(4L, 3, 1.0, 0.0, 0.0, 0.0),
+        ).state
+        assertEquals(SpatialFocusMode.BEACON_ACTIVE, active.mode)
+        assertEquals(BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE, active.beacon!!.anchorMode)
+
+        val retained = manager.updateTracks(1L, 2L, 2_000_000_001L, emptyList())
+        assertEquals(SpatialFocusMode.BEACON_ACTIVE, retained.mode)
+        assertEquals("one", retained.target!!.stableTrackId)
+        assertEquals(0, retained.itemCount)
+        assertTrue(retained.validUntilTimestampNanos > 2_000_000_001L)
     }
 
     @Test
@@ -308,7 +342,13 @@ class SpatialFocusTest {
 
     private fun item(vector: MetricVector3, distance: Double) = SpatialFocusItem(
         "track", "chair", 1L, 0L, 2_000_000_000L, 0.9, vector, distance, 0.1,
-        BeaconQuality(true, BeaconQualityReason.ELIGIBLE, MetricVector3(1.0, 0.0, 2.0)),
+        BeaconQuality(
+            true,
+            BeaconQualityReason.ELIGIBLE,
+            BeaconAnchorMode.WORLD_ANCHORED,
+            worldAnchorMeters = MetricVector3(1.0, 0.0, 2.0),
+            validUntilTimestampNanos = 2_000_000_000L,
+        ),
     )
 
     private fun track(id: String, distance: Double): LightweightTrackState = LightweightTrackState(

@@ -62,7 +62,9 @@ namespace ConceptFlow.Mpl.PerceptionLab
             headFrame = new GameObject("HEAD/listener frame").transform;
             headFrame.SetParent(bodyFrame, false);
             headFrame.localPosition = new Vector3(0, 1.60f, 0);
-            coordinateAdapter=UnverifiedCoordinateFrameAdapterV1.Instance;
+            // Android Node publishes the repository's canonical frame. This
+            // adapter performs only the documented handedness conversion.
+            coordinateAdapter=CanonicalProtocolCoordinateFrameAdapterV1.Instance;
 #if CONCEPTFLOW_FMOD_UNITY
             audioBackend=new FmodStudioPerceptionAudioBackend(); ownsAudioBackend=true;
 #else

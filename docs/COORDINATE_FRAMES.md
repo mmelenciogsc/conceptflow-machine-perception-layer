@@ -27,6 +27,16 @@ body-forward motion and a separately rotated listener. When torso heading is
 uncertain, providers must lower confidence or withhold a direction-sensitive
 cue rather than silently using head heading.
 
+The Unity boundary uses the named mapping
+`conceptflow-canonical-rh-to-unity-lh/z-reflection/v1`: `(x, y, z)` becomes
+`(x, y, -z)`. This is the exact handedness conversion between the canonical
+protocol basis and Unity's basis. It does not establish anatomical camera
+alignment, body heading, or a translated tracking origin. An
+orientation-stabilized relative beacon therefore rotates its captured HEAD
+vector by the activation-time head quaternion and follows the current listener
+origin. A true WORLD beacon additionally requires a translated world/listener
+origin supplied by the AR runtime.
+
 Implemented tests cover head-only yaw, torso yaw, translated walking while the
 head counter-rotates, and stale/rollback timestamps. Crouch and bend are
 represented through future calibrated body-profile/pose updates; the current

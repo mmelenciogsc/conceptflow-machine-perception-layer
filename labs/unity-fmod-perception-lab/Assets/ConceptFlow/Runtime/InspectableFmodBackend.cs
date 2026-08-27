@@ -87,6 +87,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public int ActiveFocusedIconCount => string.IsNullOrEmpty(activeIconTrackId)?0:1;
         public string ActiveFocusedTrackId => activeIconTrackId;
         public int FocusedCommandCount { get; private set; }
+        public int FocusedStopCount { get; private set; }
         public int InterfaceCommandCount { get; private set; }
         public FocusedIconCommand? LastFocusedIconCommand { get; private set; }
         public ListenerPoseCommand? LastListenerPoseCommand { get; private set; }
@@ -140,6 +141,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
 
         public string StopFocusedIcon(string reason)
         {
+            FocusedStopCount++;
             string previous=activeIconTrackId; activeIconTrackId=string.Empty; activeIconEventPath=string.Empty;
             return Log($"action=stop;track={previous};reason={Sanitize(reason)}");
         }
