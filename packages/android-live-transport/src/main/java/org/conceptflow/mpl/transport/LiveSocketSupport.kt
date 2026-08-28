@@ -113,6 +113,48 @@ internal enum class PeriodicClockInboundKind {
 }
 
 /**
+ * Remembers only the small number of periodic probes whose bounded response window expired.
+ *
+ * Realtime IMU traffic can delay an otherwise valid response beyond the initiator's timeout.
+ * Authentication, session binding, lane sequencing and message-size validation have already run
+ * before this tracker is consulted. Exact probe/timestamp correlation prevents an unsolicited
+ * clock response from being silently accepted, and one-shot removal prevents replay.
+ */
+internal class LatePeriodicClockResponseWindow(
+    private val maximumEntries: Int = LiveControlMessages.CLOCK_PROBES,
+) {
+    private val expectedInitiatorSendByProbe = LinkedHashMap<Long, Long>()
+
+    init {
+        require(maximumEntries > 0)
+    }
+
+    @Synchronized
+    fun recordTimedOut(probeId: Long, initiatorSendNs: Long) {
+        require(probeId > 0L && initiatorSendNs > 0L)
+        expectedInitiatorSendByProbe[probeId] = initiatorSendNs
+        while (expectedInitiatorSendByProbe.size > maximumEntries) {
+            expectedInitiatorSendByProbe.remove(expectedInitiatorSendByProbe.keys.first())
+        }
+    }
+
+    @Synchronized
+    fun accept(control: LiveLinkControl): Boolean {
+        if (control.payloadCase != LiveLinkControl.PayloadCase.CLOCK_SYNC_RESPONSE) return false
+        val response = control.clockSyncResponse
+        val expectedSendNs = expectedInitiatorSendByProbe[response.probeId] ?: return false
+        if (response.initiatorSendMonotonicNs != expectedSendNs ||
+            response.responderReceiveMonotonicNs <= 0L ||
+            response.responderSendMonotonicNs < response.responderReceiveMonotonicNs
+        ) {
+            return false
+        }
+        expectedInitiatorSendByProbe.remove(response.probeId)
+        return true
+    }
+}
+
+/**
  * Classifies only records legal while a periodic clock probe is outstanding. Authentication,
  * binding, lane and sequence validation remains the caller's responsibility and runs first.
  */

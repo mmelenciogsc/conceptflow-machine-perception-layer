@@ -51,6 +51,43 @@ class PeriodicClockInboundTest {
     }
 
     @Test
+    fun `exact timed out clock response is accepted once without weakening unsolicited rejection`() {
+        val window = LatePeriodicClockResponseWindow(maximumEntries = 2)
+        window.recordTimedOut(probeId = 10_000L, initiatorSendNs = 1_000L)
+        val request = LiveControlMessages.clockRequest(10_000L, 1_000L).clockSyncRequest
+        val exact = LiveControlMessages.clockResponse(request, receiveNs = 1_010L, sendNs = 1_020L)
+
+        assertTrue(window.accept(exact))
+        assertEquals(false, window.accept(exact))
+
+        window.recordTimedOut(probeId = 10_001L, initiatorSendNs = 2_000L)
+        val mismatchedRequest = LiveControlMessages.clockRequest(10_001L, 2_001L).clockSyncRequest
+        assertEquals(
+            false,
+            window.accept(LiveControlMessages.clockResponse(mismatchedRequest, 2_010L, 2_020L)),
+        )
+    }
+
+    @Test
+    fun `late clock response window is bounded and rejects invalid responder ordering`() {
+        val window = LatePeriodicClockResponseWindow(maximumEntries = 2)
+        window.recordTimedOut(probeId = 10_000L, initiatorSendNs = 1_000L)
+        window.recordTimedOut(probeId = 10_001L, initiatorSendNs = 2_000L)
+        window.recordTimedOut(probeId = 10_002L, initiatorSendNs = 3_000L)
+
+        fun response(probeId: Long, sendNs: Long, receiveNs: Long, responderSendNs: Long) =
+            LiveControlMessages.clockResponse(
+                LiveControlMessages.clockRequest(probeId, sendNs).clockSyncRequest,
+                receiveNs,
+                responderSendNs,
+            )
+
+        assertEquals(false, window.accept(response(10_000L, 1_000L, 1_010L, 1_020L)))
+        assertEquals(false, window.accept(response(10_001L, 2_000L, 2_020L, 2_010L)))
+        assertTrue(window.accept(response(10_002L, 3_000L, 3_010L, 3_020L)))
+    }
+
+    @Test
     fun `many clock rounds preserve sequence and correlation through dense legal interleavings`() {
         val state = LiveConnectionState(
             liveness = LivenessMonitor(

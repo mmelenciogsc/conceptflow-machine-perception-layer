@@ -78,10 +78,11 @@ $UNITY -batchmode -nographics -projectPath "$PWD/labs/unity-fmod-perception-lab"
 
 Do not add `-quit`; the Unity test runner exits after writing results. On this
 machine the installed `6000.3.22f1` editor—the same version used by the working
-FiveAgainstWhen project—ran 27/27 EditMode and 3/3 PlayMode tests. Coverage
+FiveAgainstWhen project—ran 28/28 EditMode and 3/3 PlayMode tests. Coverage
 includes body clearance, head/body separation, ring generation/normalization,
-the broad-wall path, strict Binder decoding, coordinate conversion, focused
-voice limits, and relative-beacon head-turn/expiry behavior.
+the broad-wall path, strict Binder decoding, coordinate conversion, orthonormal
+FMOD orientation bases, focused voice limits, and relative-beacon
+head-turn/expiry behavior.
 
 Build the standalone ARM64 Android development player with the same installed
 Unity editor:
@@ -117,9 +118,25 @@ remain hardware/user evaluation work; they are not implied by a successful
 headless run.
 
 The typed `FmodStudioPerceptionAudioBackend` also compiles against the installed
-FMOD Unity 2.03.14 assembly used by FiveAgainstWhen. The final public-player
-build still excludes that licensed integration and therefore does not constitute
-an audible FMOD runtime test.
+FMOD Unity 2.03.14 assembly used by FiveAgainstWhen. A private temporary staging
+project combined the public lab source with that licensed package and authored
+banks, produced an ARM64 IL2CPP APK, and ran on the Poco. The runtime loaded
+`libfmod` and `libfmodstudio`, instantiated the deterministic scene, and routed
+48 kHz stereo output to the Bluetooth glasses. The deterministic narrow-corridor
+status reported a left-wall pelvis contact at 0.522 m clearance, proximity
+0.429, six bounded audio commands, and a nonspatial single-actuator haptic
+state. The primary physics broadphase found two candidates; the bounded
+scenario-collider fallback was not used.
+
+That run also verified three defensive runtime repairs: the FMOD forward/up
+basis is orthonormalized before dispatch, Unity 6 Java `byte[]` results are
+requested through the signed CLR representation without per-poll warnings, and
+the canonical head pose drives a `StudioListener`. The device reported Android
+spatializer support and availability but the system spatializer was disabled.
+This proves runtime dispatch and route stability, not binaural localization,
+elevation/front-back discrimination, loudness suitability, or target-user
+acceptance. Licensed FMOD packages, banks, and generated binaries remain
+outside the public repository.
 
 ## Diagnostic visual language
 

@@ -8,7 +8,9 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Binder
 import android.os.Process
+import org.conceptflow.mpl.host.AndroidNodeForegroundService
 import org.conceptflow.mpl.host.AndroidNodeRuntimeState
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
 import org.conceptflow.mpl.transport.LiveLinkProvisioningStore
 
 /** Shell-only debug identity/status surface for OEM builds where ADB lacks DUMP permission. */
@@ -50,12 +52,32 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
             LiveLinkProvisioningStore(requireNotNull(context)).ensureIdentity(IDENTITY_ALIAS)
         }.fold(onSuccess = { "identity_ready" }, onFailure = { "identity_failed" })
         listOf(STATUS_PATH) -> AndroidNodeRuntimeState.current()?.accessibleSummary() ?: "node_idle"
+        listOf(FOCUS_STATUS_PATH) -> AndroidNodeRuntimeState.currentFocus()?.let { focus ->
+            "mode=${focus.mode.name.lowercase()} items=${focus.itemCount} " +
+                "selected=${focus.selectedIndex} dwell=${focus.dwell.name.lowercase()} " +
+                "phrase=${focus.talkBackPhrase}"
+        } ?: "focus_idle"
+        listOf(FOCUS_PATH, FOCUS_NEXT_PATH) -> dispatchFocus(SpatialFocusCommand.NEXT)
+        listOf(FOCUS_PATH, FOCUS_PREVIOUS_PATH) -> dispatchFocus(SpatialFocusCommand.PREVIOUS)
+        listOf(FOCUS_PATH, FOCUS_ACTIVATE_PATH) -> dispatchFocus(SpatialFocusCommand.ACTIVATE)
+        listOf(FOCUS_PATH, FOCUS_BACK_PATH) -> dispatchFocus(SpatialFocusCommand.BACK)
         else -> "unknown_path"
     }
+
+    private fun dispatchFocus(command: SpatialFocusCommand): String = runCatching {
+        AndroidNodeForegroundService.focusCommand(requireNotNull(context), command)
+        "focus_${command.name.lowercase()}_dispatched"
+    }.getOrElse { "focus_command_failed" }
 
     private companion object {
         const val IDENTITY_PATH = "identity"
         const val STATUS_PATH = "status"
+        const val FOCUS_STATUS_PATH = "focus-status"
+        const val FOCUS_PATH = "focus"
+        const val FOCUS_NEXT_PATH = "next"
+        const val FOCUS_PREVIOUS_PATH = "previous"
+        const val FOCUS_ACTIVATE_PATH = "activate"
+        const val FOCUS_BACK_PATH = "back"
         const val STATUS_COLUMN = "status"
         const val MIME_TYPE = "vnd.android.cursor.item/vnd.conceptflow.live-link-identity"
         const val IDENTITY_ALIAS = "org.conceptflow.mpl.androidhost.live-link.v1"

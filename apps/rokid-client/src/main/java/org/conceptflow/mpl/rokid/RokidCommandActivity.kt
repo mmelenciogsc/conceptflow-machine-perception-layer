@@ -28,6 +28,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
     private var activeVisibleService: VisibleServiceActivation? = null
     private var delayedActivation: Runnable? = null
     private var armedStateVerification: Runnable? = null
+    private var cameraEligibilityGuard: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +125,8 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
     }
 
     override fun onDestroy() {
+        cameraEligibilityGuard?.let(mainHandler::removeCallbacks)
+        cameraEligibilityGuard = null
         cancelVisibleServiceActivation()
         if (bound) {
             unbindService(this)
@@ -252,7 +255,29 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
                 "state=same_boot_recovery_broker result=activation_completed",
             )
         }
-        finishAndRemoveTask()
+        keepCameraEligibilityVisible()
+    }
+
+    private fun keepCameraEligibilityVisible() {
+        if (cameraEligibilityGuard != null) return
+        // Apply pass-through only after the visible broker has gained focus and completed the
+        // foreground-service handshake; applying FLAG_NOT_FOCUSABLE earlier prevents activation.
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        )
+        lateinit var guard: Runnable
+        guard = Runnable {
+            if (runtime?.isIdleControlArmed() == true) {
+                mainHandler.postDelayed(guard, CAMERA_ELIGIBILITY_POLL_MS)
+            } else {
+                cameraEligibilityGuard = null
+                finishAndRemoveTask()
+            }
+        }
+        cameraEligibilityGuard = guard
+        mainHandler.postDelayed(guard, CAMERA_ELIGIBILITY_POLL_MS)
+        Log.i(TAG, "state=camera_eligibility_guard result=active input_passthrough=true")
     }
 
     private fun bindRuntimeService(): Boolean {
@@ -316,5 +341,6 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
         private const val TAG = "ConceptFlowRokid"
         private const val VISIBLE_ACTIVITY_SETTLE_MS = 150L
         private const val ARM_VERIFICATION_RETRY_MS = 150L
+        private const val CAMERA_ELIGIBILITY_POLL_MS = 1_000L
     }
 }

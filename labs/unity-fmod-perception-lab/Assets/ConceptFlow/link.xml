@@ -1,0 +1,12 @@
+<linker>
+  <!-- GameObject.CreatePrimitive resolves these components dynamically. Keep only the
+       cube/capsule diagnostic types used by the bounded perception-lab scenarios. -->
+  <assembly fullname="UnityEngine.CoreModule">
+    <type fullname="UnityEngine.MeshFilter" preserve="all" />
+    <type fullname="UnityEngine.MeshRenderer" preserve="all" />
+  </assembly>
+  <assembly fullname="UnityEngine.PhysicsModule">
+    <type fullname="UnityEngine.BoxCollider" preserve="all" />
+    <type fullname="UnityEngine.CapsuleCollider" preserve="all" />
+  </assembly>
+</linker>

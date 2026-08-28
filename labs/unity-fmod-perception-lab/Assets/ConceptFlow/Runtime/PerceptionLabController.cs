@@ -20,6 +20,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private const int ColliderCapacity = 128;
         private readonly Collider[] overlaps = new Collider[ColliderCapacity];
         private readonly List<GameObject> scenarioObjects = new(64);
+        private readonly List<Collider> scenarioColliders = new(64);
         private CanonicalConfig config = null!;
         private BodySurfaceField body = null!;
         private VirtualSpeakerField speakers = null!;
@@ -52,6 +53,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public int ActiveFocusedIconCount => focusedObject?.IsActive==true?1:0;
         public int PendingNonvisualAnnouncements => interactionPresenter?.PendingAnnouncementCount??0;
         public string CoordinateMappingId => focusedObject?.CoordinateMappingId??string.Empty;
+        public int LastBroadphaseCandidateCount { get; private set; }
+        public bool LastUsedScenarioColliderFallback { get; private set; }
 
         private void Awake()
         {
@@ -66,6 +69,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
             // adapter performs only the documented handedness conversion.
             coordinateAdapter=CanonicalProtocolCoordinateFrameAdapterV1.Instance;
 #if CONCEPTFLOW_FMOD_UNITY
+            headFrame.gameObject.AddComponent<global::FMODUnity.StudioListener>();
             audioBackend=new FmodStudioPerceptionAudioBackend(); ownsAudioBackend=true;
 #else
             audioBackend=new InspectableFmodBackend();
@@ -84,6 +88,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public void ApplyFocusSnapshot(PerceptionFocusSnapshot snapshot) => focusedObject.AcceptFocus(snapshot);
         public void ApplyHeadPoseSnapshot(PerceptionHeadPoseSnapshot snapshot)
         {
+            if(coordinateAdapter.TryMapHeadOrientation(snapshot,out Quaternion listenerRotation))
+                headFrame.rotation=listenerRotation;
             focusedObject.ListenerPosition=headFrame.position;
             focusedObject.AcceptHeadPose(snapshot);
         }
@@ -146,18 +152,31 @@ namespace ConceptFlow.Mpl.PerceptionLab
 
         private void QueryGeometry()
         {
-            int count = Physics.OverlapSphereNonAlloc(bodyFrame.position + Vector3.up*.9f, 2.2f, overlaps, ~0, QueryTriggerInteraction.Ignore);
+            Vector3 queryCenter=bodyFrame.position+Vector3.up*.9f;
+            const float queryRadius=2.2f;
+            int count = Physics.OverlapSphereNonAlloc(queryCenter,queryRadius,overlaps,~0,QueryTriggerInteraction.Ignore);
+            LastBroadphaseCandidateCount=count;
+            LastUsedScenarioColliderFallback=false;
             float best = float.PositiveInfinity;
             Collider bestCollider = null;
             Vector3 bestPoint = default;
             for (int i=0;i<count;i++)
             {
-                Collider candidate = overlaps[i];
-                if (candidate.transform.IsChildOf(bodyFrame)) continue;
-                Vector3 localProbe = bodyFrame.TransformPoint(new Vector3(0, .95f, 0));
-                Vector3 point = candidate.ClosestPoint(localProbe);
-                Clearance clearance = body.Evaluate(bodyFrame.InverseTransformPoint(point));
-                if (clearance.Distance < best) { best=clearance.Distance; bestCollider=candidate; bestPoint=point; nearestClearance=clearance; }
+                ConsiderCandidate(overlaps[i],ref best,ref bestCollider,ref bestPoint);
+            }
+            // Some Android player/physics initialization combinations can report an empty first
+            // broadphase even after SyncTransforms. The lab owns a small bounded collider set, so
+            // use its AABBs only as a fallback candidate filter and retain Collider.ClosestPoint as
+            // the authoritative surface query. Production world geometry does not use this list.
+            if(bestCollider==null)
+            {
+                float queryRadiusSquared=queryRadius*queryRadius;
+                foreach(Collider candidate in scenarioColliders)
+                {
+                    if(candidate==null || candidate.bounds.SqrDistance(queryCenter)>queryRadiusSquared) continue;
+                    ConsiderCandidate(candidate,ref best,ref bestCollider,ref bestPoint);
+                }
+                LastUsedScenarioColliderFallback=bestCollider!=null;
             }
             if (bestCollider == null)
             {
@@ -179,7 +198,19 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 DispatchInspectableLayers(direction,approach);
                 nextDispatchTime=Time.unscaledTime+.25f;
             }
-            status=$"{((LabScenario)scenarioIndex)} | {bestCollider.name} | region {nearestClearance.Region} | clearance {best:F3} m | proximity {nearestClearance.Proximity:F3} | motion {motionActivation:F3} | voices {LastAudioCommandCount} | haptic {LastHapticState}";
+            status=$"{((LabScenario)scenarioIndex)} | {bestCollider.name} | region {nearestClearance.Region} | clearance {best:F3} m | proximity {nearestClearance.Proximity:F3} | motion {motionActivation:F3} | voices {LastAudioCommandCount} | haptic {LastHapticState} | broadphase {LastBroadphaseCandidateCount} | fallback {LastUsedScenarioColliderFallback}";
+        }
+
+        private void ConsiderCandidate(Collider candidate,ref float best,ref Collider bestCollider,
+            ref Vector3 bestPoint)
+        {
+            if(candidate==null || !candidate.enabled || !candidate.gameObject.activeInHierarchy ||
+                candidate.transform.IsChildOf(bodyFrame)) return;
+            Vector3 localProbe=bodyFrame.TransformPoint(new Vector3(0,.95f,0));
+            Vector3 point=candidate.ClosestPoint(localProbe);
+            Clearance clearance=body.Evaluate(bodyFrame.InverseTransformPoint(point));
+            if(clearance.Distance>=best) return;
+            best=clearance.Distance; bestCollider=candidate; bestPoint=point; nearestClearance=clearance;
         }
 
         private void DispatchInspectableLayers(Vector3 direction,float approach)
@@ -238,7 +269,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             scenarioIndex=(int)scenario;
             foreach(GameObject item in scenarioObjects) if(item!=null) { if(Application.isPlaying) Destroy(item); else DestroyImmediate(item); }
-            scenarioObjects.Clear(); scenarioTime=0f; previousClearance=float.NaN; motionActivation=.12f; nextDispatchTime=0f; LastAudioCommandCount=0; LastHapticState="none";
+            scenarioObjects.Clear(); scenarioColliders.Clear(); scenarioTime=0f; previousClearance=float.NaN; motionActivation=.12f; nextDispatchTime=0f; LastAudioCommandCount=0; LastHapticState="none";
             switch(scenario)
             {
                 case LabScenario.NarrowCorridor: Box("Left wall",new(-.85f,1,1),new(.12f,2,5)); Box("Right wall",new(.85f,1,1),new(.12f,2,5)); break;
@@ -260,6 +291,10 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 case LabScenario.OutdoorWalkway: Box("Walkway left edge",new(-1,.2f,2),new(.15f,.4f,5)); Box("Outdoor pole",new(.6f,1,1.2f),new(.12f,2,.12f)); break;
                 case LabScenario.NoisyAmbient: Box("Ambient test wall",new(.7f,1,.2f),new(.12f,2,3)); break;
             }
+            // Runtime-created diagnostic colliders must enter the physics broadphase before
+            // the next Update query. Player builds can otherwise retain an empty overlap
+            // result until a later simulation step, leaving the nonvisual lab silent.
+            Physics.SyncTransforms();
             Debug.Log($"[MPL_LAB] scenario={scenario}; all controls and results are also textual");
         }
 
@@ -273,9 +308,9 @@ namespace ConceptFlow.Mpl.PerceptionLab
         }
 
         private void Box(string name, Vector3 position, Vector3 size)
-        { GameObject item=GameObject.CreatePrimitive(PrimitiveType.Cube); item.name=name; item.transform.SetPositionAndRotation(position,Quaternion.identity); item.transform.localScale=size; scenarioObjects.Add(item); }
+        { GameObject item=GameObject.CreatePrimitive(PrimitiveType.Cube); item.name=name; item.transform.SetPositionAndRotation(position,Quaternion.identity); item.transform.localScale=size; scenarioObjects.Add(item); scenarioColliders.Add(item.GetComponent<Collider>()); }
         private void Capsule(string name, Vector3 position, float radius, float height)
-        { GameObject item=GameObject.CreatePrimitive(PrimitiveType.Capsule); item.name=name; item.transform.position=position; item.transform.localScale=new Vector3(radius*2,height*.5f,radius*2); scenarioObjects.Add(item); }
+        { GameObject item=GameObject.CreatePrimitive(PrimitiveType.Capsule); item.name=name; item.transform.position=position; item.transform.localScale=new Vector3(radius*2,height*.5f,radius*2); scenarioObjects.Add(item); scenarioColliders.Add(item.GetComponent<Collider>()); }
 
         private void AnnounceControls() => Debug.Log("[MPL_LAB] Keys 0-9 select scenes; [ and ] cycle all 18 scenes; Space pauses; R restarts; E exports accessible text; H repeats help.");
         private void ExportText()

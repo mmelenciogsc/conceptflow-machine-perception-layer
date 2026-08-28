@@ -18,6 +18,10 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
             StringAssert.Contains("BroadWall",controller.Status);
             StringAssert.Contains("clearance",controller.Status);
             StringAssert.Contains("proximity",controller.Status);
+            Assert.Greater(controller.LastAudioCommandCount,0,
+                "A synchronized scenario collider must produce at least the intrusion anchor command.");
+            Assert.Greater(controller.LastBroadphaseCandidateCount,0,
+                "Editor PlayMode should exercise the primary physics broadphase path.");
             Object.Destroy(root);
         }
 

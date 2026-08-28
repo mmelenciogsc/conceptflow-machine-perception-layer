@@ -133,7 +133,13 @@ valid sample supplies remote-minus-host offset and half-RTT uncertainty.
 Resynchronization rejects impossible values, large jumps and high-RTT outliers.
 One poor periodic sample does not terminate an otherwise live authenticated
 session: the prior accepted estimate is retained until a later round improves
-it. A one-second heartbeat cadence permits 15 missed intervals before declaring
+it. A response that arrives just after its bounded probe window may be accepted
+only into a small one-shot late-response window when its probe ID and original
+initiator timestamp exactly match a timed-out request and its responder
+timestamps are ordered. It is then discarded as a correlated late sample; it
+cannot update the clock estimate, become a malformed-control failure, or be
+replayed. Unsolicited and mismatched responses still fail normal validation.
+A one-second heartbeat cadence permits 15 missed intervals before declaring
 the peer dead; content TTLs independently reject stale sensor/perception data
 during that window.
 `SensorTimeline` retains raw typed records with normalized host times and

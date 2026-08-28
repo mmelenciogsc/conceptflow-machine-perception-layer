@@ -100,9 +100,11 @@ namespace ConceptFlow.Mpl.PerceptionLab
 
         private static global::FMOD.ATTRIBUTES_3D Attributes(Vector3 position,Vector3 forward,Vector3 up)
         {
+            AudioOrientation.Orthonormalize(forward,up,out Vector3 normalizedForward,out Vector3 normalizedUp);
             return new global::FMOD.ATTRIBUTES_3D
             {
-                position=Vector(position), velocity=Vector(Vector3.zero), forward=Vector(forward), up=Vector(up),
+                position=Vector(position), velocity=Vector(Vector3.zero),
+                forward=Vector(normalizedForward), up=Vector(normalizedUp),
             };
         }
 

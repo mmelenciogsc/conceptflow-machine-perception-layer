@@ -559,6 +559,7 @@ class PocoLiveLinkServer(
         } else {
             null
         }
+        val lateClockResponses = LatePeriodicClockResponseWindow()
         var nextPeriodicProbeId = PERIODIC_CLOCK_PROBE_ID_START
         while (running.get()) {
             leaseDeadline.requireActive(clock.nowNs())
@@ -573,6 +574,7 @@ class PocoLiveLinkServer(
                     microphoneControl,
                     nodeControl,
                     spoolPull,
+                    lateClockResponses,
                 )
                 if (resynchronizedProbeId == null) return
                 nextPeriodicProbeId = resynchronizedProbeId
@@ -629,6 +631,10 @@ class PocoLiveLinkServer(
                     }
                     if (acceptMicrophoneGrant(envelope, binding, microphoneControl, observer, now)) continue
                     if (acceptRokidNodeControl(lane, state, envelope, nodeControl, now)) continue
+                    if (lateClockResponses.accept(envelope.control)) {
+                        Log.d(DIAGNOSTIC_TAG, "state=periodic_clock response=discarded_late_correlated")
+                        continue
+                    }
                     if (closeState.acceptAcknowledgement(envelope.control)) return
                     if (acknowledgeLeaseCloseIfPresent(lane, state, binding, envelope, closeState)) {
                         return
@@ -656,6 +662,7 @@ class PocoLiveLinkServer(
         microphoneControl: ServerMicrophoneControl,
         nodeControl: ServerRokidNodeControl,
         spoolPull: HostSpoolPullCoordinator?,
+        lateClockResponses: LatePeriodicClockResponseWindow,
     ): Long? {
         val output = LiveEnvelopeFactory(binding, state, clock)
         state.beginClockRound()
@@ -686,6 +693,7 @@ class PocoLiveLinkServer(
                     // the configured response deadline while still servicing keepalives.
                     val nowNs = clock.nowNs()
                     if (nowNs >= responseDeadlineNs) {
+                        lateClockResponses.recordTimedOut(probeId, t0)
                         Log.d(DIAGNOSTIC_TAG, "state=periodic_clock round=retained_previous reason=response_timeout")
                         return Math.addExact(probeId, 1L)
                     }
@@ -707,6 +715,10 @@ class PocoLiveLinkServer(
                 }
                 if (acceptMicrophoneGrant(responseEnvelope, binding, microphoneControl, observer, t3)) continue
                 if (acceptRokidNodeControl(lane, state, responseEnvelope, nodeControl, t3)) continue
+                if (responseEnvelope.hasControl() && lateClockResponses.accept(responseEnvelope.control)) {
+                    Log.d(DIAGNOSTIC_TAG, "state=periodic_clock response=discarded_late_correlated")
+                    continue
+                }
                 if (responseEnvelope.hasSensor() && responseEnvelope.sensor.hasMicrophoneChunk()) {
                     if (microphoneControl.isAuthorized(t3)) {
                         observer.onSensor(LiveSensorTimestampNormalizer.normalize(responseEnvelope, state, t3))

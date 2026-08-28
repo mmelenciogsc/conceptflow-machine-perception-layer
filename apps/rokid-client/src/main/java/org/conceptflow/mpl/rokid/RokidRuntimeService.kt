@@ -199,7 +199,13 @@ class RokidRuntimeService : Service() {
         // A newly created Service must acknowledge startForegroundService promptly. Once YodaOS
         // has accepted the visible broker's foreground promotion, repeating startForeground from
         // a background retry is rejected even though the Service is already foreground.
-        if (intent != null && !idleForeground &&
+        // Every startForegroundService() delivery creates a fresh platform acknowledgement
+        // obligation, including when this Service instance still believes it is foreground.
+        // YodaOS can retain that in-process flag after detaching the ServiceRecord association;
+        // skipping this confirmation then produces a delayed foreground-start ANR and kills the
+        // camera process. Reconfirm before dispatching any command; showForeground preserves the
+        // already-authorized type mask and fails closed if the platform rejects the transition.
+        if (intent != null &&
             !showForeground(ForegroundNotificationMode.IDLE, confirmStartRequest = true)
         ) {
             stopSelfResult(startId)

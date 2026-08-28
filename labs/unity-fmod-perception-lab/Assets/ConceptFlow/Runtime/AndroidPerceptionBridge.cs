@@ -395,7 +395,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             state=null;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            byte[] bytes=bridge.CallStatic<byte[]>("pollWorldState",lastRevision);
+            byte[] bytes=Unsigned(bridge.CallStatic<sbyte[]>("pollWorldState",lastRevision));
             if(!PerceptionBusBinaryDecoder.TryDecodeWorld(bytes,out state)) return false;
             lastRevision=state.Revision; return true;
 #else
@@ -405,7 +405,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public bool DrainTouch(int maximum,List<PerceptionTouchSnapshot> destination)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            byte[] bytes=bridge.CallStatic<byte[]>("drainTouchEvents",Math.Max(1,Math.Min(128,maximum)));
+            byte[] bytes=Unsigned(bridge.CallStatic<sbyte[]>("drainTouchEvents",Math.Max(1,Math.Min(128,maximum))));
             return PerceptionBusBinaryDecoder.TryDecodeTouchBatch(bytes,destination);
 #else
             destination?.Clear(); return false;
@@ -415,7 +415,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             state=null;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            byte[] bytes=bridge.CallStatic<byte[]>("pollFocusState",lastFocusRevision);
+            byte[] bytes=Unsigned(bridge.CallStatic<sbyte[]>("pollFocusState",lastFocusRevision));
             if(!PerceptionBusBinaryDecoder.TryDecodeFocus(bytes,out state)) return false;
             lastFocusRevision=state.Revision; return true;
 #else
@@ -426,7 +426,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             state=null;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            byte[] bytes=bridge.CallStatic<byte[]>("pollHeadPose",lastHeadSequence);
+            byte[] bytes=Unsigned(bridge.CallStatic<sbyte[]>("pollHeadPose",lastHeadSequence));
             if(!PerceptionBusBinaryDecoder.TryDecodeHeadPose(bytes,out state)) return false;
             lastHeadSequence=state.Sequence; return true;
 #else
@@ -449,5 +449,17 @@ namespace ConceptFlow.Mpl.PerceptionLab
             bridge.Dispose();
 #endif
         }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        // Unity 6 maps Java byte[] to signed CLR bytes. Requesting byte[] still works but emits a
+        // warning on every poll, which can flood logcat and perturb the real-time lab.
+        private static byte[] Unsigned(sbyte[] source)
+        {
+            if(source==null) return null;
+            var destination=new byte[source.Length];
+            Buffer.BlockCopy(source,0,destination,0,source.Length);
+            return destination;
+        }
+#endif
     }
 }

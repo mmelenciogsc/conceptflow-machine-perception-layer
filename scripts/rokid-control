@@ -109,7 +109,8 @@ case "$command_name" in
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
             -n "$component" -a "$ACTION_PREFIX.ENABLE_IDLE_CONTROL"
         printf 'Requested visible arming of sensor-off authenticated private-network standby.\n'
-        printf 'The Activity exits after arming; capture remains authorized only by Poco Start.\n'
+        printf 'A transparent input-pass-through Activity remains visible while armed so YodaOS keeps camera eligibility.\n'
+        printf 'Capture remains authorized only by an authenticated Poco Start command.\n'
         ;;
     idle-disable)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \

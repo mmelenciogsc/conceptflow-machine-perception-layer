@@ -71,5 +71,20 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
             string value=new InspectableFmodBackend().Dispatch(new SpatialAudioCommand(InspectableFmodBackend.AnchorEvent,"Intrusion Anchor",Vector3.forward,Vector3.back,.2f,.3f));
             StringAssert.Contains("Intrusion Anchor",value); StringAssert.Contains("gain=0.200",value);
         }
+
+        [Test] public void AudioOrientationRepairsSlopedAndCollinearBases()
+        {
+            AudioOrientation.Orthonormalize(new Vector3(.99f,-.12f,.01f),Vector3.up,
+                out Vector3 slopedForward,out Vector3 slopedUp);
+            Assert.That(slopedForward.magnitude,Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(slopedUp.magnitude,Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(Mathf.Abs(Vector3.Dot(slopedForward,slopedUp)),Is.LessThan(1e-5f));
+
+            AudioOrientation.Orthonormalize(Vector3.up,Vector3.up,
+                out Vector3 verticalForward,out Vector3 verticalUp);
+            Assert.That(verticalForward.magnitude,Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(verticalUp.magnitude,Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(Mathf.Abs(Vector3.Dot(verticalForward,verticalUp)),Is.LessThan(1e-5f));
+        }
     }
 }

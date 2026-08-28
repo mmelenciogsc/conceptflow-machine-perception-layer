@@ -69,7 +69,9 @@ class AndroidLocalVlmEnvironmentClient(
                     binding = false
                     bound = true
                     reconnectPolicy.connected()
-                    requestPrewarmLocked(clockNanos())
+                    // Do not let an eager VLM prewarm win the shared HTP lease during primary
+                    // YOLO/depth startup. The first admitted environment or focused-VQA request
+                    // starts prewarm after the caller's QNN dispatch has released its lease.
                 }
             }
             if (rejectConnection) unbindQuietly()

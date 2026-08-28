@@ -82,6 +82,16 @@ in this repository.
   recreate the foreground runtime without granting a background service an
   invalid foreground-start exemption. The bounded `live-link-start` diagnostic
   deliberately does not persist this capability.
+- Every non-null foreground-service start delivery reconfirms
+  `startForeground()` before command dispatch. This handles the observed
+  YodaOS case in which the in-process service still believed it was foreground
+  after the platform had detached its foreground `ServiceRecord`; skipping the
+  new acknowledgement produced a delayed foreground-start ANR.
+- After the visible broker has completed the foreground handshake, it becomes
+  transparent, non-focusable, and non-touchable but remains visible while the
+  same idle-control generation is armed. On this non-display target that keeps
+  the ordinary app UID camera-eligible without intercepting the right-arm
+  input surface. It exits when idle control is disarmed.
 
 ## Platform boundary
 
@@ -119,6 +129,8 @@ The build installed on both attached nodes completed these tests:
 | One-shot process loss | YodaOS killed the nonpersistent diagnostic run for low memory; Android Node correctly surfaced a truncated in-flight record and waited for a new session |
 | Persisted production recovery | after terminating only Rokid Node PID 14757, the accessibility service recreated PID 15078 in about 1.3 seconds, the broker rearmed the runtime, and mutual-TLS streaming resumed in about 4 seconds without operator interaction |
 | Recovered delivery | Android Node advanced from 133 to 201 reconstructed frames and from 2,146 to 3,237 received IMU samples after recovery; its interruption counter advanced once with `NETWORK_IO` |
+| Camera-eligibility guard | after the foreground reconfirmation and transparent broker change, one observed session remained connected for more than 135 seconds while delivering 509 camera frames and 10,551 IMU samples with zero link interruptions |
+| Extended attached run sampled 2026-08-28 | both node processes and the runtime service remained active after 4,489 reconstructed camera frames and 83,923 received IMU samples; one recorded `SOCKET_TIMEOUT` recovered automatically, current queues were empty, and inference had completed 1,412 of 1,420 attempts |
 
 The 10-minute soak preceded the final direct-`ByteString` framing optimization;
 the final no-copy framing path received the focused 30-second physical run.

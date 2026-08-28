@@ -7,6 +7,31 @@ using UnityEngine;
 
 namespace ConceptFlow.Mpl.PerceptionLab
 {
+    public static class AudioOrientation
+    {
+        public static void Orthonormalize(Vector3 forward,Vector3 preferredUp,
+            out Vector3 normalizedForward,out Vector3 normalizedUp)
+        {
+            normalizedForward=IsFinite(forward)&&forward.sqrMagnitude>.000001f
+                ? forward.normalized : Vector3.forward;
+            Vector3 usableUp=IsFinite(preferredUp)&&preferredUp.sqrMagnitude>.000001f
+                ? preferredUp : Vector3.up;
+            normalizedUp=Vector3.ProjectOnPlane(usableUp,normalizedForward);
+            if(normalizedUp.sqrMagnitude<.000001f)
+            {
+                Vector3 fallback=Mathf.Abs(Vector3.Dot(normalizedForward,Vector3.up))<.95f
+                    ? Vector3.up : Vector3.right;
+                normalizedUp=Vector3.ProjectOnPlane(fallback,normalizedForward);
+            }
+            normalizedUp.Normalize();
+        }
+
+        private static bool IsFinite(Vector3 value) =>
+            !float.IsNaN(value.x)&&!float.IsInfinity(value.x)&&
+            !float.IsNaN(value.y)&&!float.IsInfinity(value.y)&&
+            !float.IsNaN(value.z)&&!float.IsInfinity(value.z);
+    }
+
     public readonly struct SpatialAudioCommand
     {
         public readonly string EventPath;

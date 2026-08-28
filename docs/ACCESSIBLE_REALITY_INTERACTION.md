@@ -14,10 +14,10 @@ does not imply physical usability, perceptual accuracy, or release readiness.
 
 | Area | Implemented | Deterministic validation | Physical status |
 | --- | --- | --- | --- |
-| Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, and TalkBack-facing state | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, and reset | The complete focus workflow has not had a target-user or TalkBack device acceptance run |
+| Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, TalkBack-facing state, and shell-only debug controls in debuggable builds | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, and reset | The debug path was dispatched on the Poco while live detections briefly appeared, but the target expired before the multi-command dwell/menu sequence completed; this is not a target-user or TalkBack acceptance run |
 | Android focused VQA | Explicit-only typed request, bounded exact-frame retention, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, exact source lookup, asynchronous gateway behavior, stale response rejection, reset, and HTP admission | Focused VQA through GenieX on HTP has not been run on the target device |
-| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads | Android dispatcher/codec tests, Java lifecycle/version tests, and Unity decoder tests exercise valid and malformed packets; the Java cache explicitly admits legacy `CFFS` v1 and beacon `CFFS` v2 only | The launchable Unity APK was built, but Poco installation was rejected by the system/user confirmation boundary; a same-certificate, two-APK Binder session has not been physically accepted |
-| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, and at most one active focused icon | Unity 6000.3.22f1 physically ran 27/27 EditMode and 3/3 PlayMode tests and produced an ARM64 IL2CPP Android player | The public player uses the inspectable backend because the proprietary FMOD Unity package is not vendored; focused-icon playback, localization, loudness, and open-ear listening are not physically validated |
+| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads | Android dispatcher/codec tests, Java lifecycle/version tests, and Unity decoder tests exercise valid and malformed packets; the Java cache explicitly admits legacy `CFFS` v1 and beacon `CFFS` v2 only | Same-signed Android Node and private licensed-lab builds were installed and remained live together on the Poco; no stable live target reached a nonempty focused-state Binder assertion |
+| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, and a listener transform driven by the accepted canonical head pose | Unity 6000.3.22f1 ran 28/28 EditMode and 3/3 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks and dispatched the deterministic geometry scene to the Bluetooth glasses route without FMOD/Unity runtime errors; focused-icon localization, loudness, and open-ear listening remain unvalidated |
 | Beacon | Two-tier admission, immutable bounded anchor, Binder encoding, and Unity/FMOD rendering | Android JVM and Unity tests cover world preference, no-world fallback, reference-pose freshness, source-track expiry, decoder rejection, head-turn stability, pulse cadence, and TTL | The orientation-stabilized relative tier is executable without WORLD translation; it does not track user translation and has not had open-ear localization acceptance testing |
 | Glasses input | Ordered touch transport and separately governed Rokid observation code | Kotlin tests cover device identity, sequence grammar, timing, reset, and observe-only policy | Several raw gestures were observed on one RV203 firmware, but focus-command admission remains disabled because collision-free semantics were not established |
 
@@ -233,8 +233,11 @@ words. Inference is limited to 48 output tokens and eight seconds; the client
 rejects a response older than nine seconds. The implementation logs task and
 timing metadata, not the question, answer, or image content.
 
-VQA and environment classification share the already prewarmed, pinned
-Qwen3-VL-2B GenieX wrapper. One gate allows only one total prewarm or inference
+VQA and environment classification share the pinned Qwen3-VL-2B GenieX
+wrapper. Binding no longer starts eager prewarm because that allowed the VLM to
+win the shared HTP lease while the first YOLO/depth frame waited. The first
+admitted environment or focused-VQA request now starts prewarm after the
+caller's QNN dispatch has released its lease. One gate allows only one total prewarm or inference
 operation, and one atomic slot allows only one environment or VQA request.
 There is no request queue and no silent replacement: contention returns busy.
 QNN work retains priority through the existing HTP lease and cooperative
@@ -262,6 +265,12 @@ exact-frame store, and asynchronous gateway have JVM coverage. No focused VQA
 request has yet been validated through the provisioned GenieX runtime on the
 Poco HTP, so no device latency, answer quality, thermal, or reliability claim
 is made.
+
+The revised startup order was physically observed on the Poco: the first
+YOLO/depth QNN lease completed before VLM prewarm, prewarm then completed in
+approximately 8.5--9.0 seconds, and an indoor/outdoor classification completed
+in approximately 4.3--4.4 seconds before QNN processing resumed. These are two
+short runs, not sustained latency, energy, or thermal results.
 
 ## Beacon boundary
 
@@ -320,6 +329,13 @@ Current focus control is therefore the accessible Android phone UI and its
 attached-key equivalents. A future hardware mapping must preserve native
 Talk-to-AI, volume, Settings, camera, video, power, pairing, accessibility, and
 immediate-stop behavior before it can be enabled.
+
+For physical diagnosis only, a debuggable Android Node also exposes
+`focus-status`, `focus-next`, `focus-previous`, `focus-activate`, and
+`focus-back` through `scripts/android-node-control`. These endpoints are absent
+from release builds and do not change TalkBack or device settings. They test
+the same authoritative command path; they are not an alternate production
+input system.
 
 ## Release boundary
 
