@@ -1274,7 +1274,13 @@ class RokidRuntimeService : Service() {
             .setAction(ACTION_RENDEZVOUS_RETRY)
             .putExtra(EXTRA_RENDEZVOUS_GENERATION, completedGeneration)
             .putExtra(EXTRA_PROCESS_RENDEZVOUS_CAPABILITY, processRendezvousCapability)
-        val alarm = PendingIntent.getService(
+        // The retry must enter through the foreground-service PendingIntent path. YodaOS accepts
+        // the exact alarm itself while the app is idle, but a regular service PendingIntent is
+        // still classified as a background start; its subsequent startForeground() call can then
+        // be ignored and CameraService rejects the UID as idle. The foreground-service PendingIntent
+        // preserves the platform's temporary allow-list through onStartCommand, where the service
+        // immediately confirms its existing foreground notification before touching the camera.
+        val alarm = PendingIntent.getForegroundService(
             this,
             RENDEZVOUS_ALARM_REQUEST_CODE,
             alarmIntent,
@@ -1472,7 +1478,16 @@ class RokidRuntimeService : Service() {
             "camera_error_recoverable=${snapshot.lastCameraSourceDiagnostic?.recoverable ?: false} " +
             "camera_observed=${snapshot.cameraFramesObserved} " +
             "camera_queued=${snapshot.cameraFramesQueued} camera_dropped=${snapshot.cameraFramesDropped} " +
-            "camera_chunks=${snapshot.cameraChunksQueued} imu_observed=${snapshot.imuSamplesObserved} " +
+            "camera_chunks=${snapshot.cameraChunksQueued} " +
+            "camera_analyzed=${snapshot.cameraGate.framesAnalyzed} " +
+            "camera_emitted=${snapshot.cameraGate.framesEmitted} " +
+            "camera_relaxed_tier_samples=${snapshot.cameraGate.relaxedTierSamples} " +
+            "camera_motion_tier_samples=${snapshot.cameraGate.motionTierSamples} " +
+            "camera_dropped_dark=${snapshot.cameraGate.framesDroppedDark} " +
+            "camera_dropped_blurry=${snapshot.cameraGate.framesDroppedBlurry} " +
+            "camera_dropped_cadence=${snapshot.cameraGate.framesDroppedCadence} " +
+            "camera_current_target_fps=${snapshot.cameraGate.currentTargetFramesPerSecond} " +
+            "imu_observed=${snapshot.imuSamplesObserved} " +
             "imu_batches=${snapshot.imuBatchesQueued} imu_queued=${snapshot.imuSamplesQueued} " +
             "imu_dropped=${snapshot.imuBatchesDropped} " +
             "microphone_starts=${snapshot.microphoneStarts} " +

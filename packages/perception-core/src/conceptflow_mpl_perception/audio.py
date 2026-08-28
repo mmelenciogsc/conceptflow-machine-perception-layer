@@ -55,7 +55,7 @@ class FmodCommandAdapter:
 
     def __init__(
         self,
-        spatializer: SpatializerProfile = SpatializerProfile.FMOD_STANDARD,
+        spatializer: SpatializerProfile = SpatializerProfile.RESONANCE_AUDIO,
         topology: AudioOutputTopology = AudioOutputTopology.UNKNOWN,
         max_field_voices: int = 5,
     ) -> None:

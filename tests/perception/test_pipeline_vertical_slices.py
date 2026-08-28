@@ -18,6 +18,7 @@ from conceptflow_mpl_perception import (
     PerceptionEngine,
     Quaternion,
     SpeakerBank,
+    SpatializerProfile,
     TimedTransform,
     Vec3,
     VirtualSpeakerArray,
@@ -84,6 +85,7 @@ def test_audio_adapter_uses_authored_fmod_events_and_bounded_field_voices() -> N
     )
     dispatch = output.audio[0]
     assert dispatch.topology == AudioOutputTopology.UNKNOWN
+    assert dispatch.spatializer == SpatializerProfile.RESONANCE_AUDIO
     assert dispatch.voices[0].event_path == FMOD_ANCHOR_EVENT
     assert all(voice.event_path == FMOD_FIELD_EVENT for voice in dispatch.voices[1:])
     assert len(dispatch.voices) <= 6

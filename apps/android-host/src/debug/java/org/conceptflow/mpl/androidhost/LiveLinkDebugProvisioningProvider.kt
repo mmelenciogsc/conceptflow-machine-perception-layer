@@ -61,6 +61,23 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
         listOf(FOCUS_PATH, FOCUS_PREVIOUS_PATH) -> dispatchFocus(SpatialFocusCommand.PREVIOUS)
         listOf(FOCUS_PATH, FOCUS_ACTIVATE_PATH) -> dispatchFocus(SpatialFocusCommand.ACTIVATE)
         listOf(FOCUS_PATH, FOCUS_BACK_PATH) -> dispatchFocus(SpatialFocusCommand.BACK)
+        listOf(FOCUS_PATH, FOCUS_BEACON_PATH) -> dispatchFocusSequence(
+            "beacon",
+            listOf(
+                SpatialFocusCommand.NEXT,
+                SpatialFocusCommand.ACTIVATE,
+                SpatialFocusCommand.NEXT,
+                SpatialFocusCommand.ACTIVATE,
+            ),
+        )
+        listOf(FOCUS_PATH, FOCUS_VQA_PATH) -> dispatchFocusSequence(
+            "vqa",
+            listOf(
+                SpatialFocusCommand.NEXT,
+                SpatialFocusCommand.ACTIVATE,
+                SpatialFocusCommand.ACTIVATE,
+            ),
+        )
         else -> "unknown_path"
     }
 
@@ -68,6 +85,15 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
         AndroidNodeForegroundService.focusCommand(requireNotNull(context), command)
         "focus_${command.name.lowercase()}_dispatched"
     }.getOrElse { "focus_command_failed" }
+
+    private fun dispatchFocusSequence(
+        name: String,
+        commands: List<SpatialFocusCommand>,
+    ): String = runCatching {
+        val state = AndroidNodeForegroundService.focusCommandSequenceNow(commands)
+            ?: return@runCatching "focus_${name}_sequence_unavailable"
+        "focus_${name}_sequence_mode_${state.mode.name.lowercase()}_reason_${state.statusReason}"
+    }.getOrElse { "focus_${name}_sequence_failed" }
 
     private companion object {
         const val IDENTITY_PATH = "identity"
@@ -78,6 +104,8 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
         const val FOCUS_PREVIOUS_PATH = "previous"
         const val FOCUS_ACTIVATE_PATH = "activate"
         const val FOCUS_BACK_PATH = "back"
+        const val FOCUS_BEACON_PATH = "beacon"
+        const val FOCUS_VQA_PATH = "vqa"
         const val STATUS_COLUMN = "status"
         const val MIME_TYPE = "vnd.android.cursor.item/vnd.conceptflow.live-link-identity"
         const val IDENTITY_ALIAS = "org.conceptflow.mpl.androidhost.live-link.v1"

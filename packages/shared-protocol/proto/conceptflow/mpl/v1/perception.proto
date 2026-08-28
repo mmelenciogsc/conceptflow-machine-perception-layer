@@ -364,6 +364,14 @@ message LiveLinkTelemetry {
   uint64 touch_overflow_events = 9;
   uint64 sent_realtime_messages = 10;
   uint64 sent_camera_messages = 11;
+  uint64 camera_frames_analyzed = 12;
+  uint64 camera_frames_emitted = 13;
+  uint64 camera_relaxed_tier_samples = 14;
+  uint64 camera_motion_tier_samples = 15;
+  uint64 camera_frames_dropped_dark = 16;
+  uint64 camera_frames_dropped_blurry = 17;
+  uint64 camera_frames_dropped_cadence = 18;
+  uint32 current_camera_target_fps = 19;
 }
 
 message LiveLaneOpenRequest {

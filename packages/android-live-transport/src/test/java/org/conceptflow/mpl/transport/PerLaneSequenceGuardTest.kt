@@ -108,6 +108,31 @@ class PerLaneSequenceGuardTest {
         assertEquals(1L, guard.nextExpected(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL))
     }
 
+    @Test
+    fun `inconsistent camera gate telemetry fails before sequence advances`() {
+        val guard = PerLaneSequenceGuard(binding)
+        val valid = LiveControlMessages.telemetry(
+            sampledMonotonicNs = 10L,
+            queues = LiveOutboundQueueSnapshot(0, 0, 0, 0, 0, 0, 0, 0),
+            transport = SanitizedTransportMetrics().snapshot(),
+            cameraGate = LiveCameraGateTelemetry(
+                framesAnalyzed = 2,
+                framesEmitted = 2,
+                relaxedTierSamples = 2,
+            ),
+        )
+        val malformed = valid.toBuilder().setTelemetry(
+            valid.telemetry.toBuilder().setCameraMotionTierSamples(1),
+        ).build()
+
+        val error = assertThrows(LaneProtocolException::class.java) {
+            guard.accept(control(sequence = 1, malformed))
+        }
+
+        assertEquals(LaneProtocolFailure.MALFORMED_CONTROL, error.failure)
+        assertEquals(1L, guard.nextExpected(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL))
+    }
+
     private fun realtime(sequence: Long, batchId: Long): LiveLinkEnvelope {
         val sensor = SensorStreamEnvelope.newBuilder()
             .setSessionId(binding.sessionId)

@@ -134,7 +134,7 @@ class TrainingPreferences:
     bubble_radius_m: float = BUBBLE_RADIUS_METERS
     spectral_profile: SpectralProfile = SpectralProfile.LOW_STIMULATION
     anchor_field_balance: float = 0.55
-    spatializer_profile: str = "fmod_standard"
+    spatializer_profile: str = "resonance_audio"
     icon_verbosity: IconVerbosity = IconVerbosity.MINIMAL
     haptic_strength: float = 0.50
     scene_description_cadence_s: int = 30
@@ -177,7 +177,7 @@ class TrainingPreferences:
                     _string(data.get("spectral_profile", SpectralProfile.LOW_STIMULATION.value), "spectral_profile")
                 ),
                 anchor_field_balance=_number(data.get("anchor_field_balance", 0.55), "anchor_field_balance"),
-                spatializer_profile=_string(data.get("spatializer_profile", "fmod_standard"), "spatializer_profile"),
+                spatializer_profile=_string(data.get("spatializer_profile", "resonance_audio"), "spatializer_profile"),
                 icon_verbosity=IconVerbosity(
                     _string(data.get("icon_verbosity", IconVerbosity.MINIMAL.value), "icon_verbosity")
                 ),

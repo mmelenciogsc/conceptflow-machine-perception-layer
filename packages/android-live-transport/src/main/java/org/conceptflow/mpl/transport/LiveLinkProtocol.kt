@@ -92,7 +92,7 @@ internal class LiveEnvelopeFactory(
 internal object LiveControlMessages {
     const val CLOCK_PROBES = 8
     const val PROTOCOL_MAJOR = 1
-    const val PROTOCOL_MINOR = 1
+    const val PROTOCOL_MINOR = 2
 
     fun hello(role: LiveTransportPeerRole, nonce: ByteArray): LiveLinkControl = LiveLinkControl.newBuilder()
         .setHello(
@@ -171,6 +171,7 @@ internal object LiveControlMessages {
         sampledMonotonicNs: Long,
         queues: LiveOutboundQueueSnapshot,
         transport: TransportMetricsSnapshot,
+        cameraGate: LiveCameraGateTelemetry = LiveCameraGateTelemetry(),
     ): LiveLinkControl {
         require(sampledMonotonicNs > 0L)
         return LiveLinkControl.newBuilder().setTelemetry(
@@ -185,7 +186,15 @@ internal object LiveControlMessages {
                 .setDroppedAudioBlocks(queues.droppedMicrophoneChunks)
                 .setTouchOverflowEvents(queues.touchOverflowEvents)
                 .setSentRealtimeMessages(transport.realtimeControl.sentMessages)
-                .setSentCameraMessages(transport.camera.sentMessages),
+                .setSentCameraMessages(transport.camera.sentMessages)
+                .setCameraFramesAnalyzed(cameraGate.framesAnalyzed)
+                .setCameraFramesEmitted(cameraGate.framesEmitted)
+                .setCameraRelaxedTierSamples(cameraGate.relaxedTierSamples)
+                .setCameraMotionTierSamples(cameraGate.motionTierSamples)
+                .setCameraFramesDroppedDark(cameraGate.framesDroppedDark)
+                .setCameraFramesDroppedBlurry(cameraGate.framesDroppedBlurry)
+                .setCameraFramesDroppedCadence(cameraGate.framesDroppedCadence)
+                .setCurrentCameraTargetFps(cameraGate.currentTargetFramesPerSecond),
         ).build()
     }
 

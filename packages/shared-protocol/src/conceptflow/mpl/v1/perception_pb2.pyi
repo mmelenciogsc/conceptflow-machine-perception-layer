@@ -685,7 +685,7 @@ class LiveLinkCapabilities(_message.Message):
     def __init__(self, protocol_version: _Optional[_Union[ProtocolVersion, _Mapping]] = ..., peer_role: _Optional[_Union[LiveTransportPeerRole, str]] = ..., supported_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., camera_encodings: _Optional[_Iterable[_Union[ImageEncoding, str]]] = ..., max_camera_width: _Optional[int] = ..., max_camera_height: _Optional[int] = ..., max_camera_frame_bytes: _Optional[int] = ..., max_audio_block_bytes: _Optional[int] = ..., max_imu_samples_per_batch: _Optional[int] = ..., max_touch_events_buffered: _Optional[int] = ..., supports_clock_sync: bool = ..., supports_camera_latest_frame: bool = ..., supports_diagnostic_spool: bool = ...) -> None: ...
 
 class LiveLinkTelemetry(_message.Message):
-    __slots__ = ("sampled_monotonic_timestamp_ns", "pending_camera_frames", "pending_imu_batches", "pending_audio_blocks", "pending_touch_events", "dropped_camera_frames", "dropped_imu_batches", "dropped_audio_blocks", "touch_overflow_events", "sent_realtime_messages", "sent_camera_messages")
+    __slots__ = ("sampled_monotonic_timestamp_ns", "pending_camera_frames", "pending_imu_batches", "pending_audio_blocks", "pending_touch_events", "dropped_camera_frames", "dropped_imu_batches", "dropped_audio_blocks", "touch_overflow_events", "sent_realtime_messages", "sent_camera_messages", "camera_frames_analyzed", "camera_frames_emitted", "camera_relaxed_tier_samples", "camera_motion_tier_samples", "camera_frames_dropped_dark", "camera_frames_dropped_blurry", "camera_frames_dropped_cadence", "current_camera_target_fps")
     SAMPLED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
     PENDING_CAMERA_FRAMES_FIELD_NUMBER: _ClassVar[int]
     PENDING_IMU_BATCHES_FIELD_NUMBER: _ClassVar[int]
@@ -697,6 +697,14 @@ class LiveLinkTelemetry(_message.Message):
     TOUCH_OVERFLOW_EVENTS_FIELD_NUMBER: _ClassVar[int]
     SENT_REALTIME_MESSAGES_FIELD_NUMBER: _ClassVar[int]
     SENT_CAMERA_MESSAGES_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_FRAMES_ANALYZED_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_FRAMES_EMITTED_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_RELAXED_TIER_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_MOTION_TIER_SAMPLES_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_FRAMES_DROPPED_DARK_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_FRAMES_DROPPED_BLURRY_FIELD_NUMBER: _ClassVar[int]
+    CAMERA_FRAMES_DROPPED_CADENCE_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_CAMERA_TARGET_FPS_FIELD_NUMBER: _ClassVar[int]
     sampled_monotonic_timestamp_ns: int
     pending_camera_frames: int
     pending_imu_batches: int
@@ -708,7 +716,15 @@ class LiveLinkTelemetry(_message.Message):
     touch_overflow_events: int
     sent_realtime_messages: int
     sent_camera_messages: int
-    def __init__(self, sampled_monotonic_timestamp_ns: _Optional[int] = ..., pending_camera_frames: _Optional[int] = ..., pending_imu_batches: _Optional[int] = ..., pending_audio_blocks: _Optional[int] = ..., pending_touch_events: _Optional[int] = ..., dropped_camera_frames: _Optional[int] = ..., dropped_imu_batches: _Optional[int] = ..., dropped_audio_blocks: _Optional[int] = ..., touch_overflow_events: _Optional[int] = ..., sent_realtime_messages: _Optional[int] = ..., sent_camera_messages: _Optional[int] = ...) -> None: ...
+    camera_frames_analyzed: int
+    camera_frames_emitted: int
+    camera_relaxed_tier_samples: int
+    camera_motion_tier_samples: int
+    camera_frames_dropped_dark: int
+    camera_frames_dropped_blurry: int
+    camera_frames_dropped_cadence: int
+    current_camera_target_fps: int
+    def __init__(self, sampled_monotonic_timestamp_ns: _Optional[int] = ..., pending_camera_frames: _Optional[int] = ..., pending_imu_batches: _Optional[int] = ..., pending_audio_blocks: _Optional[int] = ..., pending_touch_events: _Optional[int] = ..., dropped_camera_frames: _Optional[int] = ..., dropped_imu_batches: _Optional[int] = ..., dropped_audio_blocks: _Optional[int] = ..., touch_overflow_events: _Optional[int] = ..., sent_realtime_messages: _Optional[int] = ..., sent_camera_messages: _Optional[int] = ..., camera_frames_analyzed: _Optional[int] = ..., camera_frames_emitted: _Optional[int] = ..., camera_relaxed_tier_samples: _Optional[int] = ..., camera_motion_tier_samples: _Optional[int] = ..., camera_frames_dropped_dark: _Optional[int] = ..., camera_frames_dropped_blurry: _Optional[int] = ..., camera_frames_dropped_cadence: _Optional[int] = ..., current_camera_target_fps: _Optional[int] = ...) -> None: ...
 
 class LiveLaneOpenRequest(_message.Message):
     __slots__ = ("lane", "session_id", "lease_id", "connection_nonce", "lane_ticket")

@@ -360,6 +360,14 @@ data class LivePeerPressure(
     val touchOverflowEvents: Long,
     val sentRealtimeMessages: Long,
     val sentCameraMessages: Long,
+    val cameraFramesAnalyzed: Long,
+    val cameraFramesEmitted: Long,
+    val cameraRelaxedTierSamples: Long,
+    val cameraMotionTierSamples: Long,
+    val cameraFramesDroppedDark: Long,
+    val cameraFramesDroppedBlurry: Long,
+    val cameraFramesDroppedCadence: Long,
+    val currentCameraTargetFramesPerSecond: Int,
 )
 
 data class LiveMachineVisionStatus(
@@ -453,7 +461,15 @@ data class LiveMachineVisionStatus(
             append(", audio ").append(it.droppedAudioBlocks)
             append(", touch overflow ").append(it.touchOverflowEvents)
             append("; sent realtime messages ").append(it.sentRealtimeMessages)
-            append(", camera messages ").append(it.sentCameraMessages).append(". ")
+            append(", camera messages ").append(it.sentCameraMessages)
+            append("; camera gate analyzed ").append(it.cameraFramesAnalyzed)
+            append(", emitted ").append(it.cameraFramesEmitted)
+            append(", relaxed tier ").append(it.cameraRelaxedTierSamples)
+            append(", motion tier ").append(it.cameraMotionTierSamples)
+            append(", dark ").append(it.cameraFramesDroppedDark)
+            append(", blurry ").append(it.cameraFramesDroppedBlurry)
+            append(", cadence ").append(it.cameraFramesDroppedCadence)
+            append(", target FPS ").append(it.currentCameraTargetFramesPerSecond).append(". ")
         }
         append("Rokid Node command: ").append(nodeCommandPhase.name.lowercase())
         lastNodeCommandOperation?.let {
@@ -711,6 +727,14 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
             value.touchOverflowEvents,
             value.sentRealtimeMessages,
             value.sentCameraMessages,
+            value.cameraFramesAnalyzed,
+            value.cameraFramesEmitted,
+            value.cameraRelaxedTierSamples,
+            value.cameraMotionTierSamples,
+            value.cameraFramesDroppedDark,
+            value.cameraFramesDroppedBlurry,
+            value.cameraFramesDroppedCadence,
+            value.currentCameraTargetFps,
         )
     }
 

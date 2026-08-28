@@ -25,6 +25,8 @@ Commands:
   focus-previous   Move to the previous spatial item.
   focus-activate   Open or confirm the focused-item action.
   focus-back       Return from the current focus action or leave browsing.
+  focus-beacon     Atomically focus a fresh item and request a beacon (debug validation).
+  focus-vqa        Atomically focus a fresh item and request VQA (debug validation).
   stop             Stop Android Node and release its listener/model resources.
 EOF
 }
@@ -35,7 +37,7 @@ while (($#)); do
     case "$1" in
         --serial) serial="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
-        start-automatic|start-indoor|start-outdoor|microphone|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|stop)
+        start-automatic|start-indoor|start-outdoor|microphone|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa|stop)
             [[ -z "$command_name" ]] || { printf 'error: only one command is allowed\n' >&2; exit 2; }
             command_name="$1"
             shift
@@ -61,7 +63,7 @@ case "$command_name" in
     start-outdoor) action="org.conceptflow.mpl.host.debug.START_OUTDOOR" ;;
     microphone) action="org.conceptflow.mpl.host.debug.REQUEST_MICROPHONE" ;;
     stop) action="org.conceptflow.mpl.host.debug.STOP" ;;
-    status|focus-status|focus-next|focus-previous|focus-activate|focus-back) action="" ;;
+    status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa) action="" ;;
 esac
 if [[ -n "$action" ]]; then
     adb -s "$serial" shell am start --user 0 -W -n "$CONTROL_ACTIVITY" -a "$action" >/dev/null
@@ -76,6 +78,8 @@ case "$command_name" in
     focus-previous) control_path="focus/previous" ;;
     focus-activate) control_path="focus/activate" ;;
     focus-back) control_path="focus/back" ;;
+    focus-beacon) control_path="focus/beacon" ;;
+    focus-vqa) control_path="focus/vqa" ;;
 esac
 result="$(adb -s "$serial" shell content query --user 0 --uri "$CONTROL_URI/$control_path" 2>/dev/null || true)"
 [[ "$result" == *"Row: 0 status="* ]] || {

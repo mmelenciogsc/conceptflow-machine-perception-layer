@@ -36,6 +36,14 @@ class LiveMachineVisionStatusAccumulatorTest {
                 .setTouchOverflowEvents(8)
                 .setSentRealtimeMessages(9)
                 .setSentCameraMessages(10)
+                .setCameraFramesAnalyzed(14)
+                .setCameraFramesEmitted(11)
+                .setCameraRelaxedTierSamples(8)
+                .setCameraMotionTierSamples(6)
+                .setCameraFramesDroppedDark(1)
+                .setCameraFramesDroppedBlurry(1)
+                .setCameraFramesDroppedCadence(1)
+                .setCurrentCameraTargetFps(5)
                 .build(),
         )
 
@@ -44,8 +52,12 @@ class LiveMachineVisionStatusAccumulatorTest {
         assertEquals(8L, snapshot.peerPressure?.touchOverflowEvents)
         assertEquals(9L, snapshot.peerPressure?.sentRealtimeMessages)
         assertEquals(10L, snapshot.peerPressure?.sentCameraMessages)
+        assertEquals(8L, snapshot.peerPressure?.cameraRelaxedTierSamples)
+        assertEquals(6L, snapshot.peerPressure?.cameraMotionTierSamples)
+        assertEquals(5, snapshot.peerPressure?.currentCameraTargetFramesPerSecond)
         assertTrue(snapshot.accessibleSummary().contains("Rokid queue telemetry: samples 1"))
         assertTrue(snapshot.accessibleSummary().contains("sent realtime messages 9, camera messages 10"))
+        assertTrue(snapshot.accessibleSummary().contains("relaxed tier 8, motion tier 6"))
         assertFalse(snapshot.accessibleSummary().contains("timestamp"))
     }
 

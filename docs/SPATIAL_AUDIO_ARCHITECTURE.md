@@ -40,9 +40,14 @@ build were exercised locally; headphone/open-ear perceptual accuracy and live
 Unity-to-FMOD playback have not been user-validated.
 
 FMOD Standard, Resonance Audio, and a future platform renderer remain explicit
-profiles. The authored baseline selects Resonance Audio, but no profile is
-declared perceptually superior until the localization harness is run on the
-target output topology.
+profiles for comparison and diagnostics. Production world-positioned geometry,
+focused-object icons, and beacons require an HRTF-capable binaural profile; the
+model-neutral command adapter, training preferences, and authored baseline all
+default to Resonance Audio. The authored events use Resonance Audio Source and
+the master bus uses Resonance Audio Listener.
+Plain stereo panning or FMOD Standard 3D is not an acceptable production route
+for those cues. No HRTF profile is declared perceptually superior until the
+localization harness is run on the target open-ear output topology.
 
 ## Mixing policy
 

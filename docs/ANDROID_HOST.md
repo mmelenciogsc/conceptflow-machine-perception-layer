@@ -97,11 +97,18 @@ remove or weaken the accessible phone control.
 
 The live QNN lease acquisition deadline is 250 ms and isolated-VLM admission
 is limited to 25 ms. An admitted prewarm or classification receives an
-8.5-second cooperative completion window: ordinary depth/track aging,
-uncertainty, and low-confidence refreshes defer, while direct motion,
-occlusion, or rapid-approach evidence requests VLM cancellation and admits the
-newest QNN frame. Direct motion has precedence when it occurs at the same time
-as routine staleness. Session replacement, reconnect, and stop synchronously
+8.5-second cooperative completion window. Background prewarm and environment
+classification defer ordinary depth/track aging, uncertainty, and
+low-confidence refreshes, while direct motion, occlusion, or rapid-approach
+evidence requests VLM cancellation and admits the newest QNN frame. An explicit
+focused-object VQA request is different: it retains its bounded captured-frame
+correlation through ordinary motion and semantic-track occlusion, but still
+yields to rapid-approach evidence and the same hard completion window. Its
+isolated-process HTP lease acquisition retries only QNN-priority/busy/timeout
+refusals for at most 1.5 seconds; background classification remains fail-fast.
+Focused generation is capped at 24 tokens and accepted answers at 16 words.
+Direct motion has precedence when it occurs at the same time as routine
+staleness. Session replacement, reconnect, and stop synchronously
 invalidate generation-scoped VLM work, clear cached scene evidence, and cancel
 queued jobs without allowing a stale lazy job to clear a replacement owner.
 Kernel file locks are process-death safe, while in-process handles are
@@ -208,6 +215,20 @@ Expected current behavior:
 The synthetic controls do not validate phone-to-glasses transport or the Python
 service. The live control exercises the physical private-WLAN path when the
 paired devices and private QNN artifacts are present.
+
+The persistent node records only an enabled flag and the selected automatic or
+forced depth-environment mode in private app preferences. Its connected-device
+foreground service returns Android's sticky restart disposition and reconstructs
+the controller from that state when Android redelivers a null restart intent.
+Explicit **Stop Android Node** clears the state synchronously, so a deliberate
+stop is never converted into an automatic restart. Camera, audio, IMU, touch,
+peer identity, and model output are not stored in this restart record.
+
+On the tested HyperOS build, an ADB-induced process crash or same-UID `SIGKILL`
+is classified as an explicit service stop and does not model low-memory
+reclamation. Those commands therefore cannot be used as evidence that sticky
+LMK restoration passed. A naturally occurring LMK event is the remaining
+physical validation gate for the new host restart path.
 
 On 2026-08-22 the current debug APK was installed and launched on the attached
 Poco F7 Ultra after the user approved Xiaomi's **Install via USB** prompt. The

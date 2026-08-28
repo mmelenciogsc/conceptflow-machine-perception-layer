@@ -5,6 +5,7 @@ import org.conceptflow.mpl.transport.LiveLinkDisconnectReason
 import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkSession
+import org.conceptflow.mpl.transport.LiveCameraGateTelemetry
 import org.conceptflow.mpl.transport.LiveSessionBinding
 import org.conceptflow.mpl.transport.MicrophoneGestureDispatch
 import org.conceptflow.mpl.transport.MicrophoneGestureResult
@@ -28,6 +29,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveLinkCaptureControllerTest {
+    @Test
+    fun `camera gate telemetry observes existing decisions without changing frame publication`() {
+        val fixture = Fixture()
+        fixture.controller.start()
+        fixture.transport.ready()
+        val source = fixture.frames.single()
+
+        source.emitGate(gateEvent(emitted = true, targetFramesPerSecond = 3.0))
+        source.emit(frame())
+        source.emitGate(
+            gateEvent(
+                emitted = false,
+                targetFramesPerSecond = 5.0,
+                dropReason = FrameDropReason.CADENCE_SIMILAR,
+            ),
+        )
+
+        val gate = fixture.transport.cameraGateTelemetry.last()
+        assertEquals(2L, gate.framesAnalyzed)
+        assertEquals(1L, gate.framesEmitted)
+        assertEquals(1L, gate.relaxedTierSamples)
+        assertEquals(1L, gate.motionTierSamples)
+        assertEquals(1L, gate.framesDroppedCadence)
+        assertEquals(5, gate.currentTargetFramesPerSecond)
+        assertEquals(1, fixture.transport.camera.size)
+        assertEquals(gate, fixture.controller.snapshot().cameraGate)
+    }
+
     @Test
     fun `admitted camera imu and microphone persist to spool instead of push queues`() {
         val spool = FakeSpool()
@@ -757,6 +786,7 @@ class LiveLinkCaptureControllerTest {
         val camera = mutableListOf<List<SensorStreamEnvelope>>()
         val imu = mutableListOf<SensorStreamEnvelope>()
         val microphone = mutableListOf<SensorStreamEnvelope>()
+        val cameraGateTelemetry = mutableListOf<LiveCameraGateTelemetry>()
 
         override fun start(observer: RokidLiveLinkObserver) {
             check(this.observer == null)
@@ -776,6 +806,10 @@ class LiveLinkCaptureControllerTest {
         override fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean {
             microphone += chunk
             return true
+        }
+
+        override fun updateCameraGateTelemetry(snapshot: LiveCameraGateTelemetry) {
+            cameraGateTelemetry += snapshot
         }
 
         override fun requestMicrophoneFromUserGesture(): MicrophoneGestureDispatch {
@@ -889,6 +923,11 @@ class LiveLinkCaptureControllerTest {
             listener!!.onFrame(frame)
         }
 
+        fun emitGate(event: CaptureGateEvent) {
+            check(isRunning)
+            listener!!.onCaptureGate(event)
+        }
+
         fun nextFrameId(): Long = sequence.nextId()
 
         fun emitLate(frame: FramePayload) {
@@ -930,6 +969,22 @@ class LiveLinkCaptureControllerTest {
             onStop()
         }
     }
+
+    private fun gateEvent(
+        emitted: Boolean,
+        targetFramesPerSecond: Double,
+        dropReason: FrameDropReason? = null,
+    ) = CaptureGateEvent(
+        inputDimensions = PixelDimensions(648, 648),
+        outputDimensions = PixelDimensions(640, 640),
+        emitted = emitted,
+        dropReason = dropReason,
+        targetFramesPerSecond = targetFramesPerSecond,
+        meanLuma = 96.0,
+        darkFraction = 0.1,
+        laplacianVariance = 80.0,
+        motionScore = if (targetFramesPerSecond >= 5.0) 0.2 else 0.01,
+    )
 
     private class FakePoseSource : PoseSource {
         private var listener: ((ImuSample) -> Unit)? = null

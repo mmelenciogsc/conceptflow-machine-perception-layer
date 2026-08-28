@@ -51,7 +51,7 @@ class LiveVlmHtpAdmissionGate(
             activeWork = null
             return LiveVlmQnnAdmissionDecision.CANCEL_VLM_AFTER_TIMEOUT
         }
-        if (qnnReason in INTERRUPTING_REASONS) {
+        if (qnnReason in interruptingReasonsFor(work.kind)) {
             activeWork = null
             return LiveVlmQnnAdmissionDecision.CANCEL_VLM_FOR_URGENT_QNN
         }
@@ -67,11 +67,25 @@ class LiveVlmHtpAdmissionGate(
     }
 
     private companion object {
-        val INTERRUPTING_REASONS = setOf(
+        val BACKGROUND_WORK_INTERRUPTING_REASONS = setOf(
             SemanticDepthRefreshReason.MOTION,
             SemanticDepthRefreshReason.OCCLUSION,
             SemanticDepthRefreshReason.RAPID_APPROACH,
         )
+
+        // An explicit user investigation is answered from its bounded captured frame and outranks
+        // ordinary motion or semantic-track occlusion refreshes. Rapid-approach evidence still
+        // interrupts it. The hard completion timeout above remains authoritative for every kind.
+        val FOCUSED_VQA_INTERRUPTING_REASONS = setOf(
+            SemanticDepthRefreshReason.RAPID_APPROACH,
+        )
+
+        fun interruptingReasonsFor(kind: LocalVlmHtpWorkKind): Set<SemanticDepthRefreshReason> =
+            if (kind == LocalVlmHtpWorkKind.FOCUSED_OBJECT_VQA) {
+                FOCUSED_VQA_INTERRUPTING_REASONS
+            } else {
+                BACKGROUND_WORK_INTERRUPTING_REASONS
+            }
     }
 }
 

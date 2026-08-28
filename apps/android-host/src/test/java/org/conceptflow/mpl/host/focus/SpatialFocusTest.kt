@@ -181,6 +181,36 @@ class SpatialFocusTest {
     }
 
     @Test
+    fun `explicit VQA retains only its correlated target through bounded inference and result windows`() {
+        val gateway = RecordingGateway(accept = true)
+        val manager = SpatialFocusManager(
+            vqaGateway = gateway,
+            vqaPendingTtlNanos = 9_000_000_000L,
+            vqaResultTtlNanos = 10_000_000_000L,
+        )
+        manager.updateTracks(1L, 1L, 0L, listOf(track("one", 1.0)))
+        manager.command(SpatialFocusCommand.ACTIVATE, 1L)
+        manager.command(SpatialFocusCommand.ACTIVATE, 2L)
+        val request = (manager.command(SpatialFocusCommand.ACTIVATE, 3L).effect as
+            SpatialFocusEffect.RequestVqa).request
+
+        val heldPending = manager.updateTracks(1L, 2L, 2_000_000_001L, emptyList())
+        assertEquals(SpatialFocusMode.VQA_PENDING, heldPending.mode)
+        assertEquals("one", heldPending.target!!.stableTrackId)
+        assertEquals(9_000_000_003L, heldPending.validUntilTimestampNanos)
+
+        assertTrue(manager.completeVqa(request.correlation, "A wooden chair.", 2_100_000_000L))
+        val heldResult = manager.updateTracks(1L, 3L, 3_000_000_000L, emptyList())
+        assertEquals(SpatialFocusMode.VQA_RESULT, heldResult.mode)
+        assertEquals("A wooden chair.", heldResult.vqaAnswer)
+        assertEquals("one", heldResult.target!!.stableTrackId)
+
+        val expired = manager.updateTracks(1L, 4L, 12_100_000_001L, emptyList())
+        assertEquals(SpatialFocusMode.INACTIVE, expired.mode)
+        assertEquals(null, expired.target)
+    }
+
+    @Test
     fun `VQA and beacon refusal remain typed and operator visible`() {
         val manager = SpatialFocusManager()
         manager.updateTracks(1L, 1L, 0L, listOf(track("one", 1.0)))

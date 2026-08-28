@@ -6,7 +6,7 @@ It replaces routine JPEG/PCM/JSON spool coordination with bounded RAM
 publication after the existing Rokid gates. The app-private spool remains an
 explicit, disabled-by-default diagnostic mode.
 
-The current implementation identifies itself as protocol version `1.1`. A
+The current implementation identifies itself as protocol version `1.2`. A
 base transport lease is bounded to 610 seconds: at most 600 seconds of sensor
 workload plus a separate 10-second authenticated-shutdown envelope. The
 ordinary development command deliberately closes after 30 seconds; the
@@ -53,7 +53,12 @@ TCP is an ordered byte stream. Code never assumes a read is a record:
 `VersionedLiveFrameReader` retains partial header/body state across short reads
 and socket timeouts and accepts coalesced records.
 
-## Version 1.1 record
+## Version 1.1 record framing
+
+The typed HELLO/capabilities contract is version 1.2. Its outer binary record
+framing remains version 1.1 because the telemetry extension uses
+forward-compatible Protocol Buffers fields and does not alter the 38-byte
+record header or payload placement.
 
 All header integers use network byte order. The header is exactly 38 bytes.
 
@@ -84,15 +89,18 @@ inside CONTROL provide HELLO/version negotiation, explicit CAPABILITIES
 exchange, lane authentication, stream lease request/grant, repeated CLOCK_SYNC,
 HEARTBEAT/keepalive, microphone authorization, Rokid gesture/command exchange,
 aggregate TELEMETRY, typed ERROR and diagnostic spool operations. A version
-1.1 glasses peer sends its bounded capabilities immediately after HELLO; the
+1.2 glasses peer sends its bounded capabilities immediately after HELLO; the
 host validates them and replies with host capabilities before issuing the
-single-use camera-lane ticket. Version 1.0 peers retain the original handshake.
+single-use camera-lane ticket. Older minor-version peers retain the original
+handshake and decode the added fields as unknown fields.
 
 Rokid Node publishes aggregate queue-pressure TELEMETRY once per second. It
-contains only queue depths, drop/overflow totals, sent-message totals and a
-source monotonic sample time—never sensor content, labels, identities,
-addresses or credentials. Android Node validates and exposes the latest sample
-in its accessible aggregate status.
+contains queue depths, drop/overflow and sent-message totals, plus camera-gate
+counts for analyzed/emitted frames, relaxed/motion-tier decisions,
+dark/blurry/cadence rejection, and the current target FPS. These are aggregate
+counters with a source monotonic sample time—never sensor content, labels,
+identities, addresses or credentials. Android Node validates accounting
+invariants and exposes the latest sample in its accessible aggregate status.
 
 ## Modality contracts
 

@@ -37,6 +37,7 @@ def test_training_rejects_unknown_answer() -> None:
 def test_preferences_are_validated_and_saved_privately(tmp_path) -> None:  # type: ignore[no-untyped-def]
     path = tmp_path / "profiles" / "training.json"
     expected = TrainingPreferences(bubble_radius_m=1.0, haptic_strength=0.25)
+    assert expected.spatializer_profile == "resonance_audio"
     save_preferences(path, expected)
     assert load_preferences(path) == expected
     assert stat.S_IMODE(path.stat().st_mode) == 0o600

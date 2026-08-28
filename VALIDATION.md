@@ -1493,3 +1493,107 @@ same-signature Binder or audio test is claimed. The next device gate is a
 user-approved install of a final Unity player signed by the same trusted
 development identity as Android Node, followed by Binder restart and open-ear
 FMOD listening tests.
+
+## 2026-08-28 adaptive-cadence telemetry and Android LMK follow-up
+
+Protocol 1.2 adds aggregate-only camera-gate telemetry: analyzed/emitted frame
+counts, relaxed/motion tier counts, dark/blur/cadence rejection totals, and the
+current 3 or 5 FPS target. The receiver rejects impossible accounting and
+out-of-range targets. No image, IMU vector, audio sample, label, identifier, or
+network address is added to telemetry, and no protected gate decision changed.
+
+An attached Rokid/Poco run observed 1,830 analyzed frames, 1,732 emitted frames,
+1,171 relaxed-tier samples, 659 motion-tier samples, 98 cadence rejections, zero
+dark or blur rejections, and a final 3 FPS target after the operator moved the
+glasses and then held them still. The earlier complete approximately five-minute
+untethered interval produced 955 glasses-side camera frames and 29,159 IMU
+samples, with no sender camera or IMU drops. This establishes the intended
+3-to-5-to-3 state transition from content-free device counters.
+
+At the end of a later session HyperOS reported natural `LOW_MEMORY` exits for
+the Android Node foreground process and isolated prewarmed VLM process. The
+previous foreground service returned `START_NOT_STICKY`, so it remained idle.
+The repaired service synchronously persists only its enabled state and depth
+selection, returns `START_STICKY`, handles null-intent restoration, and clears
+that state only on explicit stop. Auxiliary mic, branding, and focus commands
+also reconstruct a missing controller only when the node is still explicitly
+enabled. JVM tests and Android lint passed, and a QNN-enabled APK built and ran.
+ADB-induced crash and same-UID kill probes were classified by HyperOS as
+explicit service stops, so they did not demonstrate the natural-LMK restart
+path; a future naturally occurring LMK remains the physical proof gate.
+
+The installed private Unity player shares Android Node's signing certificate,
+successfully binds the signature-protected Perception Bus, and contains the
+licensed FMOD 2.03.14 runtime, authored Mobile banks, and Resonance Audio native
+plug-in. FMOD opened a 48 kHz stereo Bluetooth route. The system spatializer was
+disabled, which is independent of the authored Resonance binaural plug-in path.
+One live metric cabinet track reached focus with the TalkBack phrase
+`cabinet. 1 o'clock. about 9 feet away.` but expired before menu activation;
+therefore live VQA, beacon activation, and user-confirmed HRTF localization are
+still not claimed.
+
+## 2026-08-28 reconnect, focused VQA, sustained runtime, and HRTF-default follow-up
+
+The YodaOS retry alarm was traced to a platform background-start distinction:
+the exact alarm fired, but a regular service `PendingIntent` did not preserve
+foreground-start eligibility through `onStartCommand`, leaving the UID idle and
+camera access denied. The retry now uses `PendingIntent.getForegroundService`,
+and the service reconfirms its foreground notification before reopening the
+camera. A physical Poco/Rokid fault injection disabled and restored Wi-Fi; the
+same installed nodes returned from standby to streaming in approximately
+15.451 seconds with one producer start, no camera idle-UID denial, and no
+foreground-service background-start restriction.
+
+Focused VQA now keeps only the immutable structured target/frame correlation
+for a nine-second pending window and a ten-second result window, even if the
+live tracker moves on. No raw image is retained by the focus state. The
+isolated VLM retries transient shared-HTP lease contention for at most 1.5
+seconds only for an explicit focused query; the environment classifier remains
+fail-fast. Ordinary motion and track occlusion no longer cancel an explicit
+query, while rapid-approach evidence and the hard timeout still preempt it.
+Generation is capped at 24 tokens and accepted output at 16 words.
+
+One physical focused query selected the live phrase
+`calendar. 1 o'clock. about 10 feet away.`, remained pending while the source
+track disappeared, acquired the shared HTP lease, and completed in 3.594
+seconds. Android exposed the correlated `vqa_result` state and QNN work resumed.
+The answer text was deliberately absent from logs and was not heard through
+TalkBack because the Android Node activity was not foreground, so spoken-answer
+delivery is not claimed. A later unstable-target attempt entered pending and
+then returned inactive without a result; repeated live-request reliability
+therefore remains an open gate. Two physical beacon attempts were correctly
+rejected for confidence below the production threshold; no physical beacon or
+localization claim is made.
+
+A later sustained attached run reached 9,593 reconstructed camera frames,
+196,260 accepted IMU poses, and 5,188 completed QNN cycles out of 5,200 attempts
+with zero link interruptions, zero camera/IMU/audio/touch transport drops, and
+empty peer queues. The latest p95 values were 310.0 ms capture-to-receive,
+103.9 ms segmentation graph, 41.8 ms metric-depth graph, 405.5 ms executor, and
+922.6 ms capture-to-result; clock uncertainty p95 was 5.5 ms. At the earlier
+resource sample from the same installed build,
+Rokid PSS was 55.6 MiB, Android main-process PSS 529.0 MiB, isolated-VLM PSS
+1,412.1 MiB, Unity PSS 214.1 MiB, Poco battery temperature 42.4 C with Android
+thermal status `LIGHT`, and Rokid battery temperature 35.5 C. These are one-run
+observations, not universal budgets.
+
+The same-signed licensed Unity player was physically running and bound to the
+Android Node perception service. Its app-only logs showed FMOD initialized at
+48 kHz with no bank or Resonance plug-in fault and no inspectable-fallback
+dispatch. During this cable-attached check FMOD correctly reported that no
+Bluetooth audio route was active, so no listening claim was made. The
+model-neutral command adapter and saved training defaults now select
+`resonance_audio`; plain FMOD Standard remains an explicit comparison profile.
+The authored FMOD graph still validates one Resonance listener, three Resonance
+sources, bounded voices, and a limiter.
+
+Final local regression evidence for this follow-up is 223 Python tests and 647
+Android JVM tests: 275 Android Node, 243 Rokid Node, 128 live-transport, and one
+protocol test, all with zero failures, errors, or skips. Both Android debug APKs,
+Android lint, native CTest, 156 cross-platform desktop-relay tests, Unity 6000.3
+EditMode 28/28, Unity PlayMode 3/3, protocol regeneration, the synthetic demo,
+formatting, Ruff, MyPy, repository policy, configuration validation, secret
+scanning, and whitespace checks passed. FMOD Studio validated and rebuilt both
+Desktop and Mobile banks; expected headless ALSA/JACK warnings do not describe
+the Android output route. The complete WindowsDesktop solution remains
+unavailable under this Ubuntu .NET SDK, so no Windows WPF runtime claim is made.

@@ -3,6 +3,7 @@ package org.conceptflow.mpl.transport
 
 import org.conceptflow.mpl.v1.LiveLinkControl
 import org.conceptflow.mpl.v1.LiveLinkEnvelope
+import org.conceptflow.mpl.v1.LiveLinkTelemetry
 import org.conceptflow.mpl.v1.LiveTransportLane
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
 
@@ -188,7 +189,8 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
                     telemetry.pendingCameraFrames > 1 ||
                     telemetry.pendingImuBatches > 64 ||
                     telemetry.pendingAudioBlocks > 64 ||
-                    telemetry.pendingTouchEvents > 256
+                    telemetry.pendingTouchEvents > 256 ||
+                    cameraGateTelemetryIsMalformed(telemetry)
                 ) malformedControl()
             }
             LiveLinkControl.PayloadCase.LEASE_REQUEST -> {
@@ -234,6 +236,31 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
 
     private fun malformedControl(): Nothing =
         throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL)
+
+    private fun cameraGateTelemetryIsMalformed(telemetry: LiveLinkTelemetry): Boolean {
+        val counters = listOf(
+            telemetry.cameraFramesAnalyzed,
+            telemetry.cameraFramesEmitted,
+            telemetry.cameraRelaxedTierSamples,
+            telemetry.cameraMotionTierSamples,
+            telemetry.cameraFramesDroppedDark,
+            telemetry.cameraFramesDroppedBlurry,
+            telemetry.cameraFramesDroppedCadence,
+        )
+        if (counters.any { it < 0L } || telemetry.currentCameraTargetFps !in 0..10) return true
+        return runCatching {
+            Math.addExact(
+                telemetry.cameraRelaxedTierSamples,
+                telemetry.cameraMotionTierSamples,
+            ) != telemetry.cameraFramesAnalyzed ||
+                listOf(
+                    telemetry.cameraFramesEmitted,
+                    telemetry.cameraFramesDroppedDark,
+                    telemetry.cameraFramesDroppedBlurry,
+                    telemetry.cameraFramesDroppedCadence,
+                ).fold(0L, Math::addExact) != telemetry.cameraFramesAnalyzed
+        }.getOrDefault(true)
+    }
 
     private fun bindingMismatch(): Nothing =
         throw LaneProtocolException(LaneProtocolFailure.BINDING_MISMATCH)

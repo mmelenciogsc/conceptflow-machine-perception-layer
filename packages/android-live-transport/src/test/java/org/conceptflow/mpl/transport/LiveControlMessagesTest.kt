@@ -58,8 +58,18 @@ class LiveControlMessagesTest {
             recordSent(org.conceptflow.mpl.v1.LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL, 10)
             recordSent(org.conceptflow.mpl.v1.LiveTransportLane.LIVE_TRANSPORT_LANE_CAMERA, 20)
         }.snapshot()
+        val cameraGate = LiveCameraGateTelemetry(
+            framesAnalyzed = 7,
+            framesEmitted = 4,
+            relaxedTierSamples = 3,
+            motionTierSamples = 4,
+            framesDroppedDark = 1,
+            framesDroppedBlurry = 1,
+            framesDroppedCadence = 1,
+            currentTargetFramesPerSecond = 5,
+        )
 
-        val telemetry = LiveControlMessages.telemetry(9_000L, queues, transport).telemetry
+        val telemetry = LiveControlMessages.telemetry(9_000L, queues, transport, cameraGate).telemetry
 
         assertEquals(9_000L, telemetry.sampledMonotonicTimestampNs)
         assertEquals(1, telemetry.pendingCameraFrames)
@@ -67,6 +77,14 @@ class LiveControlMessagesTest {
         assertEquals(8L, telemetry.touchOverflowEvents)
         assertEquals(1L, telemetry.sentRealtimeMessages)
         assertEquals(1L, telemetry.sentCameraMessages)
+        assertEquals(7L, telemetry.cameraFramesAnalyzed)
+        assertEquals(4L, telemetry.cameraFramesEmitted)
+        assertEquals(3L, telemetry.cameraRelaxedTierSamples)
+        assertEquals(4L, telemetry.cameraMotionTierSamples)
+        assertEquals(1L, telemetry.cameraFramesDroppedDark)
+        assertEquals(1L, telemetry.cameraFramesDroppedBlurry)
+        assertEquals(1L, telemetry.cameraFramesDroppedCadence)
+        assertEquals(5, telemetry.currentCameraTargetFps)
     }
 
     @Test

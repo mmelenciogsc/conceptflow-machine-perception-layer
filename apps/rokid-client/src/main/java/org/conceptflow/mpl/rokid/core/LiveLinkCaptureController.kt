@@ -5,6 +5,7 @@ import org.conceptflow.mpl.transport.LiveLinkDisconnectReason
 import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkSession
+import org.conceptflow.mpl.transport.LiveCameraGateTelemetry
 import org.conceptflow.mpl.transport.MicrophoneGestureDispatch
 import org.conceptflow.mpl.transport.MicrophoneLeaseAuthorization
 import org.conceptflow.mpl.transport.MicrophoneGestureResult
@@ -30,6 +31,7 @@ interface RokidLiveTransport : AutoCloseable {
     fun offerImu(batch: SensorStreamEnvelope): Boolean
     fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean
     fun offerTouch(event: SensorStreamEnvelope): Boolean = false
+    fun updateCameraGateTelemetry(snapshot: LiveCameraGateTelemetry) = Unit
     fun requestMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
         MicrophoneGestureDispatch.NO_AUTHENTICATED_SESSION
     fun stopMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
@@ -48,6 +50,8 @@ class DefaultRokidLiveTransport(private val client: RokidLiveLinkClient) : Rokid
     override fun offerImu(batch: SensorStreamEnvelope): Boolean = client.offerImu(batch)
     override fun offerMicrophone(chunk: SensorStreamEnvelope): Boolean = client.offerMicrophone(chunk)
     override fun offerTouch(event: SensorStreamEnvelope): Boolean = client.offerTouch(event)
+    override fun updateCameraGateTelemetry(snapshot: LiveCameraGateTelemetry) =
+        client.updateCameraGateTelemetry(snapshot)
     override fun requestMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
         client.requestMicrophoneFromUserGesture()
     override fun stopMicrophoneFromUserGesture(): MicrophoneGestureDispatch =
@@ -102,6 +106,7 @@ data class LiveLinkCaptureSnapshot(
     val cameraFramesQueued: Long,
     val cameraFramesDropped: Long,
     val cameraChunksQueued: Long,
+    val cameraGate: LiveCameraGateTelemetry,
     val imuSamplesObserved: Long,
     val imuBatchesQueued: Long,
     val imuSamplesQueued: Long,
@@ -146,6 +151,48 @@ data class LiveCameraSourceTimingSnapshot(
     val listenerPath: LiveTimingDistributionSnapshot = LiveTimingDistributionSnapshot(),
     val pipeline: LiveCapturePipelineSnapshot = LiveCapturePipelineSnapshot(),
 )
+
+private class LiveCameraGateMetrics {
+    private var framesAnalyzed = 0L
+    private var framesEmitted = 0L
+    private var relaxedTierSamples = 0L
+    private var motionTierSamples = 0L
+    private var framesDroppedDark = 0L
+    private var framesDroppedBlurry = 0L
+    private var framesDroppedCadence = 0L
+    private var currentTargetFramesPerSecond = 0
+
+    @Synchronized
+    fun record(event: CaptureGateEvent): LiveCameraGateTelemetry {
+        framesAnalyzed = Math.addExact(framesAnalyzed, 1L)
+        currentTargetFramesPerSecond = event.targetFramesPerSecond.toInt()
+        if (event.targetFramesPerSecond >= 5.0) {
+            motionTierSamples = Math.addExact(motionTierSamples, 1L)
+        } else {
+            relaxedTierSamples = Math.addExact(relaxedTierSamples, 1L)
+        }
+        when (event.dropReason) {
+            FrameDropReason.DARK -> framesDroppedDark = Math.addExact(framesDroppedDark, 1L)
+            FrameDropReason.BLURRY -> framesDroppedBlurry = Math.addExact(framesDroppedBlurry, 1L)
+            FrameDropReason.CADENCE_SIMILAR -> framesDroppedCadence =
+                Math.addExact(framesDroppedCadence, 1L)
+            null -> framesEmitted = Math.addExact(framesEmitted, 1L)
+        }
+        return snapshot()
+    }
+
+    @Synchronized
+    fun snapshot(): LiveCameraGateTelemetry = LiveCameraGateTelemetry(
+        framesAnalyzed = framesAnalyzed,
+        framesEmitted = framesEmitted,
+        relaxedTierSamples = relaxedTierSamples,
+        motionTierSamples = motionTierSamples,
+        framesDroppedDark = framesDroppedDark,
+        framesDroppedBlurry = framesDroppedBlurry,
+        framesDroppedCadence = framesDroppedCadence,
+        currentTargetFramesPerSecond = currentTargetFramesPerSecond,
+    )
+}
 
 /**
  * Owns the camera/IMU producers for one bounded authenticated live-link run.
@@ -209,6 +256,7 @@ class LiveLinkCaptureController(
     private val cameraFramesQueued = AtomicLong()
     private val cameraFramesDropped = AtomicLong()
     private val cameraChunksQueued = AtomicLong()
+    private val cameraGateMetrics = LiveCameraGateMetrics()
     private val imuSamplesObserved = AtomicLong()
     private val imuBatchesQueued = AtomicLong()
     private val imuSamplesQueued = AtomicLong()
@@ -280,6 +328,7 @@ class LiveLinkCaptureController(
         cameraFramesQueued = cameraFramesQueued.get(),
         cameraFramesDropped = cameraFramesDropped.get(),
         cameraChunksQueued = cameraChunksQueued.get(),
+        cameraGate = cameraGateMetrics.snapshot(),
         imuSamplesObserved = imuSamplesObserved.get(),
         imuBatchesQueued = imuBatchesQueued.get(),
         imuSamplesQueued = imuSamplesQueued.get(),
@@ -618,6 +667,11 @@ class LiveLinkCaptureController(
         pipelineGeneration: Long,
     ): FrameSource.Listener =
         object : FrameSource.Listener {
+            override fun onCaptureGate(event: CaptureGateEvent) {
+                if (!isCurrentStream(token) || !frameSources.isCurrent(source)) return
+                transport.updateCameraGateTelemetry(cameraGateMetrics.record(event))
+            }
+
             override fun onFrame(frame: FramePayload) {
                 if (!isCurrentStream(token) || !frameSources.isCurrent(source)) return
                 cameraFramesObserved.incrementAndGet()

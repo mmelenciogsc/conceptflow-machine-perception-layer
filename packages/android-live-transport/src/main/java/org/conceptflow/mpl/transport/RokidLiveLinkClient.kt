@@ -46,6 +46,7 @@ class RokidLiveLinkClient(
     private val gestureOutbox = RokidGestureOutbox()
     private val microphoneIntentIds = AtomicLong(0L)
     private val nodeGestureIds = AtomicLong(0L)
+    private val cameraGateTelemetry = AtomicReference(LiveCameraGateTelemetry())
     private val microphoneIntentTracker = GlassesMicrophoneIntentTracker()
     private val shutdownWorker = BoundedEndpointShutdownWorker<LiveLinkCloseEvidence>()
     private var shutdownCompletion: CompletableFuture<LiveLinkCloseEvidence>? = null
@@ -68,6 +69,11 @@ class RokidLiveLinkClient(
         if (after > before) metrics.recordDropped(LiveTransportLane.LIVE_TRANSPORT_LANE_CAMERA, after - before)
         metrics.recordQueueDepth(LiveTransportLane.LIVE_TRANSPORT_LANE_CAMERA, 1)
         return true
+    }
+
+    /** Updates aggregate gate observations without touching capture or queue behavior. */
+    fun updateCameraGateTelemetry(snapshot: LiveCameraGateTelemetry) {
+        cameraGateTelemetry.set(snapshot)
     }
 
     fun offerImu(batch: SensorStreamEnvelope): Boolean {
@@ -600,7 +606,12 @@ class RokidLiveLinkClient(
                         lane,
                         output.control(
                             LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
-                            LiveControlMessages.telemetry(nowNs, queues.snapshot(), metrics.snapshot()),
+                            LiveControlMessages.telemetry(
+                                nowNs,
+                                queues.snapshot(),
+                                metrics.snapshot(),
+                                cameraGateTelemetry.get(),
+                            ),
                         ),
                         metrics,
                     )

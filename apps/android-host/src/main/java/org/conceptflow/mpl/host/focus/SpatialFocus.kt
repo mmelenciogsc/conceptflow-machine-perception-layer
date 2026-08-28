@@ -427,6 +427,8 @@ class SpatialFocusManager(
     private val stateTtlNanos: Long = 1_500_000_000L,
     private val beaconTtlNanos: Long = 30_000_000_000L,
     private val maximumBeaconHeadPoseAgeNanos: Long = 250_000_000L,
+    private val vqaPendingTtlNanos: Long = 9_000_000_000L,
+    private val vqaResultTtlNanos: Long = 10_000_000_000L,
 ) {
     private var revision = 0L
     private var snapshotCounter = 0L
@@ -445,12 +447,15 @@ class SpatialFocusManager(
     private var operatorNotice: SpatialFocusOperatorNotice = SpatialFocusOperatorNotice.None
     private var activeBeacon: SpatialBeacon? = null
     private var beaconActivationCounter = 0L
+    private var vqaStateUntilNs = 0L
 
     init {
         require(dwellNanos == 750_000_000L)
         require(stateTtlNanos >= dwellNanos)
         require(beaconTtlNanos in 1_000_000_000L..300_000_000_000L)
         require(maximumBeaconHeadPoseAgeNanos in 1_000_000L..1_000_000_000L)
+        require(vqaPendingTtlNanos in 1_000_000_000L..30_000_000_000L)
+        require(vqaResultTtlNanos in 1_000_000_000L..60_000_000_000L)
     }
 
     @Synchronized
@@ -469,6 +474,22 @@ class SpatialFocusManager(
         if (prior != null && prior.sessionGeneration != sessionGeneration) clearSelection()
         if (activeBeacon?.let { nowNanos >= it.validUntilTimestampNanos } == true) clearSelection()
         currentSourceWorldRevision = sourceWorldRevision
+        if (prior != null && prior.sessionGeneration == sessionGeneration &&
+            (mode == SpatialFocusMode.VQA_PENDING || mode == SpatialFocusMode.VQA_RESULT) &&
+            nowNanos < vqaStateUntilNs
+        ) {
+            // Explicit VQA owns a bounded, immutable source-frame correlation. Keep that
+            // structured target while the live detector moves on; retaining it does not make
+            // expired geometry current or feed it back into perception.
+            snapshot = prior.copy(sourceWorldRevision = sourceWorldRevision)
+            return publish(nowNanos, "vqa_source_held")
+        }
+        if ((mode == SpatialFocusMode.VQA_PENDING || mode == SpatialFocusMode.VQA_RESULT) &&
+            nowNanos >= vqaStateUntilNs
+        ) {
+            vqaGate.cancel()?.let { correlation -> runCatching { vqaGateway.cancel(correlation) } }
+            clearSelection()
+        }
         if (prior == null || prior.sessionGeneration != sessionGeneration) {
             currentSessionGeneration = sessionGeneration
             snapshotCounter += 1L
@@ -579,6 +600,7 @@ class SpatialFocusManager(
                             is FocusedVqaAdmission.Admitted -> {
                                 if (runCatching { vqaGateway.submit(admission.request) }.getOrDefault(false)) {
                                     mode = SpatialFocusMode.VQA_PENDING
+                                    vqaStateUntilNs = Math.addExact(nowNanos, vqaPendingTtlNanos)
                                     effect = SpatialFocusEffect.RequestVqa(admission.request)
                                     reason = "vqa_requested"
                                 } else {
@@ -665,9 +687,11 @@ class SpatialFocusManager(
         val normalized = answer.filter { !it.isISOControl() || it.isWhitespace() }
             .trim().replace(Regex("\\s+"), " ").take(512)
         if (normalized.isBlank()) return false
+        if (nowNanos >= vqaStateUntilNs) return false
         if (!vqaGate.complete(correlation) || mode != SpatialFocusMode.VQA_PENDING) return false
         vqaAnswer = normalized
         mode = SpatialFocusMode.VQA_RESULT
+        vqaStateUntilNs = Math.addExact(nowNanos, vqaResultTtlNanos)
         publish(nowNanos, "vqa_complete")
         return true
     }
@@ -680,6 +704,7 @@ class SpatialFocusManager(
     ): Boolean {
         if (!vqaGate.complete(correlation) || mode != SpatialFocusMode.VQA_PENDING) return false
         mode = SpatialFocusMode.ACTION_MENU
+        vqaStateUntilNs = 0L
         menuIndex = 0
         operatorNotice = SpatialFocusOperatorNotice.VqaRejected(reason)
         publish(nowNanos, "vqa_rejected_${reason.name.lowercase()}")
@@ -712,6 +737,7 @@ class SpatialFocusManager(
         dwellStartedNs = nowNanos
         dwellDeadlineNs = Math.addExact(nowNanos, dwellNanos)
         vqaAnswer = ""
+        vqaStateUntilNs = 0L
     }
 
     private fun cancelDwell() {
@@ -723,6 +749,9 @@ class SpatialFocusManager(
     /** Returns true only when the selected target expired, so a command cannot retarget silently. */
     private fun pruneExpired(nowNanos: Long): Boolean {
         val current = snapshot ?: return false
+        if ((mode == SpatialFocusMode.VQA_PENDING || mode == SpatialFocusMode.VQA_RESULT) &&
+            nowNanos < vqaStateUntilNs
+        ) return false
         val beacon = activeBeacon
         if (mode == SpatialFocusMode.BEACON_ACTIVE && beacon != null &&
             nowNanos >= beacon.validUntilTimestampNanos
@@ -763,6 +792,7 @@ class SpatialFocusManager(
         menuIndex = 0
         cancelDwell()
         vqaAnswer = ""
+        vqaStateUntilNs = 0L
         operatorNotice = SpatialFocusOperatorNotice.None
         activeBeacon = null
         focusGeneration += 1L
@@ -783,9 +813,16 @@ class SpatialFocusManager(
             snapshotId = current?.snapshotId ?: 0L,
             sourceWorldRevision = current?.sourceWorldRevision ?: currentSourceWorldRevision,
             publishedTimestampNanos = nowNanos,
-            validUntilTimestampNanos = beacon?.validUntilTimestampNanos ?: target?.expiresAtTimestampNanos?.let {
-                minOf(Math.addExact(nowNanos, stateTtlNanos), it)
-            } ?: Math.addExact(nowNanos, stateTtlNanos),
+            validUntilTimestampNanos = when {
+                beacon != null -> beacon.validUntilTimestampNanos
+                (mode == SpatialFocusMode.VQA_PENDING || mode == SpatialFocusMode.VQA_RESULT) &&
+                    vqaStateUntilNs > nowNanos -> vqaStateUntilNs
+                target != null -> minOf(
+                    Math.addExact(nowNanos, stateTtlNanos),
+                    target.expiresAtTimestampNanos,
+                )
+                else -> Math.addExact(nowNanos, stateTtlNanos)
+            },
             focusGeneration = focusGeneration,
             mode = mode,
             selectedIndex = selectedIndex,

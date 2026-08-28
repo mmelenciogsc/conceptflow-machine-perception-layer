@@ -224,7 +224,7 @@ object LocalVlmFocusedObjectAnswerParser {
 
     const val MAXIMUM_CHARACTERS = 240
     const val MAXIMUM_UTF8_BYTES = 512
-    const val MAXIMUM_WORDS = 20
+    const val MAXIMUM_WORDS = 16
 }
 
 /** Pure validation shared by the Android callback path and deterministic JVM tests. */

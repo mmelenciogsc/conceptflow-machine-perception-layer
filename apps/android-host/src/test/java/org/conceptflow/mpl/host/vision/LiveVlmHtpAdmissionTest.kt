@@ -65,7 +65,7 @@ class LiveVlmHtpAdmissionTest {
     }
 
     @Test
-    fun focusedVqaGetsTheSameBoundedWindowAndUrgentQnnCancellation() {
+    fun focusedVqaDefersRoutineMotionAndOcclusionButYieldsToRapidApproach() {
         val gate = LiveVlmHtpAdmissionGate(maximumVlmWindowNanos = 8_500_000_000L)
         gate.observe(LocalVlmHtpWorkState(LocalVlmHtpWorkKind.FOCUSED_OBJECT_VQA, 1_000_000_000L))
         assertEquals(
@@ -73,9 +73,19 @@ class LiveVlmHtpAdmissionTest {
             gate.decide(1_100_000_000L, SemanticDepthRefreshReason.STABLE_CADENCE),
         )
         assertEquals(
-            LiveVlmQnnAdmissionDecision.CANCEL_VLM_FOR_URGENT_QNN,
+            LiveVlmQnnAdmissionDecision.DEFER_QNN_FOR_VLM,
             gate.decide(1_200_000_000L, SemanticDepthRefreshReason.MOTION),
         )
+        assertEquals(
+            LiveVlmQnnAdmissionDecision.DEFER_QNN_FOR_VLM,
+            gate.decide(1_300_000_000L, SemanticDepthRefreshReason.OCCLUSION),
+        )
+        assertTrue(gate.hasActiveWork())
+        assertEquals(
+            LiveVlmQnnAdmissionDecision.CANCEL_VLM_FOR_URGENT_QNN,
+            gate.decide(1_400_000_000L, SemanticDepthRefreshReason.RAPID_APPROACH),
+        )
+        assertFalse(gate.hasActiveWork())
     }
 
     @Test

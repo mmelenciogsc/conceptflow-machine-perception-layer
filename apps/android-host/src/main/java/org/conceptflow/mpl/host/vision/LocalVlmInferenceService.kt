@@ -258,10 +258,7 @@ class LocalVlmInferenceService : Service() {
             val runtime = engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
             val startedNanos = SystemClock.elapsedRealtimeNanos()
             val owner = currentCoroutineContext()[Job] ?: error("VLM request job unavailable")
-            val acquisition = htpExecutionLease.tryAcquire(
-                HtpLeaseWorkload.VLM,
-                VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS,
-            ) { !owner.isActive }
+            val acquisition = acquireForRequest(request, owner)
             val acquired = acquisition as? HtpLeaseAcquisition.Acquired
             if (acquired == null) {
                 val refusal = acquisition as HtpLeaseAcquisition.Refused
@@ -320,6 +317,29 @@ class LocalVlmInferenceService : Service() {
             if (activeRequest.get() === request) replyFailure(request, "vlm_inference_failed")
         } finally {
             deleteOwnedImage(request.image)
+        }
+    }
+
+    /**
+     * A focused request is admitted by the main process before this isolated process runs. A QNN
+     * invocation that already owned the cross-process lease can therefore win the first probe by
+     * a few hundred milliseconds. Retry only that explicit request, for a hard-bounded interval;
+     * background classification remains fail-fast and the QNN-priority monitor may still cancel
+     * an acquired VQA when critical geometry needs the HTP.
+     */
+    private suspend fun acquireForRequest(request: InferenceRequest, owner: Job): HtpLeaseAcquisition {
+        val startedNanos = SystemClock.elapsedRealtimeNanos()
+        while (true) {
+            val acquisition = htpExecutionLease.tryAcquire(
+                HtpLeaseWorkload.VLM,
+                VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS,
+            ) { !owner.isActive || activeRequest.get() !== request }
+            val refusal = acquisition as? HtpLeaseAcquisition.Refused ?: return acquisition
+            val elapsedNanos = (SystemClock.elapsedRealtimeNanos() - startedNanos).coerceAtLeast(0L)
+            if (!shouldRetryFocusedVlmLease(request.task, refusal.reason, elapsedNanos)) {
+                return refusal
+            }
+            delay(FOCUSED_VQA_LEASE_RETRY_MILLIS)
         }
     }
 
@@ -578,6 +598,7 @@ class LocalVlmInferenceService : Service() {
         const val PREWARM_IMAGE_EDGE = 224
         const val PREWARM_JPEG_QUALITY = 82
         const val VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS = 25L
+        const val FOCUSED_VQA_LEASE_RETRY_MILLIS = 25L
         const val QNN_PRIORITY_POLL_MILLIS = 20L
         const val MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS = 1_500_000_000L
         val SHA256 = Regex("[a-f0-9]{64}")
@@ -585,6 +606,19 @@ class LocalVlmInferenceService : Service() {
         val TEMP_IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg\\.tmp")
     }
 }
+
+internal fun shouldRetryFocusedVlmLease(
+    task: LocalVlmTaskKind,
+    reason: HtpLeaseRefusalReason,
+    elapsedNanos: Long,
+): Boolean = task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 &&
+    reason in RETRYABLE_FOCUSED_VQA_LEASE_REFUSALS && elapsedNanos < 1_500_000_000L
+
+private val RETRYABLE_FOCUSED_VQA_LEASE_REFUSALS = setOf(
+    HtpLeaseRefusalReason.QNN_PRIORITY,
+    HtpLeaseRefusalReason.BUSY,
+    HtpLeaseRefusalReason.TIMEOUT,
+)
 
 private class QnnPriorityCancellation : CancellationException("qnn_priority_requested")
 
@@ -748,14 +782,17 @@ private class GenieXLocalVlmEngine(
         const val WORKER_THREADS = 4
         const val ENVIRONMENT_MAX_OUTPUT_TOKENS = 6
         const val ENVIRONMENT_MAX_OUTPUT_CHARACTERS = 32
-        const val FOCUSED_VQA_MAX_OUTPUT_TOKENS = 48
+        // The phone's measured HTP path exceeded the eight-second response budget when allowed to
+        // generate 48 tokens. Focused answers are intentionally concise, so cap generation at 24
+        // tokens while retaining the existing hard timeout and cooperative QNN preemption.
+        const val FOCUSED_VQA_MAX_OUTPUT_TOKENS = 24
         const val DETERMINISTIC_SEED = 2_603
         const val ENVIRONMENT_INFERENCE_TIMEOUT_MILLIS = 8_000L
         const val FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS = 8_000L
         const val MAX_INITIALIZATION_ERROR_CHARACTERS = 256
         const val FOCUSED_OBJECT_PROMPT = "Answer only the supplied question about the selected " +
             "visible object. Use visible evidence only; do not infer identity, intent, safety, " +
-            "or unseen details. Reply with one brief plain-text sentence of at most 20 words."
+            "or unseen details. Reply with one brief plain-text sentence of at most 16 words."
     }
 }
 

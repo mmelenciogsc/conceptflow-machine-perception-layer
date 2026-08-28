@@ -17,6 +17,49 @@ import org.junit.Test
 
 class LocalVlmFocusedObjectTest {
     @Test
+    fun focusedLeaseContentionRetriesWithinBoundWithoutMaskingHardFailures() {
+        listOf(
+            HtpLeaseRefusalReason.QNN_PRIORITY,
+            HtpLeaseRefusalReason.BUSY,
+            HtpLeaseRefusalReason.TIMEOUT,
+        ).forEach { reason ->
+            assertTrue(
+                shouldRetryFocusedVlmLease(
+                    LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
+                    reason,
+                    1_499_999_999L,
+                ),
+            )
+        }
+        assertFalse(
+            shouldRetryFocusedVlmLease(
+                LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
+                HtpLeaseRefusalReason.QNN_PRIORITY,
+                1_500_000_000L,
+            ),
+        )
+        assertFalse(
+            shouldRetryFocusedVlmLease(
+                LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1,
+                HtpLeaseRefusalReason.QNN_PRIORITY,
+                1L,
+            ),
+        )
+        listOf(
+            HtpLeaseRefusalReason.CANCELLED,
+            HtpLeaseRefusalReason.IO_FAILURE,
+        ).forEach { reason ->
+            assertFalse(
+                shouldRetryFocusedVlmLease(
+                    LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
+                    reason,
+                    1L,
+                ),
+            )
+        }
+    }
+
+    @Test
     fun typedTaskParserDoesNotAliasUnknownOrEnvironmentTasks() {
         assertEquals(
             LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
@@ -48,7 +91,7 @@ class LocalVlmFocusedObjectTest {
                 "x".repeat(LocalVlmFocusedObjectAnswerParser.MAXIMUM_CHARACTERS + 1),
             ),
         )
-        assertNull(LocalVlmFocusedObjectAnswerParser.parse(List(21) { "word" }.joinToString(" ")))
+        assertNull(LocalVlmFocusedObjectAnswerParser.parse(List(17) { "word" }.joinToString(" ")))
     }
 
     @Test

@@ -71,35 +71,59 @@ object AndroidNodeRuntimeState {
 /** Persistent, explicitly started owner of the Android Node listener and QNN sessions. */
 class AndroidNodeForegroundService : Service() {
     private var controller: LiveMachineVisionController? = null
+    private lateinit var desiredStateStore: AndroidNodeDesiredStateStore
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        desiredStateStore = AndroidNodeDesiredStateStore(applicationContext)
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) {
+            val desiredState = desiredStateStore.read()
+            if (!desiredState.enabled) {
+                Log.i(TAG, "state=android_node_service restore=skipped reason=not_enabled")
+                stopSelfResult(startId)
+                return START_NOT_STICKY
+            }
+            startForegroundServiceState(getString(R.string.android_node_starting))
+            startNode(desiredState.environmentMode)
+            Log.i(TAG, "state=android_node_service restore=started")
+            return START_STICKY
+        }
         return when (intent?.action) {
             ACTION_START -> {
+                val environmentMode = intent.environmentMode()
+                if (!desiredStateStore.enable(environmentMode)) {
+                    Log.e(TAG, "state=android_node_service persistence=failed operation=enable")
+                }
                 startForegroundServiceState(getString(R.string.android_node_starting))
-                startNode(intent.environmentMode())
-                START_NOT_STICKY
+                startNode(environmentMode)
+                START_STICKY
             }
             ACTION_STOP -> {
+                if (!desiredStateStore.disable()) {
+                    Log.e(TAG, "state=android_node_service persistence=failed operation=disable")
+                }
                 stopNode()
                 START_NOT_STICKY
             }
             ACTION_REQUEST_MICROPHONE -> {
+                restoreControllerIfDesired()
                 controller?.requestMicrophone()
-                START_NOT_STICKY
+                restartDisposition()
             }
             ACTION_PLAY_BRAND_SEQUENCE -> {
+                restoreControllerIfDesired()
                 controller?.playRokidBrandSequence()
-                START_NOT_STICKY
+                restartDisposition()
             }
             ACTION_FOCUS_COMMAND -> {
+                restoreControllerIfDesired()
                 intent.focusCommand()?.let { controller?.handleFocusCommand(it) }
-                START_NOT_STICKY
+                restartDisposition()
             }
             else -> {
                 Log.w(TAG, "state=android_node_service action=rejected")
@@ -168,6 +192,17 @@ class AndroidNodeForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun restartDisposition(): Int =
+        if (desiredStateStore.read().enabled) START_STICKY else START_NOT_STICKY
+
+    private fun restoreControllerIfDesired() {
+        if (controller != null) return
+        val desiredState = desiredStateStore.read()
+        if (!desiredState.enabled) return
+        startForegroundServiceState(getString(R.string.android_node_starting))
+        startNode(desiredState.environmentMode)
     }
 
     private fun updateNotification(summary: String) {
@@ -245,6 +280,7 @@ class AndroidNodeForegroundService : Service() {
         private const val ACTION_FOCUS_COMMAND = "org.conceptflow.mpl.host.action.FOCUS_COMMAND"
         private const val EXTRA_ENVIRONMENT_MODE = "environment_mode"
         private const val EXTRA_FOCUS_COMMAND = "focus_command"
+        private const val MAXIMUM_FOCUS_COMMAND_SEQUENCE = 6
         private val ACTIVE_NODE_PHASES = setOf(
             LiveMachineVisionPhase.OPENING_QNN_HTP,
             LiveMachineVisionPhase.LISTENING,
@@ -291,7 +327,62 @@ class AndroidNodeForegroundService : Service() {
             )
         }
 
+        /** Synchronous shell-only provider hook; the controller and focus manager are synchronized. */
+        internal fun focusCommandSequenceNow(
+            commands: List<SpatialFocusCommand>,
+        ): SpatialFocusState? {
+            require(commands.isNotEmpty() && commands.size <= MAXIMUM_FOCUS_COMMAND_SEQUENCE)
+            val activeController = instance?.controller ?: return null
+            var state: SpatialFocusState? = null
+            for (command in commands) {
+                state = activeController.handleFocusCommand(command) ?: return null
+            }
+            return state
+        }
+
         fun offerGnss(sample: GnssQualitySample): Boolean =
             instance?.controller?.updateGnss(sample) ?: false
+    }
+}
+
+internal data class AndroidNodeDesiredState(
+    val enabled: Boolean,
+    val environmentMode: EnvironmentSelectionMode,
+)
+
+internal object AndroidNodeRestartPolicy {
+    fun restore(enabled: Boolean, serializedEnvironmentMode: String?): AndroidNodeDesiredState =
+        AndroidNodeDesiredState(
+            enabled = enabled,
+            environmentMode = serializedEnvironmentMode
+                ?.let { value -> runCatching { EnvironmentSelectionMode.valueOf(value) }.getOrNull() }
+                ?: EnvironmentSelectionMode.AUTOMATIC,
+        )
+}
+
+internal class AndroidNodeDesiredStateStore(context: Context) {
+    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+
+    fun enable(environmentMode: EnvironmentSelectionMode): Boolean =
+        preferences.edit()
+            .putBoolean(KEY_ENABLED, true)
+            .putString(KEY_ENVIRONMENT_MODE, environmentMode.name)
+            .commit()
+
+    fun disable(): Boolean =
+        preferences.edit()
+            .putBoolean(KEY_ENABLED, false)
+            .remove(KEY_ENVIRONMENT_MODE)
+            .commit()
+
+    fun read(): AndroidNodeDesiredState = AndroidNodeRestartPolicy.restore(
+        enabled = preferences.getBoolean(KEY_ENABLED, false),
+        serializedEnvironmentMode = preferences.getString(KEY_ENVIRONMENT_MODE, null),
+    )
+
+    private companion object {
+        const val PREFERENCES_NAME = "android_node_runtime"
+        const val KEY_ENABLED = "enabled"
+        const val KEY_ENVIRONMENT_MODE = "environment_mode"
     }
 }
