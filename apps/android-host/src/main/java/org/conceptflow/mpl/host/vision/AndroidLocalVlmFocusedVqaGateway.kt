@@ -100,19 +100,23 @@ class AndroidLocalVlmFocusedVqaGateway(
             frame.jpeg.fill(0)
             return
         }
+        val callbackGate = SubmissionCallbackGate { outcome ->
+            finishFromClient(gatewayRequest, outcome)
+        }
         val result = try {
-            client.submitFocusedObjectVqa(localRequest, frame) { outcome ->
-                finishFromClient(gatewayRequest, outcome)
-            }
+            client.submitFocusedObjectVqa(localRequest, frame, callbackGate::receive)
         } catch (_: RuntimeException) {
             LocalVlmSubmissionResult.UNAVAILABLE
         } finally {
             // The IPC client has synchronously copied/persisted the explicit request by this point.
-            // Do not retain a second in-process JPEG after dispatch.
+            // Do not retain a second in-process JPEG after dispatch. Synchronous client callbacks
+            // remain gated until this wipe completes, so terminal observers cannot race cleanup.
             frame.jpeg.fill(0)
         }
+        val deferredOutcome = callbackGate.complete(result == LocalVlmSubmissionResult.ACCEPTED)
         if (result == LocalVlmSubmissionResult.ACCEPTED) {
             gatewayRequest.clientSubmitted.set(true)
+            deferredOutcome?.let { finishFromClient(gatewayRequest, it) }
             if ((closed.get() || active.get() !== gatewayRequest) &&
                 !gatewayRequest.terminalCallbackReceived.get()
             ) {
@@ -154,6 +158,37 @@ class AndroidLocalVlmFocusedVqaGateway(
         @Volatile var future: Future<*>? = null
         val clientSubmitted = AtomicBoolean(false)
         val terminalCallbackReceived = AtomicBoolean(false)
+    }
+
+    /** Holds callbacks until the synchronous submission result and JPEG cleanup are known. */
+    private class SubmissionCallbackGate(
+        private val deliver: (LocalVlmFocusedObjectOutcome) -> Unit,
+    ) {
+        private val lock = Any()
+        private var submissionAccepted: Boolean? = null
+        private var pending: LocalVlmFocusedObjectOutcome? = null
+
+        fun receive(outcome: LocalVlmFocusedObjectOutcome) {
+            val immediate = synchronized(lock) {
+                when (submissionAccepted) {
+                    null -> {
+                        if (pending == null) pending = outcome
+                        null
+                    }
+                    true -> outcome
+                    false -> null
+                }
+            }
+            immediate?.let(deliver)
+        }
+
+        fun complete(accepted: Boolean): LocalVlmFocusedObjectOutcome? = synchronized(lock) {
+            check(submissionAccepted == null)
+            submissionAccepted = accepted
+            val deferred = pending.takeIf { accepted }
+            pending = null
+            deferred
+        }
     }
 
     private companion object {
