@@ -114,6 +114,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public int FocusedCommandCount { get; private set; }
         public int FocusedStopCount { get; private set; }
         public int InterfaceCommandCount { get; private set; }
+        public int SpatialCommandCount { get; private set; }
         public FocusedIconCommand? LastFocusedIconCommand { get; private set; }
         public ListenerPoseCommand? LastListenerPoseCommand { get; private set; }
         public bool LastFocusedDwellSpeechActive { get; private set; }
@@ -124,6 +125,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         {
             if(command.Gain<0f||command.Gain>1f||command.SoundSizeMeters<0f) throw new ArgumentOutOfRangeException(nameof(command));
             RequireFinite(command.Position,command.InwardNormal);
+            SpatialCommandCount++;
             string value=string.Format(CultureInfo.InvariantCulture,"event={0};layer={1};position={2:F3},{3:F3},{4:F3};forward={5:F3},{6:F3},{7:F3};gain={8:F3};soundSizeMeters={9:F3}",command.EventPath,command.Layer,command.Position.x,command.Position.y,command.Position.z,command.InwardNormal.x,command.InwardNormal.y,command.InwardNormal.z,command.Gain,command.SoundSizeMeters);
             Debug.Log("[MPL_FMOD_FALLBACK] "+value);
             return value;

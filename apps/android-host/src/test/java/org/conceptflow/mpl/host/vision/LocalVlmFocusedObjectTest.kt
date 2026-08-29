@@ -17,6 +17,40 @@ import org.junit.Test
 
 class LocalVlmFocusedObjectTest {
     @Test
+    fun focusedDeadlineBoundsLeaseRetryAndGenerationToOneAbsoluteBudget() {
+        val requestedNanos = 2_000_000_000L
+        val deadlineNanos = FocusedVqaTiming.deadlineNanos(requestedNanos)
+        val leaseStartedNanos = 3_000_000_000L
+
+        assertEquals(10_500_000_000L, deadlineNanos)
+        assertTrue(FocusedVqaTiming.hasTimeRemaining(deadlineNanos, deadlineNanos - 1L))
+        assertFalse(FocusedVqaTiming.hasTimeRemaining(deadlineNanos, deadlineNanos))
+        assertTrue(
+            FocusedVqaTiming.mayRetryLease(
+                LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
+                HtpLeaseRefusalReason.BUSY,
+                leaseStartedNanos,
+                leaseStartedNanos + FocusedVqaTiming.LEASE_RETRY_BUDGET_NANOS - 1L,
+                deadlineNanos,
+            ),
+        )
+        assertFalse(
+            FocusedVqaTiming.mayRetryLease(
+                LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1,
+                HtpLeaseRefusalReason.BUSY,
+                deadlineNanos - 1L,
+                deadlineNanos,
+                deadlineNanos,
+            ),
+        )
+        assertEquals(8_000L, FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, requestedNanos))
+        assertEquals(7_000L, FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, 3_500_000_000L))
+        assertEquals(1L, FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos - 1_000_000L))
+        assertNull(FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos - 999_999L))
+        assertNull(FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos))
+    }
+
+    @Test
     fun focusedLeaseContentionRetriesWithinBoundWithoutMaskingHardFailures() {
         listOf(
             HtpLeaseRefusalReason.QNN_PRIORITY,
@@ -120,6 +154,7 @@ class LocalVlmFocusedObjectTest {
         assertEquals(88L, mapped.correlation.sourceFrameId)
         assertEquals(1_000L, mapped.correlation.sourceCaptureTimestampNanos)
         assertEquals(1_200L, mapped.requestedMonotonicTimestampNanos)
+        assertEquals(8_500_001_200L, mapped.deadlineMonotonicTimestampNanos)
         assertEquals("What is visible?", mapped.question)
     }
 

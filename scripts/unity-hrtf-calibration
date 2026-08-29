@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/common.sh
+source "$script_directory/lib/common.sh"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.unitylab"
+readonly ACTIVITY_NAME="com.unity3d.player.UnityPlayerGameActivity"
+readonly SPOOL_DIRECTORY="files/hrtf-calibration"
+readonly COMMAND_PATH="$SPOOL_DIRECTORY/command.next"
+readonly COMMAND_TEMP_PATH="$SPOOL_DIRECTORY/command.next.tmp"
+readonly STATUS_PATH="$SPOOL_DIRECTORY/status.json"
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/unity-hrtf-calibration --serial SERIAL COMMAND [OPTIONS]
+
+Controls the development-only, app-private HRTF localization harness. It uses
+adb run-as and never installs or invokes an exported command receiver.
+
+Commands:
+  start --session ID              Start a new 24-trial session.
+  next                            Present the next trial's three neutral pulses.
+  respond --direction DIRECTION  Record one canonical direction response.
+  status                          Print content-free session status.
+  export --output PATH            Copy response-only NDJSON to the host.
+  delete --session ID             Delete one app-private response file.
+  abort                           Stop sound and abort the current session.
+
+Directions: front, front_left, left, rear_left, rear, rear_right, right,
+front_right, above_front, above, below_front, below.
+EOF
+}
+
+serial=""
+command_name=""
+session_id=""
+direction=""
+output_path=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        --session) session_id="${2:-}"; shift 2 ;;
+        --direction) direction="${2:-}"; shift 2 ;;
+        --output) output_path="${2:-}"; shift 2 ;;
+        start|next|respond|status|export|delete|abort)
+            [[ -z "$command_name" ]] || fail "only one command is allowed"
+            command_name="$1"
+            shift
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unsupported argument; use --help" ;;
+    esac
+done
+
+[[ -n "$serial" && -n "$command_name" ]] || { usage >&2; exit 2; }
+[[ "$serial" != *$'\n'* ]] || fail "malformed serial"
+[[ "$(adb -s "$serial" get-state 2>/dev/null || true)" == "device" ]] ||
+    fail "selected Android device is not authorized and online"
+adb -s "$serial" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1 ||
+    fail "Unity perception-lab APK is not installed"
+adb -s "$serial" shell run-as "$PACKAGE_NAME" id >/dev/null 2>&1 ||
+    fail "run-as failed; the HRTF harness requires a debuggable development build"
+adb -s "$serial" shell run-as "$PACKAGE_NAME" mkdir -p "$SPOOL_DIRECTORY" >/dev/null
+adb -s "$serial" shell run-as "$PACKAGE_NAME" chmod 700 "$SPOOL_DIRECTORY" >/dev/null
+
+read_status() {
+    adb -s "$serial" exec-out run-as "$PACKAGE_NAME" cat "$STATUS_PATH" 2>/dev/null ||
+        fail "calibration status is unavailable; launch the development player first"
+}
+
+send_command() {
+    local verb="$1"
+    local argument="${2:-}"
+    local nonce payload status remaining
+    nonce="$(date +%s%N)"
+    payload=$'v1\t'"$nonce"$'\t'"$verb"
+    [[ -z "$argument" ]] || payload+=$'\t'"$argument"
+    payload+=$'\n'
+    if adb -s "$serial" shell run-as "$PACKAGE_NAME" test -e "$COMMAND_PATH"; then
+        fail "a calibration command is already pending"
+    fi
+    adb -s "$serial" shell run-as "$PACKAGE_NAME" rm -f "$COMMAND_TEMP_PATH" >/dev/null 2>&1 || true
+    if ! printf '%s' "$payload" | adb -s "$serial" exec-in run-as "$PACKAGE_NAME" \
+        tee "$COMMAND_TEMP_PATH" >/dev/null; then
+        adb -s "$serial" shell run-as "$PACKAGE_NAME" rm -f "$COMMAND_TEMP_PATH" >/dev/null 2>&1 || true
+        fail "calibration command transfer failed"
+    fi
+    adb -s "$serial" shell run-as "$PACKAGE_NAME" chmod 600 "$COMMAND_TEMP_PATH" >/dev/null
+    adb -s "$serial" shell run-as "$PACKAGE_NAME" mv "$COMMAND_TEMP_PATH" "$COMMAND_PATH" >/dev/null ||
+        fail "calibration command commit failed"
+    remaining=50
+    while ((remaining>0)); do
+        status="$(adb -s "$serial" exec-out run-as "$PACKAGE_NAME" cat "$STATUS_PATH" 2>/dev/null || true)"
+        if [[ "$status" =~ \"last_nonce\":${nonce}([,}]) ]]; then
+            printf '%s\n' "$status"
+            [[ "$status" == *'"error":""'* ]] || return 1
+            return 0
+        fi
+        sleep 0.1
+        remaining=$((remaining-1))
+    done
+    fail "Unity did not acknowledge calibration command nonce $nonce"
+}
+
+case "$command_name" in
+    start)
+        [[ "$session_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "invalid or missing session ID"
+        adb -s "$serial" shell am start --user 0 -W -n "$PACKAGE_NAME/$ACTIVITY_NAME" >/dev/null
+        send_command start "$session_id"
+        ;;
+    next) send_command next ;;
+    respond)
+        case "$direction" in
+            front|front_left|left|rear_left|rear|rear_right|right|front_right|above_front|above|below_front|below) ;;
+            *) fail "invalid or missing canonical direction" ;;
+        esac
+        send_command respond "$direction"
+        ;;
+    abort) send_command abort ;;
+    status) read_status ;;
+    export)
+        [[ -n "$output_path" ]] || fail "--output is required"
+        status="$(read_status)"
+        result_file="$(printf '%s' "$status" | "$(venv_python)" -c \
+            'import json,sys; value=json.load(sys.stdin).get("result_file",""); raise SystemExit(1) if not value or "/" in value or "\\" in value else print(value)')" ||
+            fail "status does not name a safe response file"
+        temporary_output="$output_path.tmp"
+        trap 'rm -f "$temporary_output"' EXIT
+        adb -s "$serial" exec-out run-as "$PACKAGE_NAME" cat "$SPOOL_DIRECTORY/$result_file" >"$temporary_output" ||
+            fail "response export failed"
+        [[ -s "$temporary_output" ]] || fail "response file is empty"
+        mv "$temporary_output" "$output_path"
+        chmod 600 "$output_path"
+        printf 'exported=%s\n' "$output_path"
+        ;;
+    delete)
+        [[ "$session_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "invalid or missing session ID"
+        result_file="$session_id.responses.ndjson"
+        if ! adb -s "$serial" shell run-as "$PACKAGE_NAME" test -e "$SPOOL_DIRECTORY/$result_file"; then
+            fail "response file does not exist"
+        fi
+        adb -s "$serial" shell run-as "$PACKAGE_NAME" rm -f "$SPOOL_DIRECTORY/$result_file" >/dev/null ||
+            fail "response deletion failed"
+        printf 'deleted=%s\n' "$result_file"
+        ;;
+esac

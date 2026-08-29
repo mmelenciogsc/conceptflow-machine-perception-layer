@@ -10,6 +10,9 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import org.conceptflow.mpl.host.audio.AmbientEnvironmentPrior
+import org.conceptflow.mpl.host.audio.AmbientClassificationProfileGate
+import org.conceptflow.mpl.host.audio.AmbientSoundProfiler
 import org.conceptflow.mpl.host.core.ElapsedHostClock
 import org.conceptflow.mpl.host.core.GlassesStreamIngress
 import org.conceptflow.mpl.host.core.StreamIngressDisposition
@@ -37,6 +40,7 @@ import org.conceptflow.mpl.host.vision.EnvironmentDepthCoordinator
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.AndroidLocalVlmEnvironmentClient
 import org.conceptflow.mpl.host.vision.AndroidLocalVlmFocusedVqaGateway
+import org.conceptflow.mpl.host.vision.FocusedVqaPhaseTelemetry
 import org.conceptflow.mpl.host.vision.AndroidFocusedVqaJpegEncoder
 import org.conceptflow.mpl.host.vision.BoundedFocusedVqaFrameStore
 import org.conceptflow.mpl.host.vision.StoredFocusedVqaFrameProvider
@@ -88,7 +92,9 @@ import org.conceptflow.mpl.transport.LiveSensorDelivery
 import org.conceptflow.mpl.transport.MicrophoneRequestDispatch
 import org.conceptflow.mpl.transport.PocoLiveLinkObserver
 import org.conceptflow.mpl.transport.PocoLiveLinkServer
+import org.conceptflow.mpl.transport.AndroidPrivateLanDiscoveryEndpointResolver
 import org.conceptflow.mpl.transport.AndroidWifiDirectEndpointResolver
+import org.conceptflow.mpl.transport.PrivateLanDiscoveryRole
 import org.conceptflow.mpl.transport.WifiDirectNodeRole
 import org.conceptflow.mpl.transport.RokidNodeCommandDelivery
 import org.conceptflow.mpl.transport.RokidNodeCommandDispatch
@@ -103,6 +109,7 @@ internal fun LocalVlmFocusedObjectFailure.toFocusRejection(): FocusedVqaRejectio
     LocalVlmFocusedObjectFailure.BUSY -> FocusedVqaRejection.BUSY
     LocalVlmFocusedObjectFailure.INVALID_REQUEST -> FocusedVqaRejection.INVALID_REQUEST
     LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED -> FocusedVqaRejection.STALE_FRAME
+    LocalVlmFocusedObjectFailure.TIMED_OUT -> FocusedVqaRejection.TIMED_OUT
     LocalVlmFocusedObjectFailure.DEFERRED_FOR_QNN,
     LocalVlmFocusedObjectFailure.INFERENCE_FAILED,
     LocalVlmFocusedObjectFailure.UNAVAILABLE,
@@ -234,6 +241,8 @@ enum class LiveMachineVisionPhase { IDLE, OPENING_QNN_HTP, LISTENING, STREAMING,
 enum class LiveMachineVisionRunMode { BOUNDED_DIAGNOSTIC, PERSISTENT_NODE }
 
 enum class LiveMicrophonePhase { IDLE, REQUESTING, ACTIVE, COMPLETE, REJECTED }
+
+enum class AmbientProfilePhase { IDLE, WAITING_FOR_SCENE, SAMPLING, READY, FAILED }
 
 enum class LiveRokidNodeCommandPhase { IDLE, REQUESTED, ACCEPTED, REJECTED }
 
@@ -384,6 +393,10 @@ data class LiveMachineVisionStatus(
     val microphoneChunksReceived: Long,
     val microphoneBytesReceived: Long,
     val microphoneTimelineOverflow: Long,
+    val ambientProfilePhase: AmbientProfilePhase,
+    val ambientProfilePrior: AmbientEnvironmentPrior,
+    val ambientNoiseFloorDbFs: Float?,
+    val ambientRecommendedGain: Float?,
     val touchEventsReceived: Long,
     val peerPressure: LivePeerPressure?,
     val nodeCommandPhase: LiveRokidNodeCommandPhase,
@@ -449,6 +462,11 @@ data class LiveMachineVisionStatus(
         append("; chunks received: ").append(microphoneChunksReceived)
         append("; bytes received: ").append(microphoneBytesReceived)
         append("; timeline overflow: ").append(microphoneTimelineOverflow).append(". ")
+        append("Ambient profile: ").append(ambientProfilePhase.name.lowercase())
+        append("; prior: ").append(ambientProfilePrior.name.lowercase())
+        ambientNoiseFloorDbFs?.let { append("; relative noise floor dBFS: ").append("%.1f".format(it)) }
+        ambientRecommendedGain?.let { append("; calibration gain: ").append("%.2f".format(it)) }
+        append(". ")
         append("Touch events received: ").append(touchEventsReceived).append(". ")
         peerPressure?.let {
             append("Rokid queue telemetry: samples ").append(it.samplesReceived)
@@ -583,6 +601,10 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     private var microphoneChunks = 0L
     private var microphoneBytes = 0L
     private var microphoneTimelineOverflow = 0L
+    private var ambientProfilePhase = AmbientProfilePhase.IDLE
+    private var ambientProfilePrior = AmbientEnvironmentPrior.UNKNOWN
+    private var ambientNoiseFloorDbFs: Float? = null
+    private var ambientRecommendedGain: Float? = null
     private var touchEvents = 0L
     private var peerPressure: LivePeerPressure? = null
     private var nodeCommandPhase = LiveRokidNodeCommandPhase.IDLE
@@ -707,6 +729,21 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         }
     }
 
+    @Synchronized
+    fun ambientProfile(
+        phase: AmbientProfilePhase,
+        prior: AmbientEnvironmentPrior,
+        noiseFloorDbFs: Float? = null,
+        recommendedGain: Float? = null,
+    ) {
+        require(noiseFloorDbFs == null || noiseFloorDbFs.isFinite())
+        require(recommendedGain == null || (recommendedGain.isFinite() && recommendedGain in 0f..1f))
+        ambientProfilePhase = phase
+        ambientProfilePrior = prior
+        ambientNoiseFloorDbFs = noiseFloorDbFs
+        ambientRecommendedGain = recommendedGain
+    }
+
     @Synchronized fun touchReceived(count: Int = 1) {
         require(count > 0)
         touchEvents = Math.addExact(touchEvents, count.toLong())
@@ -829,6 +866,10 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         microphoneChunks,
         microphoneBytes,
         microphoneTimelineOverflow,
+        ambientProfilePhase,
+        ambientProfilePrior,
+        ambientNoiseFloorDbFs,
+        ambientRecommendedGain,
         touchEvents,
         peerPressure,
         nodeCommandPhase,
@@ -928,6 +969,8 @@ class LiveMachineVisionController(
         ::logHtpLeaseTelemetry,
     )
     private val sensorTimeline = SensorTimeline()
+    private val ambientSoundProfiler = AmbientSoundProfiler()
+    private val ambientClassificationProfileGate = AmbientClassificationProfileGate()
     private val focusedVqaRouter = ReplaceableFocusedVqaGateway()
     private val focusedVqaFrames = BoundedFocusedVqaFrameStore(ElapsedHostClock::nowNanos)
     private val spatialFocus = SpatialFocusManager(vqaGateway = focusedVqaRouter)
@@ -950,7 +993,10 @@ class LiveMachineVisionController(
     private var currentCameraUncertaintyNs = 0L
     private var currentIngressGeneration = 0L
     private var microphoneWindowGeneration = 0L
+    private var ambientProfileRequested = false
+    private var ambientProfilePrior = AmbientEnvironmentPrior.UNKNOWN
     private var scheduledDwellGeneration = 0L
+    private var scheduledFocusedVqaCorrelation: FocusedVqaCorrelation? = null
     private var lastPublishedNs = 0L
     private var lastEnvironmentDecisionDiagnostic: String? = null
     @Volatile private var latestDepthProfileId = ""
@@ -967,6 +1013,14 @@ class LiveMachineVisionController(
         modelAdmission.reset()
         vlmHtpAdmission.reset()
         latestDepthProfileId = ""
+        ambientSoundProfiler.reset()
+        ambientClassificationProfileGate.reset()
+        ambientProfileRequested = false
+        ambientProfilePrior = when (spec.environmentMode) {
+            EnvironmentSelectionMode.FORCE_INDOOR -> AmbientEnvironmentPrior.INDOOR
+            EnvironmentSelectionMode.FORCE_OUTDOOR -> AmbientEnvironmentPrior.OUTDOOR
+            EnvironmentSelectionMode.AUTOMATIC -> AmbientEnvironmentPrior.UNKNOWN
+        }
         automaticEnvironmentVlmBootstrapPending = spec.environmentMode == EnvironmentSelectionMode.AUTOMATIC
         runMode = spec.runMode
         reconnectPolicy = LiveReconnectPolicy(persistent = spec.runMode == LiveMachineVisionRunMode.PERSISTENT_NODE)
@@ -1021,6 +1075,13 @@ class LiveMachineVisionController(
                 endpointResolver = when (configuration.networkTopology) {
                     LiveLinkNetworkTopology.PRIVATE_LAN ->
                         org.conceptflow.mpl.transport.StaticLiveLinkEndpointResolver(configuration.address)
+                    LiveLinkNetworkTopology.PRIVATE_LAN_DISCOVERY ->
+                        AndroidPrivateLanDiscoveryEndpointResolver(
+                            context = context,
+                            role = PrivateLanDiscoveryRole.ANDROID_ANNOUNCER,
+                            configuredFallbackAddress = configuration.address,
+                            realtimePort = configuration.realtimePort,
+                        )
                     LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED ->
                         AndroidWifiDirectEndpointResolver(context, WifiDirectNodeRole.ANDROID_GROUP_OWNER)
                 },
@@ -1087,6 +1148,8 @@ class LiveMachineVisionController(
                             AndroidFocusedVqaJpegEncoder(),
                         ),
                         ::handleFocusedVqaOutcome,
+                        clockNanos = ElapsedHostClock::nowNanos,
+                        onTelemetry = ::logFocusedVqaTelemetry,
                     ).also(focusedVqaRouter::install)
                 }
                 openedQnn = null
@@ -1116,6 +1179,62 @@ class LiveMachineVisionController(
             publish(force = true)
         }
         return dispatch
+    }
+
+    /** Explicit calibration request. Ordinary on-demand speech capture never enters this path. */
+    @Synchronized
+    fun requestAmbientSoundProfile(): MicrophoneRequestDispatch {
+        if (!active.get() || currentIngressGeneration <= 0L) {
+            status?.ambientProfile(AmbientProfilePhase.FAILED, ambientProfilePrior)
+            publish(force = true)
+            return MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
+        }
+        ambientProfileRequested = true
+        if (ambientProfilePrior == AmbientEnvironmentPrior.UNKNOWN) {
+            status?.ambientProfile(AmbientProfilePhase.WAITING_FOR_SCENE, ambientProfilePrior)
+            publish(force = true)
+            return MicrophoneRequestDispatch.REQUESTED
+        }
+        return startAmbientProfileWindow()
+    }
+
+    @Synchronized
+    private fun startAmbientProfileWindow(): MicrophoneRequestDispatch {
+        if (!ambientProfileRequested || ambientSoundProfiler.isActive()) {
+            return MicrophoneRequestDispatch.ALREADY_PENDING_OR_ACTIVE
+        }
+        val now = ElapsedHostClock.nowNanos()
+        ambientSoundProfiler.begin(currentIngressGeneration, ambientProfilePrior, now)
+        val dispatch = server?.requestMicrophone(AMBIENT_PROFILE_WINDOW_MILLIS)
+            ?: MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
+        if (dispatch == MicrophoneRequestDispatch.REQUESTED) {
+            ambientProfileRequested = false
+            status?.ambientProfile(AmbientProfilePhase.SAMPLING, ambientProfilePrior)
+        } else {
+            ambientProfileRequested = false
+            ambientSoundProfiler.reset()
+            status?.ambientProfile(AmbientProfilePhase.FAILED, ambientProfilePrior)
+        }
+        publish(force = true)
+        return dispatch
+    }
+
+    /** Keeps VLM-result deduplication, prior selection, and mic dispatch in one critical section. */
+    @Synchronized
+    private fun considerAmbientProfileForClassification(
+        signal: org.conceptflow.mpl.host.vision.EnvironmentSignal?,
+        classificationFrameId: Long?,
+    ) {
+        if (signal == null || !ambientClassificationProfileGate.admit(classificationFrameId)) return
+        ambientProfilePrior = when {
+            signal.indoorProbability >= AMBIENT_CLASSIFICATION_PROBABILITY ->
+                AmbientEnvironmentPrior.INDOOR
+            signal.outdoorProbability >= AMBIENT_CLASSIFICATION_PROBABILITY ->
+                AmbientEnvironmentPrior.OUTDOOR
+            else -> AmbientEnvironmentPrior.TRANSITION
+        }
+        ambientProfileRequested = true
+        startAmbientProfileWindow()
     }
 
     fun handleFocusCommand(command: SpatialFocusCommand): SpatialFocusState? {
@@ -1252,6 +1371,7 @@ class LiveMachineVisionController(
             LiveMicrophoneLeaseState.REJECTED,
             LiveMicrophoneLeaseState.COMPLETE,
             -> {
+                completeAmbientProfileWindow()
                 microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
                 microphoneIngress = null
                 status?.microphoneState(
@@ -1271,6 +1391,7 @@ class LiveMachineVisionController(
         if (!active.get() || microphoneWindowGeneration != generation) return
         microphoneIngress = null
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
+        completeAmbientProfileWindow()
         status?.microphoneState(LiveMicrophonePhase.COMPLETE)
         publish(force = true)
     }
@@ -1309,6 +1430,14 @@ class LiveMachineVisionController(
             spatialFocus.reset(currentIngressGeneration, sessionNow, perceptionBus.stats().latestRevision),
         )
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
+        ambientSoundProfiler.reset()
+        ambientClassificationProfileGate.reset()
+        ambientProfilePrior = when (environmentCoordinator.mode()) {
+            EnvironmentSelectionMode.FORCE_INDOOR -> AmbientEnvironmentPrior.INDOOR
+            EnvironmentSelectionMode.FORCE_OUTDOOR -> AmbientEnvironmentPrior.OUTDOOR
+            EnvironmentSelectionMode.AUTOMATIC -> AmbientEnvironmentPrior.UNKNOWN
+        }
+        ambientProfileRequested = true
         currentSessionBinding = session.binding
         status?.microphoneState(LiveMicrophonePhase.IDLE)
         cameraIngress = GlassesStreamIngress(
@@ -1320,6 +1449,11 @@ class LiveMachineVisionController(
         microphoneIngress = null
         clearCameraCorrelation()
         status?.phase(LiveMachineVisionPhase.STREAMING)
+        if (ambientProfilePrior == AmbientEnvironmentPrior.UNKNOWN) {
+            status?.ambientProfile(AmbientProfilePhase.WAITING_FOR_SCENE, ambientProfilePrior)
+        } else {
+            executor?.execute { startAmbientProfileWindow() }
+        }
         publish(force = true)
     }
 
@@ -1338,6 +1472,9 @@ class LiveMachineVisionController(
         imuIngress = null
         microphoneIngress = null
         currentSessionBinding = null
+        ambientSoundProfiler.reset()
+        ambientClassificationProfileGate.reset()
+        ambientProfileRequested = false
         metricFusion.reset()
         trackMaintainer.reset()
         modelAdmission.reset()
@@ -1521,8 +1658,28 @@ class LiveMachineVisionController(
         val ingress = microphoneIngress ?: return
         if (ingress.acceptAuthenticatedLane(delivery.sensor) != StreamIngressDisposition.MICROPHONE_READY) return
         val chunk = ingress.takeLatestMicrophone() ?: return
+        delivery.normalizedMicrophoneCapture?.let { normalized ->
+            ambientSoundProfiler.accept(chunk, normalized.hostMonotonicNs)
+        }
         status?.microphoneReceived(chunk.audioData.size(), sensorTimeline.acceptAudio(delivery))
         publish()
+    }
+
+    @Synchronized
+    private fun completeAmbientProfileWindow() {
+        if (!ambientSoundProfiler.isActive()) return
+        val profile = ambientSoundProfiler.complete(ElapsedHostClock.nowNanos())
+        if (profile == null) {
+            status?.ambientProfile(AmbientProfilePhase.FAILED, ambientProfilePrior)
+        } else {
+            perceptionBus.publishAmbientSoundProfile(profile)
+            status?.ambientProfile(
+                AmbientProfilePhase.READY,
+                profile.prior,
+                profile.noiseFloorDbFs,
+                profile.recommendedCalibrationGain,
+            )
+        }
     }
 
     @Synchronized
@@ -1757,6 +1914,12 @@ class LiveMachineVisionController(
                 visionFrame, detections, vlmEnvironmentSignal,
                 ElapsedHostClock.nowNanos(), bothProfilesAvailable = true,
             )
+            // latestFor() deliberately correlates carried evidence to the current vision frame.
+            // Ambient profiling, however, is one-shot per actual VLM classification result.
+            considerAmbientProfileForClassification(
+                vlmEnvironmentSignal,
+                if (vlmEnvironmentSignal == null) null else environmentVlm?.latestClassificationFrameId(),
+            )
             val diagnostic = "reason=${decision.reason} profile=${decision.selectedProfile?.id ?: "none"}"
             if (diagnostic != lastEnvironmentDecisionDiagnostic) {
                 lastEnvironmentDecisionDiagnostic = diagnostic
@@ -1830,6 +1993,17 @@ class LiveMachineVisionController(
 
     @Synchronized
     private fun publishFocusTransition(state: SpatialFocusState): SpatialFocusState {
+        val activeVqa = spatialFocus.activeVqaCorrelation()
+        if (state.mode == org.conceptflow.mpl.host.focus.SpatialFocusMode.VQA_PENDING &&
+            activeVqa != null
+        ) {
+            if (scheduledFocusedVqaCorrelation != activeVqa && executor != null) {
+                scheduledFocusedVqaCorrelation = activeVqa
+                scheduleFocusedVqaExpiry(activeVqa, state.validUntilTimestampNanos)
+            }
+        } else {
+            scheduledFocusedVqaCorrelation = null
+        }
         val published = perceptionBus.publishFocus(state)
         onFocusState(published)
         if (published.dwell == SpatialFocusDwell.PENDING) {
@@ -1852,6 +2026,37 @@ class LiveMachineVisionController(
             )
         }
         return published
+    }
+
+    private fun scheduleFocusedVqaExpiry(correlation: FocusedVqaCorrelation, deadlineNanos: Long) {
+        val delay = (deadlineNanos - ElapsedHostClock.nowNanos()).coerceAtLeast(0L)
+        executor?.schedule(
+            {
+                synchronized(this) {
+                    if (scheduledFocusedVqaCorrelation != correlation) return@synchronized
+                    val nowNanos = ElapsedHostClock.nowNanos()
+                    if (nowNanos < deadlineNanos) {
+                        scheduleFocusedVqaExpiry(correlation, deadlineNanos)
+                        return@synchronized
+                    }
+                    if (spatialFocus.expireVqa(correlation, nowNanos)) {
+                        spatialFocus.current()?.let(::publishFocusTransition)
+                    } else if (scheduledFocusedVqaCorrelation == correlation) {
+                        scheduledFocusedVqaCorrelation = null
+                    }
+                }
+            },
+            delay,
+            TimeUnit.NANOSECONDS,
+        )
+    }
+
+    private fun logFocusedVqaTelemetry(event: FocusedVqaPhaseTelemetry) {
+        Log.i(
+            TAG,
+            "state=focused_vqa requestId=${event.requestId} phase=${event.phase.name.lowercase()} " +
+                "elapsedMs=${event.elapsedMillis} outcome=${event.outcome?.name?.lowercase() ?: "none"}",
+        )
     }
 
     /** Accepts only the exact still-current focus request; late IPC answers are intentionally silent. */
@@ -1951,6 +2156,9 @@ class LiveMachineVisionController(
         imuIngress = null
         microphoneIngress = null
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
+        ambientSoundProfiler.reset()
+        ambientClassificationProfileGate.reset()
+        ambientProfileRequested = false
         currentSessionBinding = null
         metricFusion.reset()
         trackMaintainer.reset()
@@ -1995,6 +2203,8 @@ class LiveMachineVisionController(
         const val TAG = "ConceptFlowLiveVision"
         const val STATUS_UPDATE_INTERVAL_NS = 1_000_000_000L
         const val QNN_HTP_LEASE_ACQUISITION_TIMEOUT_MILLIS = 250L
+        const val AMBIENT_PROFILE_WINDOW_MILLIS = 3_000
+        const val AMBIENT_CLASSIFICATION_PROBABILITY = 0.80
         val ACCEPTED_CAMERA_DISPOSITIONS = setOf(
             StreamIngressDisposition.CAMERA_PARTIAL,
             StreamIngressDisposition.CAMERA_READY,

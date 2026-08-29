@@ -8,13 +8,27 @@ using UnityEngine;
 
 namespace ConceptFlow.Mpl.PerceptionLab
 {
-    public sealed class FmodStudioPerceptionAudioBackend : IPerceptionAudioBackend, IDisposable
+    public sealed class FmodStudioPerceptionAudioBackend : IPerceptionAudioBackend,
+        IHrtfAudioProfileCapability, IDisposable
     {
         private global::FMOD.Studio.EventInstance focusedIcon;
         private string focusedTrackId=string.Empty;
         private string focusedEventPath=string.Empty;
         private long dwellGeneration;
         private bool dwellSpeechActive;
+
+        public bool IsHrtfProfileReady(string requiredProfile)
+        {
+            if(requiredProfile!=HrtfLocalizationCalibration.Profile) return false;
+            try
+            {
+                if(!global::FMODUnity.RuntimeManager.StudioSystem.isValid()) return false;
+                global::FMOD.Studio.EventDescription description=
+                    global::FMODUnity.RuntimeManager.GetEventDescription(AuditoryIconRegistry.FocusedObjectEvent);
+                return description.isValid();
+            }
+            catch(Exception) { return false; }
+        }
 
         public string Dispatch(SpatialAudioCommand command)
         {

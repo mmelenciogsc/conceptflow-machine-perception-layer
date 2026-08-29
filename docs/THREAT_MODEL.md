@@ -19,10 +19,10 @@ an engineering review aid, not a security certification.
 
 | Boundary | Untrusted or failure-prone input | Primary controls | Remaining work |
 | --- | --- | --- | --- |
-| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounded single-owner lease, short explicit microphone sub-lease, latest-wins outbox, monotonic IDs, result correlation, TTL/dedup renderer, direct-ADB target check | Sustained lifecycle, authenticated production transport, localization, and BVI acceptance |
-| Android host | Frames, network state, transport callbacks, accessibility services | Lease/session-bound ingress, bounded camera assembly, digest/order checks, latest-unread frame, capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, TLS client | Real phone-to-glasses transport and end-to-end device testing |
+| Glasses | Camera/sensor data, permissions, YodaOS service contention, local cue output | Android permission gate, bounded single-owner lease, short explicit microphone sub-lease, latest-wins outbox, monotonic IDs, exact-pin mutual TLS, result correlation, TTL/dedup renderer, direct-ADB target check | Untethered/reboot endurance, strict-P2P interoperability, localization, and BVI acceptance |
+| Android host | Frames, network state, transport callbacks, accessibility services | Lease/session-bound ingress, bounded camera assembly, digest/order checks, latest-unread frame, capability detection, preprocessing, bounded queue, session/correlation/scheduler policy, exact-pin mutual TLS, hotspot-interface observation | Broad adverse-network testing and production enrollment/revocation |
 | Windows relay | Endpoint text, user approval, future screen/region content, status UI | Consent gate, content bounds, HTTPS policy, cancellation, bounded queues, redaction, stock accessible controls | Manual Windows, JAWS, and NVDA acceptance; real capture adapters |
-| Network | Eavesdropping, tampering, replay, downgrade, delay, reordering, flooding | TLS-required production config, loopback-only plaintext, ephemeral sessions, correlation, deadlines, message limits | Deployment authentication, certificate lifecycle, optional mTLS, WebRTC security design |
+| Network | Eavesdropping, tampering, replay, downgrade, delay, reordering, flooding, discovery spoofing | Exact-pin TLS 1.3 mutual authentication on both direct-Android lanes, content-free bounded LAN beacon, private/link-local source checks, single-use camera ticket, ephemeral sessions, correlation, deadlines, message limits | Production enrollment/revocation, Bluetooth bootstrap, strict-P2P firmware interoperability, and discovery denial-of-service review |
 | CUDA/backend | Malformed frames, exhausted queues, unhealthy workers, malicious model output, GPU failure | Preprocessing, admission bounds, timeout/cancellation, health thresholds, provenance, mock-only default | Sandboxed real workers, kernel/model validation, resource isolation |
 | CI/supply chain | Dependency compromise, secret exposure, untrusted artifacts, overprivileged workflows | Pinned versions/locks, read-only workflow permission, policy and secret scans, no committed build outputs | Release signing, provenance/SBOM policy, protected runner operations |
 | Optional model providers | Content disclosure, policy drift, retention, prompt/model manipulation | No provider implementation in baseline; local/privacy route can fail closed | Explicit provider contract, consent, minimization, DPA/retention and egress controls |
@@ -77,6 +77,12 @@ cues could consume memory, GPU time, audio focus, or attention. Current controls
 include byte/dimension limits, bounded queues, explicit overload, deadlines,
 failure thresholds, bounded retries, cue capacity, TTL, deduplication, and
 priority. Production ingress still needs rate limiting per authenticated client.
+
+Pre-authentication TCP/TLS failures are isolated to their individual socket and
+cannot enter authenticated-session lifecycle policy or stop the persistent
+listener. They remain bounded by socket deadlines and produce only categorical
+diagnostics. Failures after session authentication still enter the fail-closed
+disconnect policy.
 
 ### Malicious or unsafe model output
 

@@ -77,6 +77,8 @@
     <string name="live_microphone_already_active">Microphone request not sent. A request is pending or the bounded microphone window is active.</string>
     <string name="stop_live_machine_vision">Stop Android Node listener (S)</string>
     <string name="android_node_starting">Starting persistent listener.</string>
+    <string name="android_node_wifi_direct_recovery">Repairing the private Wi-Fi Direct link.</string>
+    <string name="android_node_wifi_direct_recovery_complete">Wi-Fi Direct recovery complete; restarting the listener.</string>
     <string name="live_wifi_direct_permission_required">Nearby devices permission is required to create the private Wi-Fi Direct connection. Android Node was not started.</string>
     <string name="android_node_notification_title">Machine Perception Layer, Android Node</string>
     <string name="android_node_notification_channel">Android Node connection</string>

@@ -77,65 +77,37 @@ class RokidRendezvousPolicyTest {
     }
 
     @Test
-    fun cooldownAlarmRequiresTheSameArmedProcessAndGeneration() {
+    fun cooldownCallbackRequiresTheSameArmedGeneration() {
         assertEquals(
-            RendezvousAlarmDecision.START_EPOCH,
-            alarmDecision(),
+            RendezvousRetryDecision.START_EPOCH,
+            retryDecision(),
         )
         assertEquals(
-            RendezvousAlarmDecision.REJECT,
-            alarmDecision(processCapabilityMatches = false),
+            RendezvousRetryDecision.REJECT,
+            retryDecision(generationMatches = false),
         )
         assertEquals(
-            RendezvousAlarmDecision.REJECT,
-            alarmDecision(generationMatches = false),
+            RendezvousRetryDecision.REJECT,
+            retryDecision(idleEnabled = false),
         )
         assertEquals(
-            RendezvousAlarmDecision.REJECT,
-            alarmDecision(idleEnabled = false),
+            RendezvousRetryDecision.REJECT,
+            retryDecision(visibleArmEligible = false),
         )
         assertEquals(
-            RendezvousAlarmDecision.REJECT,
-            alarmDecision(visibleArmEligible = false),
-        )
-        assertEquals(
-            RendezvousAlarmDecision.REJECT,
-            alarmDecision(serviceStopping = true),
+            RendezvousRetryDecision.REJECT,
+            retryDecision(serviceStopping = true),
         )
     }
 
     @Test
-    fun duplicateAlarmCannotReplaceAnActiveEpoch() {
+    fun duplicateCallbackCannotReplaceAnActiveEpoch() {
         assertEquals(
-            RendezvousAlarmDecision.IGNORE_ACTIVE_EPOCH,
-            alarmDecision(
+            RendezvousRetryDecision.IGNORE_ACTIVE_EPOCH,
+            retryDecision(
                 liveEpochActive = true,
-                processCapabilityMatches = false,
                 generationMatches = false,
             ),
-        )
-    }
-
-    @Test
-    fun staleAlarmCannotConsumeTheCurrentlyScheduledAlarm() {
-        assertTrue(RendezvousAlarmPolicy.shouldConsumeScheduledAlarm(true, true))
-        assertFalse(RendezvousAlarmPolicy.shouldConsumeScheduledAlarm(false, true))
-        assertFalse(RendezvousAlarmPolicy.shouldConsumeScheduledAlarm(true, false))
-    }
-
-    @Test
-    fun exactAlarmPrecisionIsCapabilityGatedOnAndroidTwelveAndLater() {
-        assertEquals(
-            RendezvousAlarmPrecision.EXACT_ALLOW_IDLE,
-            RendezvousAlarmPolicy.precision(apiLevel = 30, exactAlarmAccess = false),
-        )
-        assertEquals(
-            RendezvousAlarmPrecision.EXACT_ALLOW_IDLE,
-            RendezvousAlarmPolicy.precision(apiLevel = 32, exactAlarmAccess = true),
-        )
-        assertEquals(
-            RendezvousAlarmPrecision.INEXACT_ALLOW_IDLE,
-            RendezvousAlarmPolicy.precision(apiLevel = 32, exactAlarmAccess = false),
         )
     }
 
@@ -202,16 +174,14 @@ class RokidRendezvousPolicyTest {
         visibleArmEligible = true,
     )
 
-    private fun alarmDecision(
+    private fun retryDecision(
         liveEpochActive: Boolean = false,
-        processCapabilityMatches: Boolean = true,
         generationMatches: Boolean = true,
         idleEnabled: Boolean = true,
         visibleArmEligible: Boolean = true,
         serviceStopping: Boolean = false,
-    ) = RendezvousAlarmPolicy.decide(
+    ) = RendezvousRetryPolicy.decide(
         liveEpochActive = liveEpochActive,
-        processCapabilityMatches = processCapabilityMatches,
         generationMatches = generationMatches,
         idleEnabled = idleEnabled,
         visibleArmEligible = visibleArmEligible,

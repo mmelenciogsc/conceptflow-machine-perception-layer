@@ -31,6 +31,7 @@ internal object LocalVlmIpc {
     const val KEY_FOCUS_GENERATION = "focus_generation"
     const val KEY_TRACK_ID = "track_id"
     const val KEY_REQUESTED_NANOS = "requested_nanos"
+    const val KEY_DEADLINE_NANOS = "deadline_nanos"
     const val KEY_QUESTION = "question"
     const val KEY_ANSWER = "answer"
 }

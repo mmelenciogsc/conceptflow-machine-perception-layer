@@ -14,49 +14,30 @@ enum class RendezvousTerminalDecision {
     STOP,
 }
 
-enum class RendezvousAlarmDecision {
+enum class RendezvousRetryDecision {
     START_EPOCH,
     IGNORE_ACTIVE_EPOCH,
     REJECT,
 }
 
-enum class RendezvousAlarmPrecision {
-    EXACT_ALLOW_IDLE,
-    INEXACT_ALLOW_IDLE,
-}
-
 /**
- * Authorizes a one-shot cooldown alarm without turning process recreation into capture authority.
- * A live epoch wins over a stale duplicate alarm; otherwise both the process and generation
- * capabilities must still match the explicitly armed service instance.
+ * Authorizes a process-local cooldown callback without turning process recreation into capture
+ * authority. A live epoch wins over a stale duplicate callback; otherwise the callback must still
+ * belong to the current explicitly armed service generation.
  */
-object RendezvousAlarmPolicy {
-    fun shouldConsumeScheduledAlarm(
-        processCapabilityMatches: Boolean,
-        generationMatches: Boolean,
-    ): Boolean = processCapabilityMatches && generationMatches
-
+object RendezvousRetryPolicy {
     fun decide(
         liveEpochActive: Boolean,
-        processCapabilityMatches: Boolean,
         generationMatches: Boolean,
         idleEnabled: Boolean,
         visibleArmEligible: Boolean,
         serviceStopping: Boolean,
-    ): RendezvousAlarmDecision = when {
-        liveEpochActive -> RendezvousAlarmDecision.IGNORE_ACTIVE_EPOCH
-        !shouldConsumeScheduledAlarm(processCapabilityMatches, generationMatches) || !idleEnabled ||
-            !visibleArmEligible || serviceStopping -> RendezvousAlarmDecision.REJECT
-        else -> RendezvousAlarmDecision.START_EPOCH
+    ): RendezvousRetryDecision = when {
+        liveEpochActive -> RendezvousRetryDecision.IGNORE_ACTIVE_EPOCH
+        !generationMatches || !idleEnabled || !visibleArmEligible || serviceStopping ->
+            RendezvousRetryDecision.REJECT
+        else -> RendezvousRetryDecision.START_EPOCH
     }
-
-    /** Android 12/API 31 introduced exact-alarm special access. */
-    fun precision(apiLevel: Int, exactAlarmAccess: Boolean): RendezvousAlarmPrecision =
-        if (apiLevel < 31 || exactAlarmAccess) {
-            RendezvousAlarmPrecision.EXACT_ALLOW_IDLE
-        } else {
-            RendezvousAlarmPrecision.INEXACT_ALLOW_IDLE
-        }
 }
 
 /** Pure restart policy for sensor-off outbound rendezvous epochs. */

@@ -10,6 +10,16 @@ public final class AndroidPerceptionBridgeLifecycleGateTest {
         stoppingRejectsQueuedAndNewCallbacks();
         restartUsesANewGeneration();
         focusSnapshotVersionsRemainCompatible();
+        ambientProfileSnapshotUsesTheVersionedCacheHeader();
+    }
+
+    private static void ambientProfileSnapshotUsesTheVersionedCacheHeader() {
+        byte[] ambient = snapshotHeader(0x43464150, 1, 14L);
+        require(AndroidPerceptionBridge.readSnapshotCounter(ambient, 0x43464150) == 14L,
+                "ambient profile ABI must reach Unity cache");
+        byte[] future = snapshotHeader(0x43464150, 2, 15L);
+        require(AndroidPerceptionBridge.readSnapshotCounter(future, 0x43464150) == -1L,
+                "unknown ambient profile ABI must fail closed");
     }
 
     private static void invalidatedAttemptCannotReenter() {
@@ -49,13 +59,16 @@ public final class AndroidPerceptionBridgeLifecycleGateTest {
         byte[] focusV1 = snapshotHeader(0x43464653, 1, 9L);
         byte[] focusV2 = snapshotHeader(0x43464653, 2, 10L);
         byte[] focusV3 = snapshotHeader(0x43464653, 3, 11L);
-        byte[] worldV2 = snapshotHeader(0x43465753, 2, 12L);
+        byte[] focusV4 = snapshotHeader(0x43464653, 4, 12L);
+        byte[] worldV2 = snapshotHeader(0x43465753, 2, 13L);
         require(AndroidPerceptionBridge.readSnapshotCounter(focusV1, 0x43464653) == 9L,
                 "legacy focus ABI must remain readable");
         require(AndroidPerceptionBridge.readSnapshotCounter(focusV2, 0x43464653) == 10L,
                 "beacon focus ABI must reach Unity cache");
-        require(AndroidPerceptionBridge.readSnapshotCounter(focusV3, 0x43464653) == -1L,
-                "unknown focus ABI must fail closed");
+        require(AndroidPerceptionBridge.readSnapshotCounter(focusV3, 0x43464653) == 11L,
+                "accessibility focus ABI must reach Unity cache");
+        require(AndroidPerceptionBridge.readSnapshotCounter(focusV4, 0x43464653) == -1L,
+                "unknown future focus ABI must fail closed");
         require(AndroidPerceptionBridge.readSnapshotCounter(worldV2, 0x43465753) == -1L,
                 "non-focus payload ABI must not be widened");
     }

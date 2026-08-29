@@ -29,4 +29,11 @@ object AndroidPerceptionBridge {
     fun pollHeadPose(lastRevision: Long): ByteArray? =
         runtimeBus.latestHeadAfter(lastRevision.coerceAtLeast(0L))
             ?.let(PerceptionBusBinaryCodec::encodeHead)
+
+    @JvmStatic
+    fun pollAmbientSoundProfile(lastRevision: Long): ByteArray? =
+        runtimeBus.latestAmbientSoundProfileAfter(
+            lastRevision.coerceAtLeast(0L),
+            SystemClock.elapsedRealtimeNanos(),
+        )?.let(PerceptionBusBinaryCodec::encodeAmbientSoundProfile)
 }

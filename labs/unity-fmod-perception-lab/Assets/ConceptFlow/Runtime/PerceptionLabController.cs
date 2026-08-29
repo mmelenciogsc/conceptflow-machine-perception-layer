@@ -26,11 +26,14 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private VirtualSpeakerField speakers = null!;
         private IPerceptionAudioBackend audioBackend = null!;
         private IPerceptionSnapshotSource perceptionSource;
+        private IAccessibilityAnnouncementSink accessibilityAnnouncementSink;
         private IPerceptionCoordinateFrameAdapterV1 coordinateAdapter = null!;
         private bool ownsPerceptionSource;
         private bool ownsAudioBackend;
         private FocusedObjectSonification focusedObject = null!;
         private NonvisualInteractionPresenter interactionPresenter = null!;
+        private HrtfLocalizationCalibration hrtfCalibration = null!;
+        private HrtfCalibrationCommandSpool hrtfCommandSpool = null!;
         private Transform bodyFrame = null!;
         private Transform headFrame = null!;
         private Vector3 nearestGeometry;
@@ -40,6 +43,7 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private bool paused;
         private float scenarioTime;
         private int scenarioIndex;
+        private bool accessibilityAnnouncementsSuspended;
         private float previousClearance = float.NaN;
         private float motionActivation = .12f;
         private float nextDispatchTime;
@@ -55,6 +59,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public string CoordinateMappingId => focusedObject?.CoordinateMappingId??string.Empty;
         public int LastBroadphaseCandidateCount { get; private set; }
         public bool LastUsedScenarioColliderFallback { get; private set; }
+        public HrtfLocalizationCalibration HrtfCalibration => hrtfCalibration;
+        public bool IsHrtfCalibrationActive => hrtfCalibration?.SuppressOrdinaryAudio==true;
 
         private void Awake()
         {
@@ -75,7 +81,9 @@ namespace ConceptFlow.Mpl.PerceptionLab
             audioBackend=new InspectableFmodBackend();
 #endif
 #if UNITY_ANDROID && !UNITY_EDITOR
-            perceptionSource=new AndroidPerceptionBridgeClient(); ownsPerceptionSource=true;
+            perceptionSource=new AndroidPerceptionBridgeClient();
+            accessibilityAnnouncementSink=perceptionSource as IAccessibilityAnnouncementSink;
+            ownsPerceptionSource=true;
 #endif
             RebuildPresenters();
             BuildScenario((LabScenario)scenarioIndex);
@@ -85,21 +93,49 @@ namespace ConceptFlow.Mpl.PerceptionLab
         // Ordering, Android polling, focus selection, and raw touch interpretation stay
         // outside this lab controller. A host injects already-decoded snapshots explicitly.
         public void ApplyWorldSnapshot(PerceptionWorldSnapshot snapshot) => focusedObject.AcceptWorld(snapshot);
-        public void ApplyFocusSnapshot(PerceptionFocusSnapshot snapshot) => focusedObject.AcceptFocus(snapshot);
+        public void ApplyFocusSnapshot(PerceptionFocusSnapshot snapshot)
+        {
+            focusedObject.AcceptFocus(snapshot);
+        }
+        public void ApplyFocusSnapshot(PerceptionFocusSnapshot snapshot,long nowNs)
+        {
+            ApplyFocusSnapshot(snapshot);
+            if(snapshot?.HasAccessibilityAnnouncement==true && nowNs>=snapshot.UpdatedTimestampNs &&
+               nowNs<snapshot.ValidUntilTimestampNs)
+                accessibilityAnnouncementSink?.TryAnnounceForAccessibility(
+                    snapshot.AccessibilityAnnouncementToken,
+                    snapshot.AccessibilityAnnouncementText);
+        }
         public void ApplyHeadPoseSnapshot(PerceptionHeadPoseSnapshot snapshot)
         {
             if(coordinateAdapter.TryMapHeadOrientation(snapshot,out Quaternion listenerRotation))
+            {
                 headFrame.rotation=listenerRotation;
+                hrtfCalibration?.AcceptListenerPose(new ListenerPoseCommand(
+                    headFrame.position,listenerRotation*Vector3.forward,listenerRotation*Vector3.up,snapshot.TimestampNs));
+            }
             focusedObject.ListenerPosition=headFrame.position;
             focusedObject.AcceptHeadPose(snapshot);
         }
         public bool RenderFocusedObject(long nowNs)
         {
+            if(hrtfCalibration?.SuppressOrdinaryAudio==true)
+            {
+                focusedObject.Clear("hrtf-calibration");
+                return false;
+            }
             focusedObject.ListenerPosition=headFrame.position;
             return focusedObject.Render(nowNs);
         }
-        public void ApplyInteractionState(NonvisualInteractionState next,long nowNs) => interactionPresenter.Apply(next,nowNs);
-        public void TickInteractionPresenter(long nowNs) => interactionPresenter.Tick(nowNs);
+        public void ApplyInteractionState(NonvisualInteractionState next,long nowNs)
+        {
+            if(hrtfCalibration?.SuppressOrdinaryAudio==true) { interactionPresenter.Clear(); return; }
+            interactionPresenter.Apply(next,nowNs);
+        }
+        public void TickInteractionPresenter(long nowNs)
+        {
+            if(hrtfCalibration?.SuppressOrdinaryAudio!=true) interactionPresenter.Tick(nowNs);
+        }
         public bool TryTakeNonvisualAnnouncement(out NonvisualAnnouncement announcement) =>
             interactionPresenter.TryTakeAnnouncement(out announcement);
         public void CompleteDwellSpeech(long generation) => interactionPresenter.CompleteDwellSpeech(generation);
@@ -114,21 +150,54 @@ namespace ConceptFlow.Mpl.PerceptionLab
             if (Input.GetKeyDown(KeyCode.RightBracket)) ChangeScenario(1);
             for (int key=0;key<=9;key++)
                 if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha0+key))) { scenarioIndex = key % Enum.GetValues(typeof(LabScenario)).Length; BuildScenario((LabScenario)scenarioIndex); }
+            long fallbackNowNs=MonotonicTimestampNs();
+            if(perceptionSource!=null && perceptionSource.TryPollHeadPose(out PerceptionHeadPoseSnapshot head))
+                ApplyHeadPoseSnapshot(head);
+            long sourceNowNs=0L;
+            bool hasAuthoritativeClock=perceptionSource!=null &&
+                perceptionSource.TryGetMonotonicTimestampNs(out sourceNowNs);
+            long nowNs=hasAuthoritativeClock?sourceNowNs:fallbackNowNs;
+            SynchronizeAccessibilityAnnouncementSuppression();
+            ProcessHrtfCommandOnce(nowNs);
+            PollPerceptionBridge(nowNs,hasAuthoritativeClock);
+            hrtfCalibration?.Tick(nowNs);
+            SynchronizeAccessibilityAnnouncementSuppression();
+            hrtfCommandSpool?.RefreshStatus(hrtfCalibration);
+            if(hrtfCalibration?.SuppressOrdinaryAudio==true)
+            {
+                focusedObject.Clear("hrtf-calibration");
+                interactionPresenter.Clear();
+                LastAudioCommandCount=hrtfCalibration.State==HrtfCalibrationState.Presenting?1:0;
+                LastHapticState="none";
+                status=$"HRTF calibration {hrtfCalibration.State}; trial {hrtfCalibration.CurrentOrdinal}/{hrtfCalibration.TrialCount}; answers {hrtfCalibration.AnsweredCount}";
+                return;
+            }
+            // A connected Android source is authoritative. Lab colliders remain available for
+            // explicit simulation, but must never leak a synthetic ambient/geometry bed into a
+            // live glasses session after a calibration trial ends.
+            if(perceptionSource!=null)
+            {
+                LastAudioCommandCount=focusedObject?.IsActive==true?1:0;
+                LastHapticState="none";
+                status="Live Android perception source; synthetic geometry suppressed";
+                return;
+            }
             if (!paused) scenarioTime += Time.deltaTime;
             AnimateScenario((LabScenario)scenarioIndex, scenarioTime);
             QueryGeometry();
-            PollPerceptionBridge();
         }
 
         public void ConfigurePerceptionRuntime(IPerceptionSnapshotSource source,
             IPerceptionAudioBackend backend,IPerceptionCoordinateFrameAdapterV1 frameAdapter,
             bool takeSourceOwnership=false,bool takeBackendOwnership=false)
         {
+            hrtfCalibration?.Abort("runtime-reconfigured");
             focusedObject?.Clear("runtime-reconfigured");
             interactionPresenter?.Clear();
             if(ownsPerceptionSource) perceptionSource?.Dispose();
             if(ownsAudioBackend && audioBackend is IDisposable disposableBackend) disposableBackend.Dispose();
             perceptionSource=source; audioBackend=backend??throw new ArgumentNullException(nameof(backend));
+            accessibilityAnnouncementSink=source as IAccessibilityAnnouncementSink;
             coordinateAdapter=frameAdapter??throw new ArgumentNullException(nameof(frameAdapter));
             ownsPerceptionSource=takeSourceOwnership; ownsAudioBackend=takeBackendOwnership;
             RebuildPresenters();
@@ -139,16 +208,76 @@ namespace ConceptFlow.Mpl.PerceptionLab
             focusedObject=new FocusedObjectSonification(audioBackend,coordinateAdapter:coordinateAdapter)
                 { ListenerPosition=headFrame.position };
             interactionPresenter=new NonvisualInteractionPresenter(audioBackend);
+            TextAsset manifest=Resources.Load<TextAsset>("focused_hrtf_trials");
+            if(manifest==null) throw new InvalidOperationException("Focused HRTF manifest resource is missing.");
+            try
+            {
+                ConfigureHrtfCalibrationRuntime(manifest.text,
+                    HrtfCalibrationStorage.ResolveDirectory(Application.persistentDataPath));
+            }
+            catch(Exception)
+            {
+                hrtfCalibration=null;
+                hrtfCommandSpool=null;
+                Debug.LogWarning("[MPL_HRTF] status=disabled reason=storage-unavailable");
+            }
         }
 
-        private void PollPerceptionBridge()
+        public void ConfigureHrtfCalibrationRuntime(string manifestJson,string resultDirectory)
+        {
+            hrtfCalibration?.Abort("calibration-reconfigured");
+            hrtfCalibration=new HrtfLocalizationCalibration(audioBackend,manifestJson,resultDirectory);
+            hrtfCommandSpool=new HrtfCalibrationCommandSpool(resultDirectory);
+            if(HrtfCalibrationCommandSpool.Supported && !hrtfCommandSpool.IsOperational)
+                hrtfCalibration.Abort(hrtfCommandSpool.LastError);
+            hrtfCommandSpool.RefreshStatus(hrtfCalibration,true);
+            SynchronizeAccessibilityAnnouncementSuppression();
+        }
+
+        public bool ProcessHrtfCommandOnce(long nowNs)
+        {
+            if(hrtfCommandSpool==null || hrtfCalibration==null) return false;
+            bool processed=hrtfCommandSpool.ProcessOnce(hrtfCalibration,nowNs,
+                ()=>SetAccessibilityAnnouncementsSuspended(true));
+            SynchronizeAccessibilityAnnouncementSuppression();
+            return processed;
+        }
+
+        private void PollPerceptionBridge(long nowNs,bool hasAuthoritativeClock)
         {
             if(perceptionSource==null) return;
-            if(perceptionSource.TryPollHeadPose(out PerceptionHeadPoseSnapshot head)) ApplyHeadPoseSnapshot(head);
-            if(perceptionSource.TryPoll(out PerceptionWorldSnapshot world)) ApplyWorldSnapshot(world);
-            if(perceptionSource.TryPollFocus(out PerceptionFocusSnapshot focus)) ApplyFocusSnapshot(focus);
-            if(perceptionSource.TryGetMonotonicTimestampNs(out long nowNs)) RenderFocusedObject(nowNs);
+            if(hasAuthoritativeClock && perceptionSource is IAmbientSoundProfileSource ambientSource &&
+               ambientSource.TryPollAmbientSoundProfile(out PerceptionAmbientSoundProfileSnapshot ambientProfile))
+            {
+                if(hrtfCalibration?.AcceptAmbientSoundProfile(ambientProfile,nowNs)==true)
+                    Debug.Log(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                        "[MPL_AMBIENT] status=applied prior={0} gain={1:F2} intervalMs={2}",
+                        ambientProfile.Prior,ambientProfile.RecommendedCalibrationGain,
+                        ambientProfile.RecommendedPulseIntervalMs));
+            }
+            bool suppressOrdinaryAudio=hrtfCalibration?.SuppressOrdinaryAudio==true;
+            if(perceptionSource.TryPoll(out PerceptionWorldSnapshot world) && !suppressOrdinaryAudio)
+                ApplyWorldSnapshot(world);
+            if(perceptionSource.TryPollFocus(out PerceptionFocusSnapshot focus) && !suppressOrdinaryAudio)
+            {
+                if(hasAuthoritativeClock) ApplyFocusSnapshot(focus,nowNs);
+                else ApplyFocusSnapshot(focus);
+            }
+            if(!suppressOrdinaryAudio && hasAuthoritativeClock) RenderFocusedObject(nowNs);
         }
+
+        private void SynchronizeAccessibilityAnnouncementSuppression() =>
+            SetAccessibilityAnnouncementsSuspended(hrtfCalibration?.SuppressOrdinaryAudio==true);
+
+        private void SetAccessibilityAnnouncementsSuspended(bool suspended)
+        {
+            if(accessibilityAnnouncementsSuspended==suspended) return;
+            accessibilityAnnouncementsSuspended=suspended;
+            accessibilityAnnouncementSink?.SetAccessibilityAnnouncementsSuspended(suspended);
+        }
+
+        private static long MonotonicTimestampNs() => (long)(System.Diagnostics.Stopwatch.GetTimestamp()*
+            (1_000_000_000.0/System.Diagnostics.Stopwatch.Frequency));
 
         private void QueryGeometry()
         {
@@ -342,6 +471,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
 
         private void OnDestroy()
         {
+            hrtfCalibration?.Abort("controller-destroyed");
+            SetAccessibilityAnnouncementsSuspended(false);
             focusedObject?.Clear("controller-destroyed");
             interactionPresenter?.Clear();
             if(ownsPerceptionSource) perceptionSource?.Dispose();

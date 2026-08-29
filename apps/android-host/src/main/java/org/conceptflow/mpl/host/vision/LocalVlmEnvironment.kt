@@ -100,11 +100,49 @@ data class LocalVlmFocusedObjectRequest(
     val correlation: LocalVlmFocusedObjectCorrelation,
     val requestedMonotonicTimestampNanos: Long,
     val question: String,
+    val deadlineMonotonicTimestampNanos: Long =
+        FocusedVqaTiming.deadlineNanos(requestedMonotonicTimestampNanos),
 ) {
     init {
         require(requestedMonotonicTimestampNanos >= correlation.sourceCaptureTimestampNanos)
+        require(
+            deadlineMonotonicTimestampNanos ==
+                FocusedVqaTiming.deadlineNanos(requestedMonotonicTimestampNanos),
+        )
         require(LocalVlmFocusedObjectQuestionSanitizer.sanitize(question) == question)
     }
+}
+
+/** One end-to-end monotonic budget shared by preparation, IPC, lease wait, and generation. */
+internal object FocusedVqaTiming {
+    const val REQUEST_BUDGET_NANOS = 8_500_000_000L
+    const val PUBLICATION_BUDGET_NANOS = 9_000_000_000L
+    const val LEASE_RETRY_BUDGET_NANOS = 1_500_000_000L
+    const val MAXIMUM_GENERATION_MILLIS = 8_000L
+
+    fun deadlineNanos(requestedNanos: Long): Long = Math.addExact(requestedNanos, REQUEST_BUDGET_NANOS)
+
+    fun hasTimeRemaining(deadlineNanos: Long, nowNanos: Long): Boolean = nowNanos < deadlineNanos
+
+    /** Floor conversion guarantees the model timeout never exceeds the remaining wall budget. */
+    fun remainingGenerationMillis(deadlineNanos: Long, nowNanos: Long): Long? {
+        val remainingNanos = deadlineNanos - nowNanos
+        if (remainingNanos < 1_000_000L) return null
+        return minOf(MAXIMUM_GENERATION_MILLIS, remainingNanos / 1_000_000L)
+    }
+
+    fun mayRetryLease(
+        task: LocalVlmTaskKind,
+        reason: HtpLeaseRefusalReason,
+        leaseStartedNanos: Long,
+        nowNanos: Long,
+        deadlineNanos: Long,
+    ): Boolean = task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 &&
+        (reason == HtpLeaseRefusalReason.QNN_PRIORITY ||
+            reason == HtpLeaseRefusalReason.BUSY ||
+            reason == HtpLeaseRefusalReason.TIMEOUT) &&
+        nowNanos < deadlineNanos &&
+        nowNanos - leaseStartedNanos < LEASE_RETRY_BUDGET_NANOS
 }
 
 data class LocalVlmFocusedObjectAnswer(
@@ -124,6 +162,7 @@ enum class LocalVlmFocusedObjectFailure {
     INVALID_REQUEST,
     INFERENCE_FAILED,
     STALE_OR_MISMATCHED,
+    TIMED_OUT,
     UNAVAILABLE,
 }
 
@@ -260,15 +299,16 @@ internal object LocalVlmFocusedObjectResponseValidator {
                 returnedRequestedNanos,
             ) ||
             nowNanos < requestStartedNanos ||
-            nowNanos - requestStartedNanos > MAXIMUM_RESPONSE_NANOS ||
+            !FocusedVqaTiming.hasTimeRemaining(
+                FocusedVqaTiming.deadlineNanos(expectedRequestedNanos),
+                nowNanos,
+            ) ||
             completedNanos < expectedCorrelation.sourceCaptureTimestampNanos ||
             completedNanos > nowNanos
         ) return null
         val answer = rawAnswer?.let(LocalVlmFocusedObjectAnswerParser::parse) ?: return null
         return LocalVlmFocusedObjectAnswer(expectedCorrelation, completedNanos, answer)
     }
-
-    private const val MAXIMUM_RESPONSE_NANOS = 9_000_000_000L
 }
 
 private object LocalVlmPlainText {

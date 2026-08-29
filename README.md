@@ -162,8 +162,8 @@ is not tracked. This is bearing reinforcement, not route guidance; see
 | Area | Verified locally | Not yet verified or implemented |
 | --- | --- | --- |
 | Python | 223 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
-| Android | Named Rokid Node and Android Node APKs; fixed 330-class YOLOE instance segmentation; fully prewarmed, persistent-change-gated Qwen3-VL-2B indoor/outdoor classification serialized with QNN HTP work; selected 392 balanced Depth Anything V2 Metric indoor/outdoor execution; 660 two-range known-dimension records with conservative per-observation correction; bounded class/mask/depth tracking between keyframes; timestamped IMU ingestion; Camera2-sourced rotation-only camera→rigid-head propagation; opt-in app-process QNN JNI path; strict phone-owned 5 GHz Android Wi-Fi Direct group with pinned mutual-TLS lanes; aggregate-only live status; physical QAIRT 2.48.40 QNN HTP V79 execution on the Poco | Empirical camera-intrinsic calibration, camera-to-head translation/anatomical alignment, representative task/depth/environment accuracy, reboot group reconstruction, sustained thermal profiling, manual TalkBack/BVI acceptance |
-| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; exact native 648×648 YUV acquisition with the validated darkness/blur/motion gate and 640×640 RGB output; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; bounded camera-only recovery with session-continuous frame IDs; observed 4032×3024 equal pixel/active/pre-correction arrays, CENTER_ONLY crop, NONE-only rotate-and-crop, and OFF-only OIS; narrow-fingerprint `DERIVED` intrinsics with request/result consistency guards; nominal 100 Hz fused head-IMU acquisition with duplicate suppression, ≤20 ms batches, and ≤1 s absolute refresh; explicit short microphone lease; strict Wi-Fi Direct client transport; ten-minute P2P and current exact-build private-LAN camera/IMU soaks with authenticated close and zero session transport-queue drops; no vendor SDK | Sustained physical 5 FPS motion-tier validation, forced physical Camera2 recovery, empirical camera calibration, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, reboot recovery, and sustained thermal/energy validation |
+| Android | Named Rokid Node and Android Node APKs; fixed 330-class YOLOE instance segmentation; fully prewarmed, persistent-change-gated Qwen3-VL-2B indoor/outdoor classification serialized with QNN HTP work; selected 392 balanced Depth Anything V2 Metric indoor/outdoor execution; 660 two-range known-dimension records with conservative per-observation correction; bounded class/mask/depth tracking between keyframes; timestamped IMU ingestion; Camera2-sourced rotation-only camera→rigid-head propagation; opt-in app-process QNN JNI path; exact-pin mutual-TLS lanes over an explicitly selected strict-P2P or private-WLAN topology; aggregate-only live status; physical QAIRT 2.48.40 QNN HTP V79 execution on the Poco | Current-firmware strict Wi-Fi Direct peer visibility, empirical camera-intrinsic calibration, camera-to-head translation/anatomical alignment, representative task/depth/environment accuracy, reboot recovery, sustained thermal profiling, manual TalkBack/BVI acceptance |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; exact native 648×648 YUV acquisition with the validated darkness/blur/motion gate and 640×640 RGB output; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; bounded camera-only recovery with session-continuous frame IDs; observed 4032×3024 equal pixel/active/pre-correction arrays, CENTER_ONLY crop, NONE-only rotate-and-crop, and OFF-only OIS; narrow-fingerprint `DERIVED` intrinsics with request/result consistency guards; nominal 100 Hz fused head-IMU acquisition with duplicate suppression, ≤20 ms batches, and ≤1 s absolute refresh; explicit short microphone lease; exact-pin private-WLAN discovery across infrastructure Wi-Fi or the Poco personal hotspot, including hotspot-interface announcements and gateway fallback; strict Wi-Fi Direct remains selectable; current exact-build 600-second hotspot run delivered 1,835 frames and 34,484 IMU samples with bounded queues; no vendor SDK | Strict-P2P discovery on the current firmware, competing-WLAN-free outdoor hotspot autojoin, sustained physical 5 FPS motion-tier validation, forced physical Camera2 recovery, empirical camera calibration, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, reboot recovery, and extended thermal/energy validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 | Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity 6000.3.22f1 ran 27/27 EditMode and 3/3 PlayMode tests and built a launchable ARM64 IL2CPP Android player; FMOD Studio 2.03.14 validated and built the authored banks; scalar native-metric depth values were physically produced from Rokid frames | Same-signature Unity/Android Node Binder session, physical open-ear localization, Unity FMOD runtime listening, representative metric-depth accuracy, calibrated spatial/angular accuracy, target-user validation |
@@ -302,7 +302,8 @@ no-backup configuration. It does not start either endpoint:
 ./scripts/android-live-link-pair \
   --rokid-serial "$ROKID_SERIAL" \
   --poco-serial "$POCO_SERIAL" \
-  --poco-address "$POCO_PRIVATE_IP"
+  --poco-address "$POCO_PRIVATE_IP" \
+  --network-topology private-lan-discovery
 ```
 
 Arm the Rokid sensor-off rendezvous once from authorized development ADB. Then
@@ -315,11 +316,13 @@ debug intent—is the capture authorization surface:
 ./scripts/rokid-control --serial "$ROKID_SERIAL" idle-enable
 ```
 
-Cable-free cooldowns use Android wakeup alarms, with exact delivery selected
-only when Android reports exact-alarm access, and each 15-second handshake has
-a finite 17-second CPU wake lease. Doze can still throttle delivery, so the
-Poco's 90-second listener window is bounded authorization rather than a timing
-guarantee; see [Rokid integration](docs/ROKID_INTEGRATION.md).
+Cable-free cooldowns run inside the already-active Rokid foreground process;
+they do not use exact alarms or attempt a background foreground-service start.
+Each pre-authentication epoch has a finite three-minute ceiling and a
+182-second wake-lease hard bound that is released immediately after
+authentication. Definitive failures may enter the jittered 15/30/60-second
+sensor-off cooldown earlier. See
+[Rokid integration](docs/ROKID_INTEGRATION.md).
 
 To end early, activate the Poco's accessible **Stop glasses camera and motion
 session** button. Use the following development command only when the Rokid
@@ -535,7 +538,7 @@ creation only. Each product must remain independently operable. See
   ADB sideload, standard Android APIs, permissions, and device diagnostics.
 - [Rokid camera-to-head extrinsic](docs/ROKID_CAMERA_HEAD_EXTRINSIC.md) — sourced
   Camera2 rotation, transform direction, validation, and translation boundary.
-- [Wi-Fi Direct transport](docs/WIFI_DIRECT_TRANSPORT.md) — phone-owned P2P
+- [Local wireless transport](docs/WIFI_DIRECT_TRANSPORT.md) — strict P2P and authenticated private-WLAN fallback
   group lifecycle, permissions, authenticated routing, and recovery policy.
 - [YodaOS runtime resilience](docs/YODAOS_RUNTIME_RESILIENCE.md) — measured
   low-memory/radio failure chain, bounded-memory implementation, and safe

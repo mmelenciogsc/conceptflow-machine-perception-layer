@@ -74,6 +74,7 @@ SCRIPT_NAMES = {
     "rokid-install",
     "rokid-control",
     "test",
+    "unity-hrtf-calibration",
 }
 FORBIDDEN_SUFFIXES = {
     ".aab",
@@ -213,6 +214,13 @@ def check_rokid_workflow_component() -> list[str]:
         failures.append(f"Rokid workflow does not invoke the direct-sideload helper: {HARDWARE_WORKFLOW}")
     if install_package_match is None:
         failures.append(f"cannot determine install package from {ROKID_INSTALL_SCRIPT}")
+    for gesture_install_token in (
+        "--enable-gesture-controls",
+        '"$SCRIPT_DIRECTORY/rokid-accessibility-control" --serial "$ROKID_SERIAL" enable',
+        '"$SCRIPT_DIRECTORY/rokid-accessibility-control" --serial "$ROKID_SERIAL" commands-enable',
+    ):
+        if gesture_install_token not in install_text:
+            failures.append(f"Rokid installer lacks explicit gesture provisioning token: {gesture_install_token}")
     if control_package_match is None or control_activity_match is None:
         failures.append("cannot determine the nonvisual runtime component from scripts/rokid-control")
     if (
@@ -252,8 +260,8 @@ def check_rokid_workflow_component() -> list[str]:
     permissions = {permission.get(f"{ANDROID_NAMESPACE}name") for permission in manifest.findall("uses-permission")}
     if "android.permission.WAKE_LOCK" not in permissions:
         failures.append("Rokid bounded pre-authentication wake lease requires WAKE_LOCK")
-    if "android.permission.SCHEDULE_EXACT_ALARM" not in permissions:
-        failures.append("Rokid capability-gated exact cooldown scheduling requires SCHEDULE_EXACT_ALARM")
+    if "android.permission.SCHEDULE_EXACT_ALARM" in permissions:
+        failures.append("Rokid in-process cooldown scheduling must not retain exact-alarm special access")
     if command_activity.get(f"{ANDROID_NAMESPACE}exported") != "true":
         failures.append("RokidCommandActivity must be exported for explicit authorized ADB control")
     if command_activity.get(f"{ANDROID_NAMESPACE}permission") != "android.permission.DUMP":
@@ -306,14 +314,24 @@ def check_rokid_workflow_component() -> list[str]:
     elif "liveLinkRun" in armed_method.group(0) or "rendezvousRetry" in armed_method.group(0):
         failures.append("Rokid armed state must survive sensor-off rendezvous cooldown")
     for required_wakeup_token in (
-        "AlarmManager.ELAPSED_REALTIME_WAKEUP",
-        "setExactAndAllowWhileIdle",
-        "setAndAllowWhileIdle",
-        "canScheduleExactAlarms",
+        "mainHandler.postDelayed(retry, delayMillis)",
+        "retry_scheduler=in_process_foreground",
         "MAXIMUM_WAKE_LEASE_MILLIS",
     ):
         if required_wakeup_token not in runtime_service_text:
             failures.append(f"Rokid cable-free rendezvous lacks {required_wakeup_token}")
+    if "PendingIntent.getForegroundService" in runtime_service_text:
+        legacy_cancel = re.search(
+            r"private fun cancelLegacyRendezvousAlarm\(\).*?\n    }",
+            runtime_service_text,
+            re.DOTALL,
+        )
+        if legacy_cancel is None or "FLAG_NO_CREATE" not in legacy_cancel.group(0):
+            failures.append("Rokid cooldown must not re-enter through a background foreground-service request")
+        elif "PendingIntent.getForegroundService" in (
+            runtime_service_text[: legacy_cancel.start()] + runtime_service_text[legacy_cancel.end() :]
+        ):
+            failures.append("Rokid background foreground-service PendingIntent is allowed only for legacy cancellation")
     if (
         "PowerManager.PARTIAL_WAKE_LOCK" not in wake_lease_text
         or "wakeLock.acquire(timeoutMillis)" not in wake_lease_text

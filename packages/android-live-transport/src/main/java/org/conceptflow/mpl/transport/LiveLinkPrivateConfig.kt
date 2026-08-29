@@ -16,6 +16,7 @@ enum class LiveLinkEndpointRole {
 
 enum class LiveLinkNetworkTopology(val configValue: String) {
     PRIVATE_LAN("private_lan"),
+    PRIVATE_LAN_DISCOVERY("private_lan_discovery"),
     WIFI_DIRECT_REQUIRED("wifi_direct_required");
 
     companion object {

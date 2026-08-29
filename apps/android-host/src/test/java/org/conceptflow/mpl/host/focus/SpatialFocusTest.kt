@@ -14,6 +14,7 @@ import org.conceptflow.mpl.v1.RokidTouchEvent
 import org.conceptflow.mpl.v1.RokidTouchKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,6 +73,35 @@ class SpatialFocusTest {
     }
 
     @Test
+    fun `VQA accessibility token is content independent stable across revisions and unique per request`() {
+        val manager = SpatialFocusManager()
+        manager.updateTracks(4L, 1L, 0L, listOf(track("only", 1.0)))
+        val ready = manager.command(SpatialFocusCommand.NEXT, 100L).state
+            .copy(dwell = SpatialFocusDwell.READY, vqaAnswer = "First answer.")
+        val first = SpatialFocusAccessibilityFormatter.presentation(
+            ready.copy(mode = SpatialFocusMode.VQA_RESULT, vqaRequestId = 11L),
+        ).announcement
+        val refresh = SpatialFocusAccessibilityFormatter.presentation(
+            ready.copy(
+                mode = SpatialFocusMode.VQA_RESULT,
+                revision = ready.revision + 1L,
+                vqaAnswer = "Second answer.",
+                vqaRequestId = 11L,
+            ),
+        ).announcement
+        val second = SpatialFocusAccessibilityFormatter.presentation(
+            ready.copy(mode = SpatialFocusMode.VQA_RESULT, vqaRequestId = 12L),
+        ).announcement
+
+        assertEquals(first?.token, refresh?.token)
+        assertNotEquals(first?.token, second?.token)
+        assertEquals("vqa-result:4:1:11", first?.token)
+        assertFalse(requireNotNull(first).token.contains("answer", ignoreCase = true))
+        assertTrue(requireNotNull(second).token.encodeToByteArray().size <= 96)
+        assertTrue(second.text.encodeToByteArray().size <= 384)
+    }
+
+    @Test
     fun `focus removal and session reset cancel dwell`() {
         val manager = SpatialFocusManager()
         manager.updateTracks(1L, 1L, 0L, listOf(track("one", 1.0)))
@@ -121,6 +151,10 @@ class SpatialFocusTest {
         transition = manager.command(SpatialFocusCommand.ACTIVATE, 3L)
         assertTrue(transition.effect is SpatialFocusEffect.RequestVqa)
         assertEquals(SpatialFocusMode.VQA_PENDING, transition.state.mode)
+        assertEquals(
+            (transition.effect as SpatialFocusEffect.RequestVqa).request.correlation.requestId,
+            transition.state.vqaRequestId,
+        )
         transition = manager.command(SpatialFocusCommand.BACK, 4L)
         assertTrue(transition.effect is SpatialFocusEffect.CancelVqa)
         assertEquals(SpatialFocusMode.BROWSING, transition.state.mode)
@@ -181,6 +215,28 @@ class SpatialFocusTest {
     }
 
     @Test
+    fun `pending VQA expires and cancels without another frame`() {
+        val gateway = RecordingGateway(accept = true)
+        val manager = SpatialFocusManager(vqaGateway = gateway)
+        manager.updateTracks(1L, 1L, 0L, listOf(track("one", 1.0)))
+        manager.command(SpatialFocusCommand.ACTIVATE, 1L)
+        manager.command(SpatialFocusCommand.ACTIVATE, 2L)
+        val request = (manager.command(SpatialFocusCommand.ACTIVATE, 3L).effect as
+            SpatialFocusEffect.RequestVqa).request
+        val deadlineNanos = 9_000_000_003L
+
+        assertFalse(manager.expireVqa(request.correlation, deadlineNanos - 1L))
+        assertEquals(SpatialFocusMode.VQA_PENDING, manager.current()!!.mode)
+        assertTrue(manager.expireVqa(request.correlation, deadlineNanos))
+        assertEquals(1, gateway.cancellations)
+        assertEquals(SpatialFocusMode.ACTION_MENU, manager.current()!!.mode)
+        assertEquals(
+            SpatialFocusOperatorNotice.VqaRejected(FocusedVqaRejection.TIMED_OUT),
+            manager.current()!!.operatorNotice,
+        )
+    }
+
+    @Test
     fun `explicit VQA retains only its correlated target through bounded inference and result windows`() {
         val gateway = RecordingGateway(accept = true)
         val manager = SpatialFocusManager(
@@ -203,6 +259,11 @@ class SpatialFocusTest {
         val heldResult = manager.updateTracks(1L, 3L, 3_000_000_000L, emptyList())
         assertEquals(SpatialFocusMode.VQA_RESULT, heldResult.mode)
         assertEquals("A wooden chair.", heldResult.vqaAnswer)
+        assertEquals(request.correlation.requestId, heldResult.vqaRequestId)
+        assertEquals(
+            "vqa-result:1:${heldResult.focusGeneration}:${request.correlation.requestId}",
+            SpatialFocusAccessibilityFormatter.presentation(heldResult).announcement?.token,
+        )
         assertEquals("one", heldResult.target!!.stableTrackId)
 
         val expired = manager.updateTracks(1L, 4L, 12_100_000_001L, emptyList())
@@ -366,8 +427,11 @@ class SpatialFocusTest {
     }
 
     private class RecordingGateway(private val accept: Boolean) : FocusedVqaGateway {
+        var cancellations = 0
         override fun submit(request: FocusedVqaRequest) = accept
-        override fun cancel(correlation: FocusedVqaCorrelation) = Unit
+        override fun cancel(correlation: FocusedVqaCorrelation) {
+            cancellations += 1
+        }
     }
 
     private fun item(vector: MetricVector3, distance: Double) = SpatialFocusItem(

@@ -19,6 +19,12 @@ import org.junit.Test
 
 class ConnectionAttemptResourcesTest {
     @Test
+    fun `pre-authentication rejection cannot terminate an established listener lifecycle`() {
+        assertFalse(shouldNotifySessionDisconnect(sessionWasReady = false))
+        assertTrue(shouldNotifySessionDisconnect(sessionWasReady = true))
+    }
+
+    @Test
     fun `late old worker cannot close resources owned by new attempt`() {
         val active = ActiveConnectionAttempt()
         val oldResource = RecordingCloseable()

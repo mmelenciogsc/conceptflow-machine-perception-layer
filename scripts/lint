@@ -14,7 +14,7 @@ lint_repository() {
     "$python_executable" scripts/repository/check_config_examples.py
     bash -n scripts/bootstrap scripts/build scripts/test scripts/lint scripts/format scripts/demo scripts/benchmark \
         scripts/fmod-lab scripts/generate scripts/perception-benchmark scripts/perception-calibration scripts/perception-demo \
-        scripts/perception-training \
+        scripts/perception-training scripts/unity-hrtf-calibration \
         scripts/android-model-install scripts/android-model-prepare scripts/android-qnn-build \
         scripts/android-qnn-depth-build scripts/android-qnn-depth-benchmark \
         scripts/android-qnn-jni-build scripts/android-qnn-private-provision \

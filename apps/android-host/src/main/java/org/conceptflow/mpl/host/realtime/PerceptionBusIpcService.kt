@@ -25,6 +25,9 @@ class PerceptionBusIpcService : Service() {
 
             override fun drainTouchEvents(maximumEvents: Int): ByteArray =
                 AndroidPerceptionBridge.drainTouchEvents(maximumEvents)
+
+            override fun pollAmbientSoundProfile(lastRevision: Long): ByteArray? =
+                AndroidPerceptionBridge.pollAmbientSoundProfile(lastRevision)
         },
     )
 

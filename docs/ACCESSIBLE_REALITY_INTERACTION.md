@@ -15,9 +15,9 @@ does not imply physical usability, perceptual accuracy, or release readiness.
 | Area | Implemented | Deterministic validation | Physical status |
 | --- | --- | --- | --- |
 | Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, TalkBack-facing state, and shell-only debug controls in debuggable builds | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, and reset | The debug path was dispatched on the Poco while live detections briefly appeared, but the target expired before the multi-command dwell/menu sequence completed; this is not a target-user or TalkBack acceptance run |
-| Android focused VQA | Explicit-only typed request, bounded exact-frame retention, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, exact source lookup, asynchronous gateway behavior, stale response rejection, reset, and HTP admission | Focused VQA through GenieX on HTP has not been run on the target device |
-| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads | Android dispatcher/codec tests, Java lifecycle/version tests, and Unity decoder tests exercise valid and malformed packets; the Java cache explicitly admits legacy `CFFS` v1 and beacon `CFFS` v2 only | Same-signed Android Node and private licensed-lab builds were installed and remained live together on the Poco; no stable live target reached a nonempty focused-state Binder assertion |
-| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, and a listener transform driven by the accepted canonical head pose | Unity 6000.3.22f1 ran 28/28 EditMode and 3/3 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks and dispatched the deterministic geometry scene to the Bluetooth glasses route without FMOD/Unity runtime errors; focused-icon localization, loudness, and open-ear listening remain unvalidated |
+| Android focused VQA | Explicit-only typed request, bounded exact-frame retention, one absolute deadline, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, exact source lookup, no-callback timeout, exact cancellation, late-response rejection, slot reuse, reset, and HTP admission | One focused query completed through GenieX on the Poco HTP in 3.594 seconds; a later query did not complete, so repeated-run reliability remains unvalidated |
+| Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads; `CFFS` v3 carries the Android-authored accessibility transition | Android dispatcher/codec tests, strict Java lifecycle/version/announcement-gate tests, and Unity decoder tests exercise valid and malformed packets; the Java cache admits `CFFS` v1 through v3 only | Same-signed Android Node and private licensed-lab builds were installed and remained live together on the Poco; foreground-Unity TalkBack delivery still needs the physical listening check |
+| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, a listener transform driven by the accepted canonical head pose, and a debug-only blinded HRTF trial runner | Unity 6000.3.22f1 ran 40/40 EditMode and 6/6 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks without FMOD/Unity runtime errors; focused-icon localization, loudness, and the 24-trial open-ear protocol remain physically unvalidated |
 | Beacon | Two-tier admission, immutable bounded anchor, Binder encoding, and Unity/FMOD rendering | Android JVM and Unity tests cover world preference, no-world fallback, reference-pose freshness, source-track expiry, decoder rejection, head-turn stability, pulse cadence, and TTL | The orientation-stabilized relative tier is executable without WORLD translation; it does not track user translation and has not had open-ear localization acceptance testing |
 | Glasses input | Ordered touch transport and separately governed Rokid observation code | Kotlin tests cover device identity, sequence grammar, timing, reset, and observe-only policy | Several raw gestures were observed on one RV203 firmware, but focus-command admission remains disabled because collision-free semantics were not established |
 
@@ -34,22 +34,26 @@ The relevant deterministic suites are `SpatialFocusTest`,
 Accessible phone controls
         |
         v
-Android SpatialFocusManager -----> Android focus status + TalkBack announcement
+Android SpatialFocusManager -----> Android focus status + authoritative announcement
         |                                      |
-        | CFFS v2 focus + optional beacon      | explicit VQA request
+        | CFFS v3 focus/beacon/announcement    | explicit VQA request
         v                                      v
 signature-protected Binder             isolated GenieX VLM service
         |
         | CFWS world + CFFS focus + CFHP head pose
         v
 Unity strict join and coordinate adapter -----> one FMOD focused icon
+        |
+        +---- new bounded token ----> Android accessibility announcement API
 ```
 
 Android is authoritative for the selected item, focus generation, menu state,
 VQA correlation, beacon admission, and spoken accessible state. Unity receives
 only enough compact state to render a correlated auditory icon or an immutable
-time-bounded beacon. Unity does not select an object, interpret raw touch as a
-focus command, call VQA, choose an anchor tier, or replace Android TalkBack.
+time-bounded beacon and to relay Android's bounded, tokenized announcement to
+TalkBack while Unity is foreground. Unity does not select an object, generate
+accessible wording, interpret raw touch as a focus command, call VQA, choose an
+anchor tier, or replace Android TalkBack.
 
 ## Exact linear focus model
 
@@ -109,18 +113,30 @@ The phone Activity provides stock `Previous`, `Next`, `Activate`, and `Back`
 buttons with explicit directional focus order. D-pad left/right, center or
 Enter, and Escape provide the same four commands for attached-key testing.
 
-`MainActivity` renders the authoritative focus state in an Android view and
-uses `announceForAccessibility` only when
-`SpatialFocusAnnouncementPolicy` identifies a meaningful new state: dwell
-ready, menu option, VQA pending/result/rejection, beacon active/rejection,
-empty state, or inactive state. High-rate revisions do not each cause an
-announcement. The application-wide Android speech adapter suppresses its own
-TTS while an accessibility service is active, avoiding a second application
-voice over TalkBack.
+One formatter produces the authoritative status text and semantic announcement
+token. `MainActivity` renders that state in an Android view and uses
+`announceForAccessibility` only when `SpatialFocusAnnouncementPolicy`
+identifies a meaningful new token: dwell ready, menu option, VQA
+pending/result/rejection, beacon active/rejection, empty state, or inactive
+state. `CFFS` v3 carries the same token and text to the Unity Android plug-in,
+which schedules the announcement on the current activity's UI thread only while
+the focus validity interval contains the current Android monotonic timestamp. A
+newest-wins gate atomically couples its final current-token check to platform
+dispatch, suppresses duplicates and stale queued callbacks, and rechecks
+lifecycle/activity identity immediately before delivery. VQA result tokens use
+the immutable request identity rather than answer-derived data.
+High-rate revisions do not each cause an announcement. The application-wide
+Android speech adapter suppresses its own TTS while an accessibility service
+is active, avoiding a second application voice over TalkBack.
+Starting a focused HRTF trial suspends this gate and cancels its queued token
+before the trial state transition; completion or abort re-enables fresh
+announcements without replaying expired focus state.
 
 The Unity `NonvisualInteractionPresenter` is a deterministic lab presenter for
 externally supplied menu state. It queues fixed phrases and issues an FMOD duck
-command, but it does not invoke a screen reader or accept generated VQA text.
+command, but it does not create the Android focus wording. The separate Android
+plug-in path invokes the platform accessibility API with the validated `CFFS`
+v3 text and can therefore carry an explicitly requested VQA answer.
 Its separate 1.2-second lab default is not the Android focus model's 750 ms
 dwell and is not the source of Android TalkBack speech.
 
@@ -145,7 +161,7 @@ The focus and head signatures are deterministic big-endian payloads:
 
 | Signature | Transaction | Bound | Payload |
 | --- | ---: | ---: | --- |
-| `CFFS` v2 | 2 | 1,024 bytes | v1 focus fields plus explicit mode and an optional immutable world or relative beacon record |
+| `CFFS` v3 | 2 | 1,024 bytes | v2 focus/beacon fields plus an optional, paired accessibility token (96 UTF-8 bytes maximum) and text (384 UTF-8 bytes maximum) |
 | `CFHP` | 3 | 256 bytes | reserved flags, sequence, session generation, monotonic sample time, accuracy, and normalized quaternion `w,x,y,z` |
 
 Both decoders require exact magic and version, complete consumption with no
@@ -154,11 +170,13 @@ Outside beacon mode, `CFFS` is a focus pointer into `CFWS`. In beacon mode it
 also carries the exact frozen anchor needed after the source track expires:
 anchor tier, label and stable identity, source frame/time, activation and
 expiry, confidence, distance, optional uncertainty, vector, and, for a relative
-anchor, the activation-time head quaternion. It never carries menu state,
-spoken phrase, VQA content, raw IMU history, camera frames, microphone samples,
-or model tensors. The Unity decoder accepts v1 only as legacy browsing state.
-The Java cache in front of that decoder independently accepts `CFFS` versions
-1 and 2 while retaining version 1 for every other snapshot type. Unknown or
+anchor, the activation-time head quaternion. It carries a coarse focus mode but
+no independent menu model, raw IMU history, camera frames, microphone samples,
+or model tensors. Version 3 may carry the bounded Android-authored accessible
+phrase, including the answer to an explicit VQA request. The Unity decoder
+accepts v1 as legacy browsing state and v2 as the beacon-compatible predecessor.
+The Java cache in front of that decoder independently accepts `CFFS` versions 1
+through 3 while retaining version 1 for every other snapshot type. Unknown or
 cross-message versions fail closed before reaching Unity.
 
 ## Unity and FMOD focused-object contract
@@ -228,10 +246,14 @@ mismatch, stale result, cancellation, or superseded session cannot become an
 answer.
 
 The question is normalized and limited to 192 characters and 384 UTF-8 bytes.
-The answer is plain text limited to 240 characters, 512 UTF-8 bytes, and 20
-words. Inference is limited to 48 output tokens and eight seconds; the client
-rejects a response older than nine seconds. The implementation logs task and
-timing metadata, not the question, answer, or image content.
+The answer is plain text limited to 240 characters, 512 UTF-8 bytes, and 16
+words. A single absolute deadline 8.5 seconds after admission covers frame
+preparation, IPC, HTP-lease waiting, runtime opening, and generation. The
+published pending state remains bounded to nine seconds. An independent client
+watchdog cancels the exact request at the deadline, ignores late replies, and
+frees the single slot even if no service callback arrives. The implementation
+logs request ID, phase, elapsed time, and typed outcome—not the question,
+answer, image content, label, or track identity.
 
 VQA and environment classification share the pinned Qwen3-VL-2B GenieX
 wrapper. Binding no longer starts eager prewarm because that allowed the VLM to
@@ -260,11 +282,12 @@ successes.
 
 The live controller now installs this gateway, retains decoded source frames,
 publishes correlated answers or typed rejections back into the focus manager,
-and resets the path on session changes. The typed lane, parser, lifecycle,
-exact-frame store, and asynchronous gateway have JVM coverage. No focused VQA
-request has yet been validated through the provisioned GenieX runtime on the
-Poco HTP, so no device latency, answer quality, thermal, or reliability claim
-is made.
+and independently schedules exact-correlation focus expiry even when no later
+camera frame arrives. The typed lane, parser, lifecycle, exact-frame store,
+watchdog, and asynchronous gateway have JVM coverage. One focused query was
+physically observed through the provisioned GenieX runtime on the Poco HTP in
+3.594 seconds. That single run does not establish answer quality, sustained
+latency, thermal behavior, or repeated-request reliability.
 
 The revised startup order was physically observed on the Poco: the first
 YOLO/depth QNN lease completed before VLM prewarm, prewarm then completed in

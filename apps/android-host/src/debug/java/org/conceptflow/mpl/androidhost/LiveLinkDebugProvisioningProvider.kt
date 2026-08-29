@@ -10,6 +10,7 @@ import android.os.Binder
 import android.os.Process
 import org.conceptflow.mpl.host.AndroidNodeForegroundService
 import org.conceptflow.mpl.host.AndroidNodeRuntimeState
+import org.conceptflow.mpl.host.AndroidNodeWifiDirectRecoveryState
 import org.conceptflow.mpl.host.focus.SpatialFocusCommand
 import org.conceptflow.mpl.transport.LiveLinkProvisioningStore
 
@@ -52,6 +53,8 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
             LiveLinkProvisioningStore(requireNotNull(context)).ensureIdentity(IDENTITY_ALIAS)
         }.fold(onSuccess = { "identity_ready" }, onFailure = { "identity_failed" })
         listOf(STATUS_PATH) -> AndroidNodeRuntimeState.current()?.accessibleSummary() ?: "node_idle"
+        listOf(WIFI_DIRECT_RECOVERY_STATUS_PATH) ->
+            AndroidNodeWifiDirectRecoveryState.current().accessibleSummary()
         listOf(FOCUS_STATUS_PATH) -> AndroidNodeRuntimeState.currentFocus()?.let { focus ->
             "mode=${focus.mode.name.lowercase()} items=${focus.itemCount} " +
                 "selected=${focus.selectedIndex} dwell=${focus.dwell.name.lowercase()} " +
@@ -98,6 +101,7 @@ class LiveLinkDebugProvisioningProvider : ContentProvider() {
     private companion object {
         const val IDENTITY_PATH = "identity"
         const val STATUS_PATH = "status"
+        const val WIFI_DIRECT_RECOVERY_STATUS_PATH = "wifi-direct-recovery-status"
         const val FOCUS_STATUS_PATH = "focus-status"
         const val FOCUS_PATH = "focus"
         const val FOCUS_NEXT_PATH = "next"

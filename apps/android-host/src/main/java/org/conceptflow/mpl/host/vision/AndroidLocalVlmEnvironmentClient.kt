@@ -145,6 +145,7 @@ class AndroidLocalVlmEnvironmentClient(
             frame.captureMonotonicTimestampNanos != correlation.sourceCaptureTimestampNanos ||
             now < request.requestedMonotonicTimestampNanos ||
             now - request.requestedMonotonicTimestampNanos > MAXIMUM_FOCUSED_VQA_SUBMISSION_AGE_NANOS ||
+            !FocusedVqaTiming.hasTimeRemaining(request.deadlineMonotonicTimestampNanos, now) ||
             frame.jpeg.size !in MIN_JPEG_BYTES..MAX_JPEG_BYTES
         ) return LocalVlmSubmissionResult.INVALID_REQUEST
 
@@ -177,6 +178,7 @@ class AndroidLocalVlmEnvironmentClient(
                 putLong(LocalVlmIpc.KEY_FOCUS_GENERATION, correlation.focusGeneration)
                 putString(LocalVlmIpc.KEY_TRACK_ID, correlation.stableTrackId)
                 putLong(LocalVlmIpc.KEY_REQUESTED_NANOS, request.requestedMonotonicTimestampNanos)
+                putLong(LocalVlmIpc.KEY_DEADLINE_NANOS, request.deadlineMonotonicTimestampNanos)
                 putString(LocalVlmIpc.KEY_QUESTION, request.question)
             }
         }
@@ -352,6 +354,14 @@ class AndroidLocalVlmEnvironmentClient(
                 .coerceIn(0.0, 1.0),
         )
     }
+
+    /**
+     * Identifies the image that actually produced the current VLM classification. Unlike
+     * [latestFor], this value is not advanced when stable evidence is carried onto a newer
+     * perception frame. Consumers use it to deduplicate work that must run once per classifier
+     * result rather than once per frame.
+     */
+    fun latestClassificationFrameId(): Long? = latest.get()?.originatingFrameId
 
     /** Snapshot used by the main process to give admitted VLM work a bounded HTP opportunity. */
     fun htpWorkState(): LocalVlmHtpWorkState? = synchronized(lock) {
@@ -554,15 +564,20 @@ class AndroidLocalVlmEnvironmentClient(
         val returnedCorrelation = decodeFocusedCorrelation(data)
         val task = LocalVlmTaskKind.parse(data.getString(LocalVlmIpc.KEY_TASK))
         val requestedNanos = data.getLong(LocalVlmIpc.KEY_REQUESTED_NANOS, -1L)
+        val deadlineNanos = data.getLong(LocalVlmIpc.KEY_DEADLINE_NANOS, -1L)
         if (!LocalVlmFocusedObjectResponseValidator.matches(
                 correlation,
                 request.request.requestedMonotonicTimestampNanos,
                 task,
                 returnedCorrelation,
                 requestedNanos,
-            )
+            ) || deadlineNanos != request.request.deadlineMonotonicTimestampNanos
         ) {
             notifyFocused(request, LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED)
+            return
+        }
+        if (!FocusedVqaTiming.hasTimeRemaining(request.request.deadlineMonotonicTimestampNanos, nowNanos)) {
+            notifyFocused(request, LocalVlmFocusedObjectFailure.TIMED_OUT)
             return
         }
         when (response) {
@@ -575,12 +590,14 @@ class AndroidLocalVlmEnvironmentClient(
                 return
             }
             LocalVlmIpc.RESPONSE_FAILED -> {
-                val failure = if (data.getString(LocalVlmIpc.KEY_FAILURE) == "invalid_request") {
-                    LocalVlmFocusedObjectFailure.INVALID_REQUEST
-                } else {
-                    prewarmReady = false
-                    requestPrewarmLocked(nowNanos)
-                    LocalVlmFocusedObjectFailure.INFERENCE_FAILED
+                val failure = when (data.getString(LocalVlmIpc.KEY_FAILURE)) {
+                    "invalid_request" -> LocalVlmFocusedObjectFailure.INVALID_REQUEST
+                    "timed_out" -> LocalVlmFocusedObjectFailure.TIMED_OUT
+                    else -> {
+                        prewarmReady = false
+                        requestPrewarmLocked(nowNanos)
+                        LocalVlmFocusedObjectFailure.INFERENCE_FAILED
+                    }
                 }
                 notifyFocused(request, failure)
                 return

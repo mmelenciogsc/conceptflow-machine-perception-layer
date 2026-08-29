@@ -16,6 +16,7 @@ class PerceptionIpcDispatcherTest {
             PerceptionIpcProtocol.TRANSACTION_POLL_WORLD_STATE,
             PerceptionIpcProtocol.TRANSACTION_POLL_FOCUS_STATE,
             PerceptionIpcProtocol.TRANSACTION_POLL_HEAD_POSE,
+            PerceptionIpcProtocol.TRANSACTION_POLL_AMBIENT_SOUND_PROFILE,
         ).forEach { code ->
             assertEquals(
                 PerceptionIpcProtocol.STATUS_INVALID_ARGUMENT,
@@ -91,6 +92,29 @@ class PerceptionIpcDispatcherTest {
     }
 
     @Test
+    fun `ambient lane is independently bounded and copied`() {
+        val original = ByteArray(100) { 11 }
+        val source = FakeSource().apply { ambient = original }
+        val dispatcher = PerceptionIpcDispatcher(source)
+        val response = dispatcher.dispatch(
+            PerceptionIpcProtocol.TRANSACTION_POLL_AMBIENT_SOUND_PROFILE,
+            4L,
+        )
+        original[0] = 12
+        assertEquals(PerceptionIpcProtocol.STATUS_OK, response.status)
+        assertArrayEquals(ByteArray(100) { 11 }, response.payload)
+
+        source.ambient = ByteArray(PerceptionIpcProtocol.MAXIMUM_AMBIENT_PROFILE_BYTES + 1)
+        assertEquals(
+            PerceptionIpcProtocol.STATUS_OVERSIZE,
+            dispatcher.dispatch(
+                PerceptionIpcProtocol.TRANSACTION_POLL_AMBIENT_SOUND_PROFILE,
+                4L,
+            ).status,
+        )
+    }
+
+    @Test
     fun `unknown transaction is rejected without consulting source`() {
         val source = FakeSource().apply { failIfCalled = true }
         val response = PerceptionIpcDispatcher(source).dispatch(99, 0L)
@@ -101,6 +125,7 @@ class PerceptionIpcDispatcherTest {
 
     private class FakeSource : PerceptionIpcSource {
         var focus: ByteArray? = null
+        var ambient: ByteArray? = null
         var lastTouchMaximum = 0
         var throwOnCall = false
         var failIfCalled = false
@@ -116,6 +141,8 @@ class PerceptionIpcDispatcherTest {
             lastTouchMaximum = maximumEvents
             return byteArrayOf(1)
         }
+
+        override fun pollAmbientSoundProfile(lastRevision: Long): ByteArray? = result(ambient)
 
         private fun result(value: ByteArray?): ByteArray? {
             checkCall()

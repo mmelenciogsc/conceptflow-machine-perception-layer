@@ -32,13 +32,9 @@ import org.conceptflow.mpl.host.feedback.AccessibilityAwareSpeechFeedback
 import org.conceptflow.mpl.host.feedback.HostCueDispatcher
 import org.conceptflow.mpl.host.feedback.PlatformHostAudioFeedback
 import org.conceptflow.mpl.host.feedback.PlatformHostHapticFeedback
-import org.conceptflow.mpl.host.focus.SpatialFocusCommand
-import org.conceptflow.mpl.host.focus.BeaconAnchorMode
+import org.conceptflow.mpl.host.focus.SpatialFocusAccessibilityFormatter
 import org.conceptflow.mpl.host.focus.SpatialFocusAnnouncementPolicy
-import org.conceptflow.mpl.host.focus.SpatialFocusDwell
-import org.conceptflow.mpl.host.focus.SpatialFocusMenuOption
-import org.conceptflow.mpl.host.focus.SpatialFocusMode
-import org.conceptflow.mpl.host.focus.SpatialFocusOperatorNotice
+import org.conceptflow.mpl.host.focus.SpatialFocusCommand
 import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.AcceleratorTarget
 import org.conceptflow.mpl.host.vision.AndroidGnssEnvironmentSource
@@ -331,43 +327,14 @@ open class MainActivity : AppCompatActivity() {
         AndroidNodeForegroundService.focusCommand(this, command)
     }
 
+    @Suppress("DEPRECATION")
     private fun showSpatialFocus(state: SpatialFocusState?) {
-        val message = when {
-            state == null || state.mode == SpatialFocusMode.INACTIVE -> getString(R.string.spatial_focus_inactive)
-            state.operatorNotice is SpatialFocusOperatorNotice.VqaRejected -> getString(
-                R.string.spatial_focus_vqa_rejected,
-                state.operatorNotice.reason.name.lowercase().replace('_', ' '),
-            )
-            state.operatorNotice is SpatialFocusOperatorNotice.BeaconRejected -> getString(
-                R.string.spatial_focus_beacon_rejected,
-                state.operatorNotice.reason.name.lowercase().replace('_', ' '),
-            )
-            state.mode == SpatialFocusMode.ACTION_MENU -> getString(
-                R.string.spatial_focus_menu,
-                when (state.menuOption) {
-                    SpatialFocusMenuOption.VQA -> getString(R.string.spatial_focus_option_vqa)
-                    SpatialFocusMenuOption.BEACON -> getString(R.string.spatial_focus_option_beacon)
-                    SpatialFocusMenuOption.BACK -> getString(R.string.spatial_focus_option_back)
-                    null -> getString(R.string.spatial_focus_option_back)
-                },
-                state.menuIndex + 1,
-            )
-            state.mode == SpatialFocusMode.VQA_PENDING -> getString(R.string.spatial_focus_vqa_pending)
-            state.mode == SpatialFocusMode.VQA_RESULT -> state.vqaAnswer
-            state.mode == SpatialFocusMode.BEACON_ACTIVE -> when (state.beacon?.anchorMode) {
-                BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE -> getString(
-                    R.string.spatial_focus_relative_beacon_active,
-                    state.talkBackPhrase,
-                )
-                else -> getString(R.string.spatial_focus_beacon_active, state.talkBackPhrase)
-            }
-            state.itemCount == 0 -> getString(R.string.spatial_focus_empty)
-            state.dwell == SpatialFocusDwell.READY -> state.talkBackPhrase
-            else -> getString(R.string.spatial_focus_moving, state.selectedIndex + 1, state.itemCount)
+        val presentation = SpatialFocusAccessibilityFormatter.presentation(state)
+        if (spatialFocusStatusView.text.toString() != presentation.statusText) {
+            spatialFocusStatusView.text = presentation.statusText
         }
-        if (spatialFocusStatusView.text.toString() != message) spatialFocusStatusView.text = message
-        if (spatialFocusAnnouncementPolicy.shouldAnnounce(state)) {
-            spatialFocusStatusView.announceForAccessibility(message)
+        if (spatialFocusAnnouncementPolicy.shouldAnnouncePresentation(presentation)) {
+            spatialFocusStatusView.announceForAccessibility(requireNotNull(presentation.announcement).text)
         }
     }
 

@@ -19,6 +19,10 @@ class LiveLinkPrivateConfigTest {
             LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED,
             LiveLinkNetworkTopology.parse("wifi_direct_required"),
         )
+        assertEquals(
+            LiveLinkNetworkTopology.PRIVATE_LAN_DISCOVERY,
+            LiveLinkNetworkTopology.parse("private_lan_discovery"),
+        )
         assertThrows(IllegalArgumentException::class.java) {
             LiveLinkNetworkTopology.parse("wifi_direct_preferred")
         }

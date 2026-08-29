@@ -20,6 +20,34 @@ namespace ConceptFlow.Mpl.PerceptionLab
         Disconnected = 4, Stopped = 5
     }
 
+    public enum AmbientEnvironmentPrior : ushort
+    {
+        Unknown=0, Indoor=1, Outdoor=2, Transition=3
+    }
+
+    /** Content-free ambient features; no microphone samples cross this game-facing boundary. */
+    public sealed class PerceptionAmbientSoundProfileSnapshot
+    {
+        public long Revision;
+        public long SessionGeneration;
+        public AmbientEnvironmentPrior Prior;
+        public long CaptureStartTimestampNs;
+        public long CaptureEndTimestampNs;
+        public long ValidUntilTimestampNs;
+        public int SampleRateHz;
+        public int ChannelCount;
+        public long SampleCount;
+        public float RmsDbFs;
+        public float PeakDbFs;
+        public float NoiseFloorDbFs;
+        public float LowBandRatio;
+        public float MidBandRatio;
+        public float HighBandRatio;
+        public float TransientDensity;
+        public float RecommendedCalibrationGain;
+        public int RecommendedPulseIntervalMs;
+    }
+
     public sealed class PerceptionEntitySnapshot
     {
         public string TrackId = string.Empty;
@@ -98,6 +126,10 @@ namespace ConceptFlow.Mpl.PerceptionLab
         public string FocusedTrackId = string.Empty;
         public PerceptionFocusMode Mode;
         public PerceptionBeaconSnapshot Beacon;
+        public string AccessibilityAnnouncementToken = string.Empty;
+        public string AccessibilityAnnouncementText = string.Empty;
+        public bool HasAccessibilityAnnouncement =>
+            !string.IsNullOrEmpty(AccessibilityAnnouncementToken);
     }
 
     /** Latest bounded head pose supplied by Android on an independently polled lane. */
@@ -132,10 +164,14 @@ namespace ConceptFlow.Mpl.PerceptionLab
         private const uint TouchMagic = 0x43465442; // CFTB
         private const uint FocusMagic = 0x43464653; // CFFS
         private const uint HeadPoseMagic = 0x43464850; // CFHP
+        private const uint AmbientProfileMagic = 0x43464150; // CFAP
         private const ushort Version = 1;
-        private const ushort FocusVersion = 2;
+        private const ushort FocusBeaconVersion = 2;
+        private const ushort FocusAccessibilityVersion = 3;
         private const int MaximumEntities = 64;
         private const int MaximumStringBytes = 128;
+        private const int MaximumAccessibilityTokenBytes = 96;
+        private const int MaximumAccessibilityTextBytes = 384;
         private const long MaximumBeaconReferenceAgeNs = 250_000_000L;
 
         public static bool TryDecodeWorld(byte[] bytes, out PerceptionWorldSnapshot state)
@@ -219,7 +255,8 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 var input=new BigEndianReader(bytes);
                 if(input.ReadUInt32()!=FocusMagic) return false;
                 ushort version=input.ReadUInt16();
-                if(version!=Version && version!=FocusVersion) return false;
+                if(version!=Version && version!=FocusBeaconVersion &&
+                   version!=FocusAccessibilityVersion) return false;
                 ushort flags=input.ReadUInt16();
                 if((flags&~(version==Version?1:3))!=0) return false;
                 var candidate=new PerceptionFocusSnapshot
@@ -279,6 +316,19 @@ namespace ConceptFlow.Mpl.PerceptionLab
                     else if(anchorMode!=PerceptionBeaconAnchorMode.None || beaconFlags!=0) return false;
                     if((candidate.Mode==PerceptionFocusMode.BeaconActive)!=hasBeacon) return false;
                 }
+                if(version==FocusAccessibilityVersion)
+                {
+                    candidate.AccessibilityAnnouncementToken=
+                        input.ReadString(MaximumAccessibilityTokenBytes);
+                    candidate.AccessibilityAnnouncementText=
+                        input.ReadString(MaximumAccessibilityTextBytes);
+                    bool hasToken=!string.IsNullOrEmpty(candidate.AccessibilityAnnouncementToken);
+                    bool hasText=!string.IsNullOrEmpty(candidate.AccessibilityAnnouncementText);
+                    if(hasToken!=hasText ||
+                       (hasToken&&!ValidAccessibilityAnnouncement(
+                           candidate.AccessibilityAnnouncementToken,
+                           candidate.AccessibilityAnnouncementText))) return false;
+                }
                 if(!input.AtEnd || candidate.Revision<=0 || candidate.SessionGeneration<0 ||
                    candidate.WorldRevision<=0 || candidate.UpdatedTimestampNs<0 ||
                    candidate.ValidUntilTimestampNs<candidate.UpdatedTimestampNs ||
@@ -316,6 +366,18 @@ namespace ConceptFlow.Mpl.PerceptionLab
                 IsFinite(value.ReferenceHeadZ) && Math.Abs(norm-1f)<=.04f;
         }
 
+        private static bool ValidAccessibilityAnnouncement(string token,string text)
+        {
+            if(string.IsNullOrWhiteSpace(token)||string.IsNullOrWhiteSpace(text)) return false;
+            if(text!=text.Trim()) return false;
+            foreach(char value in token)
+                if(!((value>='a'&&value<='z')||(value>='A'&&value<='Z')||
+                     (value>='0'&&value<='9')||value==':'||value=='-'||value=='_'||value=='.'))
+                    return false;
+            foreach(char value in text) if(char.IsControl(value)) return false;
+            return true;
+        }
+
         public static bool TryDecodeHeadPose(byte[] bytes, out PerceptionHeadPoseSnapshot state)
         {
             state=null;
@@ -343,6 +405,61 @@ namespace ConceptFlow.Mpl.PerceptionLab
             catch(Exception error) when(error is IndexOutOfRangeException || error is ArgumentException)
             { return false; }
         }
+
+        public static bool TryDecodeAmbientSoundProfile(byte[] bytes,
+            out PerceptionAmbientSoundProfileSnapshot state)
+        {
+            state=null;
+            if(bytes==null) return false;
+            try
+            {
+                var input=new BigEndianReader(bytes);
+                if(input.ReadUInt32()!=AmbientProfileMagic || input.ReadUInt16()!=Version) return false;
+                var candidate=new PerceptionAmbientSoundProfileSnapshot
+                {
+                    Prior=(AmbientEnvironmentPrior)input.ReadUInt16(),
+                    Revision=input.ReadInt64(),
+                    SessionGeneration=input.ReadInt64(),
+                    CaptureStartTimestampNs=input.ReadInt64(),
+                    CaptureEndTimestampNs=input.ReadInt64(),
+                    ValidUntilTimestampNs=input.ReadInt64(),
+                    SampleRateHz=input.ReadInt32(),
+                    ChannelCount=input.ReadInt32(),
+                    SampleCount=input.ReadInt64(),
+                    RmsDbFs=input.ReadSingle(),
+                    PeakDbFs=input.ReadSingle(),
+                    NoiseFloorDbFs=input.ReadSingle(),
+                    LowBandRatio=input.ReadSingle(),
+                    MidBandRatio=input.ReadSingle(),
+                    HighBandRatio=input.ReadSingle(),
+                    TransientDensity=input.ReadSingle(),
+                    RecommendedCalibrationGain=input.ReadSingle(),
+                    RecommendedPulseIntervalMs=input.ReadInt32(),
+                };
+                float ratioSum=candidate.LowBandRatio+candidate.MidBandRatio+candidate.HighBandRatio;
+                if(!input.AtEnd || !Enum.IsDefined(typeof(AmbientEnvironmentPrior),candidate.Prior) ||
+                   candidate.Revision<=0L || candidate.SessionGeneration<=0L ||
+                   candidate.CaptureStartTimestampNs<0L ||
+                   candidate.CaptureEndTimestampNs<candidate.CaptureStartTimestampNs ||
+                   candidate.ValidUntilTimestampNs<candidate.CaptureEndTimestampNs ||
+                   candidate.SampleRateHz<8_000 || candidate.SampleRateHz>48_000 ||
+                   candidate.ChannelCount<1 || candidate.ChannelCount>2 || candidate.SampleCount<=0L ||
+                   !IsDbFs(candidate.RmsDbFs) || !IsDbFs(candidate.PeakDbFs) ||
+                   !IsDbFs(candidate.NoiseFloorDbFs) || !IsUnit(candidate.LowBandRatio) ||
+                   !IsUnit(candidate.MidBandRatio) || !IsUnit(candidate.HighBandRatio) ||
+                   Math.Abs(ratioSum-1f)>.002f || !IsUnit(candidate.TransientDensity) ||
+                   !IsUnit(candidate.RecommendedCalibrationGain) ||
+                   candidate.RecommendedPulseIntervalMs<450 || candidate.RecommendedPulseIntervalMs>900)
+                    return false;
+                state=candidate;
+                return true;
+            }
+            catch(Exception error) when(error is IndexOutOfRangeException || error is ArgumentException)
+            { return false; }
+        }
+
+        private static bool IsDbFs(float value) => IsFinite(value) && value>=-120f && value<=0f;
+        private static bool IsUnit(float value) => IsFinite(value) && value>=0f && value<=1f;
 
         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
@@ -376,12 +493,25 @@ namespace ConceptFlow.Mpl.PerceptionLab
         bool DrainTouch(int maximum,List<PerceptionTouchSnapshot> destination);
     }
 
+    public interface IAccessibilityAnnouncementSink
+    {
+        bool TryAnnounceForAccessibility(string token,string text);
+        void SetAccessibilityAnnouncementsSuspended(bool suspended);
+    }
+
+    public interface IAmbientSoundProfileSource
+    {
+        bool TryPollAmbientSoundProfile(out PerceptionAmbientSoundProfileSnapshot state);
+    }
+
     /** Polls only Java-side cached state; Binder/network work stays on the Java HandlerThread. */
-    public sealed class AndroidPerceptionBridgeClient : IPerceptionSnapshotSource
+    public sealed class AndroidPerceptionBridgeClient : IPerceptionSnapshotSource,
+        IAccessibilityAnnouncementSink,IAmbientSoundProfileSource
     {
         private long lastRevision;
         private long lastFocusRevision;
         private long lastHeadSequence;
+        private long lastAmbientProfileRevision;
 #if UNITY_ANDROID && !UNITY_EDITOR
         private readonly UnityEngine.AndroidJavaClass bridge = new("org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge");
 #endif
@@ -433,6 +563,19 @@ namespace ConceptFlow.Mpl.PerceptionLab
             return false;
 #endif
         }
+        public bool TryPollAmbientSoundProfile(out PerceptionAmbientSoundProfileSnapshot state)
+        {
+            state=null;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            byte[] bytes=Unsigned(bridge.CallStatic<sbyte[]>("pollAmbientSoundProfile",
+                lastAmbientProfileRevision));
+            if(!PerceptionBusBinaryDecoder.TryDecodeAmbientSoundProfile(bytes,out state)) return false;
+            lastAmbientProfileRevision=state.Revision;
+            return true;
+#else
+            return false;
+#endif
+        }
         public bool TryGetMonotonicTimestampNs(out long timestampNs)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -440,6 +583,21 @@ namespace ConceptFlow.Mpl.PerceptionLab
             return timestampNs>=0L;
 #else
             timestampNs=0L; return false;
+#endif
+        }
+        public bool TryAnnounceForAccessibility(string token,string text)
+        {
+            if(string.IsNullOrEmpty(token)||string.IsNullOrEmpty(text)) return false;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return bridge.CallStatic<bool>("announceForAccessibility",token,text);
+#else
+            return false;
+#endif
+        }
+        public void SetAccessibilityAnnouncementsSuspended(bool suspended)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            bridge.CallStatic("setAccessibilityAnnouncementsSuspended",suspended);
 #endif
         }
         public void Dispose()

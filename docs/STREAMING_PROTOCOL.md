@@ -30,10 +30,14 @@ Bluetooth discovery/bootstrap remains separate from this protocol. With
 `network_topology=wifi_direct_required`, Android Node owns the P2P group, Rokid
 Node discovers its project-specific DNS-SD service, and both nodes use the
 runtime group-owner address for the sockets below. Required mode has no silent
-infrastructure-WLAN fallback. `private_lan` remains an explicit diagnostic
-topology. Neither mode claims Bluetooth carries camera frames or that
-physical-network transfer is zero-copy. The direct-sideload path requires no
-Rokid enterprise client secret. See [Wi-Fi Direct transport](WIFI_DIRECT_TRANSPORT.md).
+infrastructure-WLAN fallback. `private_lan_discovery` is the currently
+validated infrastructure-WLAN topology: its content-free UDP rendezvous
+announcement has no authentication authority, and Rokid falls back after eight
+seconds to the separately provisioned private address when broadcast/multicast
+is filtered. `private_lan` remains an explicit static diagnostic topology.
+Neither mode claims Bluetooth carries camera frames or that physical-network
+transfer is zero-copy. The direct-sideload path requires no Rokid enterprise
+client secret. See [Local wireless transport](WIFI_DIRECT_TRANSPORT.md).
 
 ## Security and lanes
 

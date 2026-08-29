@@ -17,6 +17,7 @@ build_apk=true
 grant_camera=false
 grant_microphone=false
 inspect_only=false
+enable_gesture_controls=false
 
 usage() {
     cat <<'EOF'
@@ -31,6 +32,7 @@ Options:
   --no-build        Use the existing default debug APK.
   --grant-camera    Grant only android.permission.CAMERA after installation.
   --grant-microphone Grant only android.permission.RECORD_AUDIO after installation.
+  --enable-gesture-controls Explicitly enable and bind the validated gesture observer.
   --inspect-only    Identify and validate the target without changing it.
   -h, --help        Show this help.
 EOF
@@ -59,6 +61,10 @@ while (($# > 0)); do
             ;;
         --grant-microphone)
             grant_microphone=true
+            shift
+            ;;
+        --enable-gesture-controls)
+            enable_gesture_controls=true
             shift
             ;;
         --inspect-only)
@@ -101,5 +107,15 @@ if [[ "$grant_microphone" == true ]]; then
     printf 'Granted android.permission.RECORD_AUDIO at the operator request.\n'
 fi
 
+if [[ "$enable_gesture_controls" == true ]]; then
+    "$SCRIPT_DIRECTORY/rokid-accessibility-control" --serial "$ROKID_SERIAL" enable
+    "$SCRIPT_DIRECTORY/rokid-accessibility-control" --serial "$ROKID_SERIAL" commands-enable
+    printf 'Enabled the explicitly requested validated gesture observer and command gate.\n'
+fi
+
 printf 'Direct sideload completed for %s on the selected Rokid target.\n' "$PACKAGE_NAME"
-printf 'The nonvisual runtime remains stopped. Use ./scripts/rokid-control to start an explicit action.\n'
+if [[ "$enable_gesture_controls" == true ]]; then
+    printf 'The validated observer may restore a persisted same-boot idle-control arm; verify with ./scripts/rokid-control status.\n'
+else
+    printf 'The nonvisual runtime remains stopped. Use ./scripts/rokid-control to start an explicit action.\n'
+fi

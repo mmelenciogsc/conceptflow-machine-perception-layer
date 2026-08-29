@@ -112,6 +112,9 @@ class LocalVlmInferenceService : Service() {
             replyBusy(request)
             return true
         }
+        if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+            logFocusedPhase(request, "admitted")
+        }
         startInference(request)
         return true
     }
@@ -263,9 +266,32 @@ class LocalVlmInferenceService : Service() {
             if (acquired == null) {
                 val refusal = acquisition as HtpLeaseAcquisition.Refused
                 if (activeRequest.get() === request) {
-                    replyDeferred(request, refusal.reason.name.lowercase(), refusal.waitNanos)
+                    if (request.isFocusedExpired(SystemClock.elapsedRealtimeNanos())) {
+                        logFocusedPhase(request, "terminal", "timed_out")
+                        replyFailure(request, "timed_out")
+                    } else {
+                        logFocusedPhase(request, "terminal", "lease_deferred")
+                        replyDeferred(request, refusal.reason.name.lowercase(), refusal.waitNanos)
+                    }
                 }
                 return
+            }
+            val focusedTimeoutMillis = if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+                FocusedVqaTiming.remainingGenerationMillis(
+                    request.deadlineNanos,
+                    SystemClock.elapsedRealtimeNanos(),
+                )
+            } else {
+                null
+            }
+            if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 && focusedTimeoutMillis == null) {
+                acquired.handle.close()
+                logFocusedPhase(request, "terminal", "timed_out")
+                replyFailure(request, "timed_out")
+                return
+            }
+            if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+                logFocusedPhase(request, "lease_acquired")
             }
             val monitor = monitorQnnPriority(owner)
             val result = try {
@@ -274,7 +300,13 @@ class LocalVlmInferenceService : Service() {
                         LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1 ->
                             InferenceResult.Environment(runtime.classify(image))
                         LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 ->
-                            InferenceResult.FocusedAnswer(runtime.answerFocusedObject(image, requireNotNull(request.question)))
+                            InferenceResult.FocusedAnswer(
+                                runtime.answerFocusedObject(
+                                    image,
+                                    requireNotNull(request.question),
+                                    requireNotNull(focusedTimeoutMillis),
+                                ),
+                            )
                     }
                 }
             } finally {
@@ -287,6 +319,14 @@ class LocalVlmInferenceService : Service() {
                     "serviceMs=${(SystemClock.elapsedRealtimeNanos() - startedNanos) / 1_000_000L}",
             )
             val completedNanos = SystemClock.elapsedRealtimeNanos()
+            if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+                if (request.isFocusedExpired(completedNanos)) {
+                    logFocusedPhase(request, "terminal", "timed_out", completedNanos)
+                    replyFailure(request, "timed_out")
+                    return
+                }
+                logFocusedPhase(request, "terminal", "answered", completedNanos)
+            }
             when (result) {
                 is InferenceResult.Environment -> reply(
                     request,
@@ -306,15 +346,33 @@ class LocalVlmInferenceService : Service() {
                 )
             }
         } catch (error: QnnPriorityCancellation) {
-            if (activeRequest.get() === request) replyDeferred(request, "qnn_priority_requested")
+            if (activeRequest.get() === request) {
+                if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+                    logFocusedPhase(request, "terminal", "qnn_priority")
+                }
+                replyDeferred(request, "qnn_priority_requested")
+            }
             throw error
+        } catch (_: LocalVlmInferenceTimeout) {
+            Log.i(LOG_TAG, "focused VQA timed out")
+            runCatching { engine?.close() }
+            engine = null
+            if (activeRequest.get() === request) {
+                logFocusedPhase(request, "terminal", "timed_out")
+                replyFailure(request, "timed_out")
+            }
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
             Log.e(LOG_TAG, "local VLM execution failed: ${error.javaClass.simpleName}")
             runCatching { engine?.close() }
             engine = null
-            if (activeRequest.get() === request) replyFailure(request, "vlm_inference_failed")
+            if (activeRequest.get() === request) {
+                if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
+                    logFocusedPhase(request, "terminal", "inference_failed")
+                }
+                replyFailure(request, "vlm_inference_failed")
+            }
         } finally {
             deleteOwnedImage(request.image)
         }
@@ -330,13 +388,31 @@ class LocalVlmInferenceService : Service() {
     private suspend fun acquireForRequest(request: InferenceRequest, owner: Job): HtpLeaseAcquisition {
         val startedNanos = SystemClock.elapsedRealtimeNanos()
         while (true) {
+            if (request.isFocusedExpired(SystemClock.elapsedRealtimeNanos())) {
+                return HtpLeaseAcquisition.Refused(HtpLeaseRefusalReason.TIMEOUT, 0L)
+            }
             val acquisition = htpExecutionLease.tryAcquire(
                 HtpLeaseWorkload.VLM,
                 VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS,
             ) { !owner.isActive || activeRequest.get() !== request }
-            val refusal = acquisition as? HtpLeaseAcquisition.Refused ?: return acquisition
-            val elapsedNanos = (SystemClock.elapsedRealtimeNanos() - startedNanos).coerceAtLeast(0L)
-            if (!shouldRetryFocusedVlmLease(request.task, refusal.reason, elapsedNanos)) {
+            val afterAcquireNanos = SystemClock.elapsedRealtimeNanos()
+            val acquired = acquisition as? HtpLeaseAcquisition.Acquired
+            if (acquired != null) {
+                if (request.isFocusedExpired(afterAcquireNanos)) {
+                    acquired.handle.close()
+                    return HtpLeaseAcquisition.Refused(HtpLeaseRefusalReason.TIMEOUT, 0L)
+                }
+                return acquired
+            }
+            val refusal = acquisition as HtpLeaseAcquisition.Refused
+            if (!FocusedVqaTiming.mayRetryLease(
+                    request.task,
+                    refusal.reason,
+                    startedNanos,
+                    afterAcquireNanos,
+                    request.deadlineNanos,
+                )
+            ) {
                 return refusal
             }
             delay(FOCUSED_VQA_LEASE_RETRY_MILLIS)
@@ -403,6 +479,11 @@ class LocalVlmInferenceService : Service() {
         } else {
             -1L
         }
+        val deadlineNanos = if (correlation != null) {
+            data.getLong(LocalVlmIpc.KEY_DEADLINE_NANOS, -1L)
+        } else {
+            -1L
+        }
         val question = if (correlation != null) {
             LocalVlmFocusedObjectQuestionSanitizer.sanitize(
                 data.getString(LocalVlmIpc.KEY_QUESTION).orEmpty(),
@@ -414,12 +495,14 @@ class LocalVlmInferenceService : Service() {
             val nowNanos = SystemClock.elapsedRealtimeNanos()
             if (requestedNanos < captureNanos ||
                 nowNanos < requestedNanos ||
-                nowNanos - requestedNanos > MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS
+                nowNanos - requestedNanos > MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS ||
+                deadlineNanos != FocusedVqaTiming.deadlineNanos(requestedNanos) ||
+                !FocusedVqaTiming.hasTimeRemaining(deadlineNanos, nowNanos)
             ) return null
         }
         return InferenceRequest(
             requestId, frameId, captureNanos, File(imagePath), digest, replyTo,
-            task, correlation, requestedNanos, question,
+            task, correlation, requestedNanos, deadlineNanos, question,
         )
     }
 
@@ -481,6 +564,7 @@ class LocalVlmInferenceService : Service() {
             payload.putLong(LocalVlmIpc.KEY_FOCUS_GENERATION, correlation.focusGeneration)
             payload.putString(LocalVlmIpc.KEY_TRACK_ID, correlation.stableTrackId)
             payload.putLong(LocalVlmIpc.KEY_REQUESTED_NANOS, request.requestedNanos)
+            payload.putLong(LocalVlmIpc.KEY_DEADLINE_NANOS, request.deadlineNanos)
         }
         runCatching { request.replyTo.send(Message.obtain(null, type).apply { data = payload }) }
     }
@@ -512,6 +596,10 @@ class LocalVlmInferenceService : Service() {
                     putLong(
                         LocalVlmIpc.KEY_REQUESTED_NANOS,
                         request.getLong(LocalVlmIpc.KEY_REQUESTED_NANOS, -1L),
+                    )
+                    putLong(
+                        LocalVlmIpc.KEY_DEADLINE_NANOS,
+                        request.getLong(LocalVlmIpc.KEY_DEADLINE_NANOS, -1L),
                     )
                     putString(LocalVlmIpc.KEY_FAILURE, "invalid_request")
                 }
@@ -566,8 +654,12 @@ class LocalVlmInferenceService : Service() {
         val task: LocalVlmTaskKind,
         val correlation: LocalVlmFocusedObjectCorrelation?,
         val requestedNanos: Long,
+        val deadlineNanos: Long,
         val question: String?,
     ) {
+        fun isFocusedExpired(nowNanos: Long): Boolean =
+            task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 && nowNanos >= deadlineNanos
+
         fun matchesCancellation(data: Bundle?): Boolean {
             val expected = correlation ?: return false
             if (data == null) return false
@@ -605,6 +697,21 @@ class LocalVlmInferenceService : Service() {
         val IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg")
         val TEMP_IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg\\.tmp")
     }
+
+    private fun logFocusedPhase(
+        request: InferenceRequest,
+        phase: String,
+        outcome: String = "none",
+        nowNanos: Long = SystemClock.elapsedRealtimeNanos(),
+    ) {
+        val elapsedMillis = ((nowNanos - request.requestedNanos).coerceAtLeast(0L) / 1_000_000L)
+            .coerceAtMost(60_000L)
+        Log.i(
+            LOG_TAG,
+            "state=focused_vqa requestId=${request.requestId} phase=$phase " +
+                "elapsedMs=$elapsedMillis outcome=$outcome",
+        )
+    }
 }
 
 internal fun shouldRetryFocusedVlmLease(
@@ -612,13 +719,7 @@ internal fun shouldRetryFocusedVlmLease(
     reason: HtpLeaseRefusalReason,
     elapsedNanos: Long,
 ): Boolean = task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 &&
-    reason in RETRYABLE_FOCUSED_VQA_LEASE_REFUSALS && elapsedNanos < 1_500_000_000L
-
-private val RETRYABLE_FOCUSED_VQA_LEASE_REFUSALS = setOf(
-    HtpLeaseRefusalReason.QNN_PRIORITY,
-    HtpLeaseRefusalReason.BUSY,
-    HtpLeaseRefusalReason.TIMEOUT,
-)
+    FocusedVqaTiming.mayRetryLease(task, reason, 0L, elapsedNanos, Long.MAX_VALUE)
 
 private class QnnPriorityCancellation : CancellationException("qnn_priority_requested")
 
@@ -645,20 +746,32 @@ private class GenieXLocalVlmEngine(
         ) ?: error("VLM returned an invalid environment label")
     }
 
-    suspend fun answerFocusedObject(image: File, question: String): String = lock.withLock {
-        val sanitized = requireNotNull(LocalVlmFocusedObjectQuestionSanitizer.sanitize(question))
-        val runtime = wrapper ?: open().also { wrapper = it }
-        LocalVlmFocusedObjectAnswerParser.parse(
-            generate(
-                runtime,
-                image,
-                "$FOCUSED_OBJECT_PROMPT\n$sanitized",
-                FOCUSED_VQA_MAX_OUTPUT_TOKENS,
-                LocalVlmFocusedObjectAnswerParser.MAXIMUM_CHARACTERS,
-                grammar = null,
-                timeoutMillis = FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS,
-            ),
-        ) ?: error("VLM returned an invalid focused-object answer")
+    suspend fun answerFocusedObject(image: File, question: String, timeoutMillis: Long): String = try {
+        require(timeoutMillis in 1L..FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS)
+        withTimeout(timeoutMillis) {
+            lock.withLock {
+                val sanitized = requireNotNull(LocalVlmFocusedObjectQuestionSanitizer.sanitize(question))
+                val runtime = wrapper ?: open().also { wrapper = it }
+                LocalVlmFocusedObjectAnswerParser.parse(
+                    generate(
+                        runtime,
+                        image,
+                        "$FOCUSED_OBJECT_PROMPT\n$sanitized",
+                        FOCUSED_VQA_MAX_OUTPUT_TOKENS,
+                        LocalVlmFocusedObjectAnswerParser.MAXIMUM_CHARACTERS,
+                        grammar = null,
+                        timeoutMillis = timeoutMillis,
+                    ),
+                ) ?: error("VLM returned an invalid focused-object answer")
+            }
+        }
+    } catch (_: TimeoutCancellationException) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            runCatching { wrapper?.stopStream() }
+            runCatching { wrapper?.destroy() }
+            wrapper = null
+        }
+        throw LocalVlmInferenceTimeout()
     }
 
     /** Executes the same vision/token path as a real request using a generated, non-user image. */

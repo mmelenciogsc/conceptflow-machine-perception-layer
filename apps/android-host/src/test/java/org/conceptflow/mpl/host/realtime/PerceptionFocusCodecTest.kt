@@ -26,7 +26,7 @@ class PerceptionFocusCodecTest {
         val focus = PerceptionBusBinaryCodec.encodeFocus(focusState())
         val focusBuffer = ByteBuffer.wrap(focus).order(ByteOrder.BIG_ENDIAN)
         assertEquals(0x43464653, focusBuffer.int)
-        assertEquals(2, focusBuffer.short.toInt())
+        assertEquals(3, focusBuffer.short.toInt())
         assertEquals(1, focusBuffer.short.toInt())
         assertEquals(1L, focusBuffer.long)
         assertEquals(1L, focusBuffer.long)
@@ -40,6 +40,8 @@ class PerceptionFocusCodecTest {
         assertEquals(SpatialFocusMode.ACTION_MENU.wireValue, focusBuffer.get().toInt())
         assertEquals(0, focusBuffer.get().toInt())
         assertEquals(0, focusBuffer.short.toInt())
+        assertEquals("menu:1:3:0", readString(focusBuffer))
+        assertEquals("Ask about this object. Option 1 of 3.", readString(focusBuffer))
         assertEquals(0, focusBuffer.remaining())
         val head = PerceptionBusBinaryCodec.encodeHead(
             PerceptionHeadSnapshot(4L, 2L, PerceptionHeadState(10L, 3, 1f, 0f, 0f, 0f)),
@@ -141,7 +143,7 @@ class PerceptionFocusCodecTest {
         )
         val input = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
         assertEquals(0x43464653, input.int)
-        assertEquals(2, input.short.toInt())
+        assertEquals(3, input.short.toInt())
         assertEquals(3, input.short.toInt())
         repeat(5) { input.long }
         val focusedLength = input.short.toInt()
@@ -170,7 +172,19 @@ class PerceptionFocusCodecTest {
         assertEquals(0f, input.float)
         assertEquals(0f, input.float)
         assertEquals(0f, input.float)
+        assertEquals("beacon:1:3:9", readString(input))
+        assertEquals(
+            "Relative bearing beacon active for chair. 11 o'clock. about 3 feet away. " +
+                "Translation is not tracked.",
+            readString(input),
+        )
         assertEquals(0, input.remaining())
+    }
+
+    private fun readString(input: ByteBuffer): String {
+        val bytes = ByteArray(input.short.toInt() and 0xffff)
+        input.get(bytes)
+        return bytes.toString(Charsets.UTF_8)
     }
 
     private fun focusState(): SpatialFocusState {

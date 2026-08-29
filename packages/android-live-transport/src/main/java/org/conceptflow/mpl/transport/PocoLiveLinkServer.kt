@@ -335,7 +335,14 @@ class PocoLiveLinkServer(
                     metricAccounting.failure(effective)
                     observer.onDiagnostic(classifyDiagnostic(effective))
                 }
-                if (running.get() || notified) observer.onDisconnected(classifyDisconnect(effective))
+                // A rejected or half-open pre-authentication socket is not a live session
+                // disconnect. Reporting it as one lets any unauthenticated LAN probe terminate a
+                // persistent Android Node through its fail-closed session policy. Keep the
+                // listener alive, retain the diagnostic, and notify lifecycle consumers only
+                // when this connection attempt had reached onSessionReady.
+                if (shouldNotifySessionDisconnect(notified)) {
+                    observer.onDisconnected(classifyDisconnect(effective))
+                }
                 if (effective is RemoteSessionCompletedException && !acceptSequentialSessions) {
                     running.set(false)
                     closeListeners()
@@ -1277,3 +1284,5 @@ class PocoLiveLinkServer(
         )
     }
 }
+
+internal fun shouldNotifySessionDisconnect(sessionWasReady: Boolean): Boolean = sessionWasReady

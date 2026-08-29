@@ -19,6 +19,11 @@ Commands:
   start-indoor     Start it with the indoor depth profile forced.
   start-outdoor    Start it with the outdoor depth profile forced.
   microphone       Request one bounded on-demand glasses microphone lease.
+  ambient-profile  Request one bounded, content-free ambient sound profile.
+  wifi-direct-recover Explicitly replace an empty phone-owned Wi-Fi Direct group.
+  wifi-direct-recover-5ghz Replace an empty group on the previously validated 5-GHz band.
+  wifi-direct-negotiate Remove an empty autonomous group and await ordinary peer negotiation.
+  wifi-direct-recovery-status Return the last sanitized group-recovery result.
   status           Return the current aggregate, content-free runtime status.
   focus-status     Return the current linear-focus state.
   focus-next       Move to the next spatial item.
@@ -37,7 +42,7 @@ while (($#)); do
     case "$1" in
         --serial) serial="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
-        start-automatic|start-indoor|start-outdoor|microphone|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa|stop)
+        start-automatic|start-indoor|start-outdoor|microphone|ambient-profile|wifi-direct-recover|wifi-direct-recover-5ghz|wifi-direct-negotiate|wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa|stop)
             [[ -z "$command_name" ]] || { printf 'error: only one command is allowed\n' >&2; exit 2; }
             command_name="$1"
             shift
@@ -62,8 +67,12 @@ case "$command_name" in
     start-indoor) action="org.conceptflow.mpl.host.debug.START_INDOOR" ;;
     start-outdoor) action="org.conceptflow.mpl.host.debug.START_OUTDOOR" ;;
     microphone) action="org.conceptflow.mpl.host.debug.REQUEST_MICROPHONE" ;;
+    ambient-profile) action="org.conceptflow.mpl.host.debug.REQUEST_AMBIENT_PROFILE" ;;
+    wifi-direct-recover) action="org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT" ;;
+    wifi-direct-recover-5ghz) action="org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT_5GHZ" ;;
+    wifi-direct-negotiate) action="org.conceptflow.mpl.host.debug.PREPARE_WIFI_DIRECT_NEGOTIATION" ;;
     stop) action="org.conceptflow.mpl.host.debug.STOP" ;;
-    status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa) action="" ;;
+    wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa) action="" ;;
 esac
 if [[ -n "$action" ]]; then
     adb -s "$serial" shell am start --user 0 -W -n "$CONTROL_ACTIVITY" -a "$action" >/dev/null
@@ -73,6 +82,7 @@ fi
 
 case "$command_name" in
     status) control_path="status" ;;
+    wifi-direct-recovery-status) control_path="wifi-direct-recovery-status" ;;
     focus-status) control_path="focus-status" ;;
     focus-next) control_path="focus/next" ;;
     focus-previous) control_path="focus/previous" ;;

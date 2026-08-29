@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # Research evidence ledger
 
-## Android Wi-Fi Direct — 2026-08-26
+## Android Wi-Fi Direct — 2026-08-29
 
 - Android Wi-Fi Direct overview: <https://developer.android.com/develop/connectivity/wifi/wifip2p>
 - `WifiP2pManager` API reference: <https://developer.android.com/reference/android/net/wifi/p2p/WifiP2pManager>
@@ -11,7 +11,28 @@ Engineering consequence: the connection manager uses framework group creation,
 DNS-SD discovery, connection-info callbacks, and version-appropriate nearby or
 location permission checks. Discovery identity is not an authentication
 boundary; the existing exact public-key pins and mutual TLS remain mandatory.
-The target firmware behavior is validated separately from API availability.
+On API 33 and later, `startListening` is the documented public operation for
+periodically entering the social-channel listen state until `stopListening` or
+`stopPeerDiscovery`. API availability and a successful action callback still do
+not prove cross-vendor discoverability; the target firmware behavior is
+validated separately.
+
+## Android Wi-Fi tethering observation — 2026-08-30
+
+- Android `TetheringManager` API reference:
+  <https://developer.android.com/reference/android/net/TetheringManager>
+- Android `TetheringInterface` API reference:
+  <https://developer.android.com/reference/android/net/TetheringInterface>
+
+The public tethering event callback and typed tethered-interface view used by
+Android Node are available at API 36 on the tested Poco. They permit observation
+of an already user-enabled Wi-Fi downstream interface; they do not grant an
+ordinary application authority to silently enable tethering. Engineering
+consequence: listeners bind independently to all local addresses, announcements
+follow the reported hotspot interface, and the API-32 glasses may fall back to
+their current private default gateway before pinned mutual TLS authentication.
+Older Android hosts retain ordinary Wi-Fi discovery and require a separately
+supported hotspot-interface source if hotspot hosting is needed.
 
 ## Android/YodaOS process and radio resilience — 2026-08-27
 

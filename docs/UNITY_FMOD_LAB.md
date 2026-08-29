@@ -24,7 +24,8 @@ audio command batches per second.
 ## Android runtime boundary
 
 `AndroidPerceptionBridgeClient` is the thin Unity consumer for Android Node's
-`PerceptionBus`. It polls a compact versioned world snapshot and drains a
+`PerceptionBus`. It polls compact versioned world, head, focus, and content-free
+ambient-profile snapshots and drains a
 bounded ordered touch batch through `AndroidJavaClass`. It never transfers raw
 camera/audio buffers, opens sockets, runs QNN or blocks for inference.
 `PerceptionBusBinaryDecoder` is exercised in EditMode and fails closed on
@@ -46,6 +47,11 @@ The FMOD-facing backend consumes semantic/spatial commands after world-state
 interpretation. Capture, network and inference threads never call FMOD. The
 proprietary FMOD Unity package is intentionally not committed.
 
+When a live Android source is configured, it is authoritative: the controller
+does not query or sonify its deterministic test-scene colliders. This prevents
+the noisy-ambient fixture or another lab scenario from becoming an unintended
+continuous bed after a live HRTF trial ends.
+
 Controls are textual and keyboard accessible:
 
 - digits `0`–`9`: select the corresponding scenario;
@@ -64,6 +70,70 @@ clearances, and two renderer profiles, including head-turn and moving-source
 conditions. Its scoring API reports exact/group match rates and angular error;
 it does not claim perceptual accuracy without user responses.
 
+## Focused HRTF localization harness
+
+The development player also contains a smaller executable Resonance Audio
+baseline: 24 deterministic trials, two balanced blocks over 12 canonical
+directions, a neutral procedural voice, a fixed 2 m source distance, and three
+short presentations per trial. The initial indoor/outdoor scene template and a
+fresh three-second ambient profile select a bounded calibration-only gain and
+450–900 ms pulse interval; without a fresh profile the harness uses a fixed
+bounded fallback. A trial uses the current listener pose and
+suspends ordinary geometry, focus, beacon, dwell-speech, interface audio, and
+focus-triggered TalkBack announcements. The Android announcement gate is
+suspended and its queued token is cancelled before a control command can enter
+the active trial states; only fresh focus state may be announced after the gate
+resumes.
+It requires a fresh pose and a wired, USB, Bluetooth A2DP, or Bluetooth LE
+headset selected as Android's active game-audio route. A merely connected sink
+does not pass. Android API levels below 33 fail closed because they do not
+provide the public per-attributes route query used here. Route loss, stale
+pose, backend failure, or the
+non-extendable 15-second presentation-and-response deadline aborts the session.
+The session also remains disabled unless the live audio backend explicitly
+attests the authored `resonance_audio` profile and focused event. The public
+inspectable fallback never makes that attestation and therefore cannot create
+Resonance-labelled response records.
+
+The control surface exists only in Editor or `DEVELOPMENT_BUILD` players. It
+has no exported Android receiver: the host script writes a fixed app-private
+command spool through `adb run-as`, atomically publishes one increasing-nonce
+command, and waits for its status acknowledgement. Status exposes only the
+opaque trial ID and progress; it never exposes the target direction. This is
+operator blinding, not protection against someone inspecting the packaged
+manifest. On Android, Unity resolves the spool and response directory from
+`currentActivity.getFilesDir()` so it is the exact internal
+`files/hrtf-calibration` path addressed by `run-as`; it does not use external
+app-specific storage. Other platforms retain `Application.persistentDataPath`.
+
+```bash
+./scripts/unity-hrtf-calibration --serial SERIAL start --session session-001
+./scripts/unity-hrtf-calibration --serial SERIAL next
+./scripts/unity-hrtf-calibration --serial SERIAL respond --direction front_left
+./scripts/unity-hrtf-calibration --serial SERIAL status
+./scripts/unity-hrtf-calibration --serial SERIAL export --output /tmp/session-001.ndjson
+./scripts/unity-hrtf-calibration --serial SERIAL delete --session session-001
+```
+
+Repeat `next` and `respond` once per trial. The exported UTF-8 NDJSON contains
+only one structured response row per completed trial, including the hidden
+target metadata needed for strict offline scoring; it contains no recorded
+audio or image payload. Score a complete response file with
+`./scripts/perception-calibration --score-focused-hrtf FILE`.
+Use one neutral voice and the intended fixed output device in a quiet setup;
+do not infer localization, elevation/front-back discrimination, or user
+acceptance from automated tests alone.
+
+Obtain the participant's explicit consent before `start`. Use an opaque session
+ID that contains no name, account, device identifier, or other personal data.
+The response file remains in internal app-private storage until the operator
+explicitly exports or deletes it; the tool does not upload it. Define the
+retention period before collection, restrict exported copies to the study
+workspace, and run `delete --session ID` after the permitted retention or after
+a withdrawal request. Abort an active session before deletion. Deleting the
+device copy does not remove any host export, backup, or derived aggregate, which
+must be deleted under the same consent and retention policy.
+
 ## Run tests
 
 ```bash
@@ -78,11 +148,14 @@ $UNITY -batchmode -nographics -projectPath "$PWD/labs/unity-fmod-perception-lab"
 
 Do not add `-quit`; the Unity test runner exits after writing results. On this
 machine the installed `6000.3.22f1` editor—the same version used by the working
-FiveAgainstWhen project—ran 28/28 EditMode and 3/3 PlayMode tests. Coverage
+FiveAgainstWhen project—ran 42/42 EditMode and 7/7 PlayMode tests. Coverage
 includes body clearance, head/body separation, ring generation/normalization,
 the broad-wall path, strict Binder decoding, coordinate conversion, orthonormal
-FMOD orientation bases, focused voice limits, and relative-beacon
-head-turn/expiry behavior.
+FMOD orientation bases, focused voice limits, relative-beacon head-turn/expiry
+behavior, strict HRTF manifests/responses, command replay rejection, active-route
+classification, route and pose loss, the trial deadline, dispatch failure,
+storage-fault containment, backend attestation, operator abort, and
+ordinary-audio suspension.
 
 Build the standalone ARM64 Android development player with the same installed
 Unity editor:

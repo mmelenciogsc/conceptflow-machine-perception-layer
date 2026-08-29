@@ -16,7 +16,7 @@ readonly CONFIG_PATH="no_backup/live-link/live-link.properties"
 usage() {
     printf '%s\n' \
         "Usage: $0 --rokid-serial SERIAL --poco-serial SERIAL [--poco-address PRIVATE_IP] [OPTIONS]" \
-        "Options: --network-topology private-lan|wifi-direct-required" \
+        "Options: --network-topology private-lan|private-lan-discovery|wifi-direct-required" \
         "         --realtime-port PORT --camera-port PORT (defaults: 39431 and 39432)" \
         "Creates non-exportable identities on both devices and pins only their public certificates." \
         "Writes role-specific configuration into each debuggable app's private no-backup directory." \
@@ -42,8 +42,9 @@ while (($#)); do
         --network-topology)
             case "${2:-}" in
                 private-lan) network_topology="private_lan" ;;
+                private-lan-discovery) network_topology="private_lan_discovery" ;;
                 wifi-direct-required) network_topology="wifi_direct_required" ;;
-                *) fail "network topology must be private-lan or wifi-direct-required" ;;
+                *) fail "network topology must be private-lan, private-lan-discovery, or wifi-direct-required" ;;
             esac
             shift 2
             ;;
@@ -60,7 +61,7 @@ done
 }
 if [[ -z "$poco_address" ]]; then
     [[ "$network_topology" == "wifi_direct_required" ]] || {
-        fail "--poco-address is required for private-lan topology"
+        fail "--poco-address is required for a private-LAN topology"
     }
     # Parsed for schema compatibility only; Wi-Fi Direct always uses the runtime group-owner
     # address and never this placeholder.

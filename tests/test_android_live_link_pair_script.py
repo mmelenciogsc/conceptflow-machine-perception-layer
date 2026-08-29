@@ -117,6 +117,31 @@ exit 1
     assert all("schema_version=1" in path.read_text(encoding="utf-8") for path in installed)
     assert all("network_topology=private_lan" in path.read_text(encoding="utf-8") for path in installed)
 
+    discovery_result = subprocess.run(
+        [
+            str(repository / "scripts/android-live-link-pair"),
+            "--rokid-serial",
+            "rokid-test",
+            "--poco-serial",
+            "poco-test",
+            "--poco-address",
+            "192.168.100.89",
+            "--network-topology",
+            "private-lan-discovery",
+        ],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert discovery_result.returncode == 0, discovery_result.stderr
+    assert all(
+        "network_topology=private_lan_discovery" in path.read_text(encoding="utf-8")
+        for path in installed
+    )
+
     wifi_direct_result = subprocess.run(
         [
             str(repository / "scripts/android-live-link-pair"),
@@ -145,7 +170,10 @@ def test_wifi_direct_pairing_does_not_require_a_static_address(tmp_path: Path) -
     repository = Path(__file__).resolve().parents[1]
     script = (repository / "scripts/android-live-link-pair").read_text(encoding="utf-8")
 
-    assert "--network-topology private-lan|wifi-direct-required" in script
+    assert (
+        "--network-topology private-lan|private-lan-discovery|wifi-direct-required"
+        in script
+    )
     assert 'network_topology="wifi_direct_required"' in script
     assert 'poco_address="192.168.49.1"' in script
     assert "android.permission.ACCESS_COARSE_LOCATION" in script

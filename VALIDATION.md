@@ -6,6 +6,227 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Poco personal-hotspot data plane — 2026-08-30
+
+Android Node was extended to observe the API-36 public tethering callback and
+announce on the Poco's Wi-Fi hotspot downstream interface. The non-display
+API-32 Rokid joined the user-enabled hotspot, received the fixed 19-byte
+content-free beacon, completed exact-pin TLS 1.3 mutual authentication, and
+streamed its unchanged post-gate camera and IMU outputs. No SSID, passphrase,
+private address, certificate, frame, or sensor value was placed in the
+repository or validation log; temporary UI inspection files used to connect
+the development unit were removed immediately afterward.
+
+A clean 600-second authenticated lease completed normally. The final host
+sample at 626 seconds was waiting for the next glasses lease and reported
+1,835 reconstructed camera frames, 34,484 IMU samples, zero link interruptions,
+and zero IMU/audio/touch loss. Eleven camera frames were intentionally replaced
+by the bounded latest-frame policy. Sampled Android Node PSS was
+60,387–71,547 KiB without monotonic growth. The Rokid battery temperature field
+was 32.0–35.0 °C. This is a platform sensor reading, not a calibrated surface
+temperature or full thermal-throttling study.
+
+The run also exposed and repaired a pre-authentication lifecycle defect. A
+stale or unauthenticated TLS attempt could previously be reported as an active
+session disconnect and trigger the host's fail-closed policy. Android Node now
+records and rejects such attempts without notifying authenticated-session
+lifecycle consumers. A deliberate invalid TCP/TLS probe physically produced
+the diagnostic while the listener stayed alive; a valid Rokid session then
+authenticated and delivered 44 frames plus 937 IMU samples in the observed
+window. Fail-closed handling remains in place for failures after
+`onSessionReady`.
+
+The phone's automatic hotspot timeout was disabled only for the physical soak.
+After a glasses Wi-Fi-radio cycle, Android selected a simultaneously available,
+remembered infrastructure WLAN rather than the hotspot. Therefore saved-hotspot
+autojoin in the intended outdoor condition—where that competing WLAN is
+absent—remains an explicit field-validation item. No remembered user network
+was deleted or weakened to force a favorable result.
+
+The exact installed APKs matched the rebuilt artifacts byte for byte: Android
+Node SHA-256 `ae352954d291672dc96c0dfa9a06af05c49d100ec18d44d372387d451aa4ffc2`
+and Rokid Node SHA-256
+`d5a494a9e0a155dffc97586f00211f5054710447e29f34edffa7bee97a05d072`.
+The complete applicable Android invocation passed 692 JVM tests with zero
+failures, errors, or skips; lint passed for Android Node, Rokid Node, and the
+transport package; and both APKs assembled. All 233 Python tests, repository
+policy, secret scanning, configuration validation, and whitespace checks also
+passed. The Poco hotspot and the temporary automatic-turn-off override were
+both returned to their prior off/enabled states after testing.
+
+## Resilient Rokid-to-Poco rendezvous — 2026-08-29
+
+Strict Wi-Fi Direct was tested beyond the retained-group case documented
+below. The guarded Android Node recovery controller successfully replaced an
+empty phone-owned group on 2.4 GHz and then on 5 GHz. In each case the Poco was
+group owner and entered the platform listen state, but the API-32 Rokid
+reported zero peers. The controller then removed the empty group and tested
+standard client-initiated group negotiation; discovery still returned zero
+peers and no system confirmation appeared. Group replacement refused unsafe
+states by construction: a group with clients, or a group not owned by the
+phone, is not removed. These runs isolate the current strict-P2P blocker to
+cross-firmware peer visibility before TCP or mutual TLS.
+
+A separate explicit `private_lan_discovery` topology was implemented for the
+trusted infrastructure WLAN. Android Node binds the existing two-lane TLS
+server, then emits a 19-byte content-free beacon once per second using
+multicast, limited broadcast, and directed broadcast. Rokid Node acquires the
+Android multicast lock only for a bounded eight-second receive window. The
+first run did not deliver those discovery datagrams, so the provisioned
+private-address fallback was selected. The exact certificate pins and TLS 1.3
+mutual authentication remained mandatory; no UDP discovery packet authorizes
+capture.
+
+After replacement-installing the two rebuilt APKs and reprovisioning only
+public certificate pins, that fallback established an authenticated session in
+the first epoch. The first observation reconstructed 47 camera frames and
+accepted 870 pose samples with all camera, IMU, audio, and touch queues empty
+and zero queue drops. Microphone remained off. Stopping Android Node for 20
+seconds left the Rokid foreground process alive. Rokid completed the failed
+epoch with sensors off, entered its approximately 15-second jittered cooldown,
+and automatically reconnected after Android Node restarted; the recovered
+session reconstructed 32 frames and accepted 604 poses in the observed window
+without reinstalling, re-pairing, or re-arming.
+
+A clean sustained run then sampled both processes 14 times from zero through
+612 seconds and took a final observation at 635 seconds. Both processes were
+alive at every sample. Relative to the first sample, Android Node reconstructed
+1,785 additional frames and accepted 31,490 of 31,492 additional pose samples;
+the two rejected poses were discarded by existing timeline/pose validation,
+not accepted out of order. All four Rokid queues were zero at every sample and
+reported zero camera, IMU, audio, or touch drops. Rokid PSS ranged from 51,502
+to 75,429 KiB and Poco PSS from 63,434 to 72,278 KiB without monotonic growth.
+The generic thermal shell query was unavailable on both firmware builds, so no
+temperature or throttling claim is made. The status remained `Capturing` after
+the ten-minute lease boundary, demonstrating immediate lease rotation.
+
+Review identified that the first valid announcement could precede creation of
+the TLS listener sockets. The final resolver waits a bounded 250 ms before its
+first beacon, while continuing at one-second intervals afterward. After
+rebuilding and replacement-installing both APKs, a clean run logged direct
+beacon discovery and delivered 13 frames plus 273 IMU samples, with all four
+queues empty and all four drop counters zero. This one run demonstrates the
+exact build's direct-beacon path but does not establish multicast reliability;
+the previously exercised static fallback remains required.
+
+The final installed APKs came from SHA-256
+`7ce1f28b89d957799cf6c27264e462d076287f2e523ca9ae8b52cb8bfbe3041d`
+(Android Node) and
+`cfa2c3465de4ff7080e98d4e6f35fcd4225d695922d8c1ec327f722cc77070bd`
+(Rokid Node). The complete applicable Gradle invocation passed 687 JVM tests,
+zero failures/errors/skips, Android lint for all three modules, and both debug
+APK assemblies. This validates authenticated private-WLAN direct discovery,
+static fallback, and same-process reconnect on the attached devices. It does not validate strict
+Wi-Fi Direct on the current firmware, DHCP-address changes, reboot recovery,
+untethered endurance, physical touch delivery during this run, or QNN
+inference; the host truthfully reported `QNN_RUNTIME_NOT_READY`.
+
+## YodaOS foreground rendezvous recovery — 2026-08-29
+
+Longer physical testing superseded the exact-alarm retry conclusion recorded
+below on 2026-08-28. The target YodaOS build accepted the background
+foreground-service request delivered by an exact alarm and then rejected the
+service's required camera/microphone foreground confirmation with
+`Service.startForeground() not allowed due to bg restriction`. That route did
+not provide durable unattended recovery.
+
+Rokid Node now leaves the already-running foreground service alive with all
+sensors off during a failed pre-authentication cooldown and schedules its
+jittered 15-, 30-, then 60-second retries on that service process's main
+handler. The generation, explicit idle-control arm, visible-arm eligibility,
+and service-shutdown gates are checked again when each callback runs. Process
+recreation is not granted capture authority by a timer: the explicitly enabled
+gesture AccessibilityService remains the same-boot visible recovery broker.
+The obsolete exact-alarm permission was removed. A migration guard cancels and
+harmlessly absorbs a foreground-service `PendingIntent` left by an older APK;
+this exact stale-delivery case was observed once during replacement install and
+then retested with the guard present.
+
+The exact rebuilt APK installed on the attached non-display glasses matches
+SHA-256
+`2bae09051399033f644d846211afc7674a636b092ac6965f378aa3968270a603`
+(11,306,888 bytes). Package inspection found no exact-alarm permission and one
+configured project gesture observer. With an intentionally unavailable peer,
+physical logs showed independent failed rendezvous epochs followed by
+16,147 ms, 31,221 ms, and 57,396 ms cooldowns, each marked
+`retry_scheduler=in_process_foreground`. The process and foreground service
+remained alive; the fresh log window contained no background-FGS rejection.
+Sensors did not start because no peer authenticated.
+
+A subsequent 606-second attached failure soak sampled the process every
+30 seconds. All 21 samples found exactly one Rokid Node process. Total PSS was
+42,822–45,164 KiB with no sustained upward trend. The same fresh log window
+contained seven rendezvous starts, six sensor-off cooldown transitions, and
+zero background-FGS rejection messages. This validates bounded same-process
+retry under this deliberate unavailable-peer condition; it does not yet prove
+untethered vendor process survival or post-reboot recovery.
+
+The target's generic `ServiceRecord.isForeground` field reads false even while
+its vendor process-state view marks the process `BFGS` and the service record
+retains the `rokid_idle_control` foreground notification. This YodaOS-specific
+composite is why `rokid-control status` reports
+`active (YodaOS BFGS/notification evidence)` instead of trusting the generic
+field alone. Both markers remained present after the soak. This is lifecycle
+evidence, not proof that a later camera transition will succeed before an
+authenticated P2P session is available to exercise it.
+
+Both nodes were then reprovisioned for `wifi_direct_required`. Runtime
+permissions, location mode, Wi-Fi Direct hardware support, and radio state were
+present on both devices. The Poco physically formed a group as owner and
+entered its bounded listen/visibility window. The API-32 Rokid client remained
+unjoined: six DNS-SD watchdog restarts and both ordinary-peer fallbacks returned
+zero visible peers. No mTLS session or sensor stream was claimed. The retained
+group was deliberately not deleted and recreated while the operator was away,
+because that vendor transition can require system confirmation and can disturb
+the phone's current network/audio state. This leaves group discoverability—not
+camera, IMU, touch gating, TLS, or the repaired cooldown scheduler—as the next
+physical transport gate.
+
+Local regression validation passed all 673 Android JVM tests (241 Rokid Node,
+287 Android Node, 144 live transport, and one protocol), both debug APK
+assemblies, Rokid Node and live-transport lint, all 233 Python tests, repository
+policy, secret, configuration, formatting, and whitespace checks, shell syntax
+and ShellCheck for the changed operator tools, and the focused gesture-control
+script test. The installer can now explicitly provision the validated gesture
+observer and command gate, and its completion message accurately states that
+this may restore a persisted same-boot arm.
+
+## Scene-triggered ambient calibration — 2026-08-29
+
+The current Android Node and the existing directly sideloaded Rokid Node were
+exercised together over the authenticated live link. Automatic selection waited
+for two agreeing local-VLM classifications (`INDOOR`, 4,802 ms and 4,654 ms
+service latency in this run), selected the indoor calibration template, and
+then requested one bounded three-second microphone lease. The Rokid delivered
+22 PCM16LE mono chunks (90,112 bytes) into the in-memory analyzer. The resulting
+content-free profile reported a relative noise floor of -57.8 dBFS and a bounded
+calibration gain of 0.66. These are digital relative-level observations, not
+calibrated SPL or proof of microphone-array directionality.
+
+The first implementation incorrectly keyed profiling to a classification that
+had been carried forward onto each newer camera frame. Hardware testing exposed
+the repeated capture. The trigger now uses the original VLM classification
+frame ID behind a synchronized one-result gate and takes its indoor/outdoor
+prior directly from that confirmed VLM result, independently of depth-router
+hysteresis. A clean rerun remained `ready/indoor` for 30 seconds with the mic
+count fixed at 22 and zero link interruptions. Hundreds of later camera frames
+also left that count unchanged. A subsequent explicit debug command correctly
+opened one additional profile window; manual reprofiling remains deliberate.
+
+The same-signed private Unity/FMOD development player cold-launched on the Poco
+and bound to the signature-protected Android perception service while a fresh
+profile was published. Cross-process payload validation remains covered by the
+strict Java lifecycle/version tests and Unity decoder tests; the physical run
+does not by itself prove a user-perceived HRTF improvement. Raw microphone PCM
+was neither added to the game-facing IPC nor retained by the ambient profiler.
+
+Validation after the repair passed the complete Android-host JVM suite and
+debug assembly, Android lint, 42/42 Unity EditMode tests, 7/7 Unity PlayMode
+tests, a clean ARM64 IL2CPP Android player build, repository policy and secret
+checks, and whitespace validation. The next physical step is an untethered,
+worn HRTF trial using this fresh profile, followed by user judgment of level,
+clarity, spectral balance, and directional localization.
+
 ## Rokid camera/head rotation and change-gated VLM — 2026-08-27
 
 The connected non-display Style target reported Camera2 camera `0` pose
@@ -1587,11 +1808,44 @@ model-neutral command adapter and saved training defaults now select
 The authored FMOD graph still validates one Resonance listener, three Resonance
 sources, bounded voices, and a limiter.
 
-Final local regression evidence for this follow-up is 223 Python tests and 647
-Android JVM tests: 275 Android Node, 243 Rokid Node, 128 live-transport, and one
-protocol test, all with zero failures, errors, or skips. Both Android debug APKs,
+The focused HRTF harness now has an executable 24-trial Resonance manifest and
+strict response-only NDJSON scoring path. Unity clean-project automation passed
+40/40 EditMode tests and 6/6 PlayMode tests, including three-pulse 2 m dispatch,
+manifest drift and nonce replay rejection, hidden target status, stale pose,
+active game-route classification and route loss, the non-extendable 15-second
+trial deadline, backend failure containment, storage-fault containment, and
+suspension of ordinary audio. The route gate uses Android's API 33+
+per-attributes query for game/music audio and rejects a compatible device that
+is merely connected rather than actively routed. This is deterministic contract
+evidence only. No person completed the listening protocol in this change, so
+localization accuracy, elevation/front-back discrimination, and target-user
+acceptance remain unvalidated. The full current Python suite also passed
+233/233 tests. Clean public and FMOD-enabled private ARM64 IL2CPP development
+builds completed successfully and exercised compilation of the Android active
+route probe; their generated APKs remained outside the repository.
+
+A physical deployment then exposed a storage-root mismatch: Unity initially
+placed the spool below Android's external app-specific persistent-data path,
+while the host script correctly addressed internal `files/hrtf-calibration`
+through `run-as`. Runtime path selection now resolves
+`currentActivity.getFilesDir()` on Android and fails closed if no absolute
+internal path is available; non-Android players retain
+`Application.persistentDataPath`. Deterministic EditMode coverage verifies both
+branches without requiring an Android runtime.
+
+The harness now also requires explicit live-backend attestation of the authored
+`resonance_audio` profile before it creates a session file; the public
+inspectable backend fails closed. Operator abort is a successful terminal
+status, command-spool/storage failures disable the spool and stop calibration
+audio without recurring Update exceptions, and the run-as helper includes an
+explicit per-session response deletion command. Consent, data minimization,
+retention, host-export handling, and withdrawal deletion are documented; these
+controls do not substitute for a consented physical listening run.
+
+Final local regression evidence for this follow-up is 233 Python tests and 651
+Android JVM tests, all with zero failures, errors, or skips. Both Android debug APKs,
 Android lint, native CTest, 156 cross-platform desktop-relay tests, Unity 6000.3
-EditMode 28/28, Unity PlayMode 3/3, protocol regeneration, the synthetic demo,
+EditMode 40/40, Unity PlayMode 6/6, protocol regeneration, the synthetic demo,
 formatting, Ruff, MyPy, repository policy, configuration validation, secret
 scanning, and whitespace checks passed. FMOD Studio validated and rebuilt both
 Desktop and Mobile banks; expected headless ALSA/JACK warnings do not describe

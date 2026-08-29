@@ -70,6 +70,30 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
         }
 
         [Test]
+        public void VersionThreeAccessibilityAnnouncementDecodesWithoutBreakingOlderVersions()
+        {
+            var bytes=new List<byte>();
+            U32(bytes,0x43464653); U16(bytes,3); U16(bytes,1);
+            I64(bytes,9); I64(bytes,4); I64(bytes,8); I64(bytes,300); I64(bytes,2_000);
+            String(bytes,"track-9"); bytes.Add(1); bytes.Add(0); U16(bytes,0);
+            String(bytes,"ready:4:7"); String(bytes,"Door. 2 o'clock. about 6 feet away.");
+
+            Assert.IsTrue(PerceptionBusBinaryDecoder.TryDecodeFocus(
+                bytes.ToArray(),out PerceptionFocusSnapshot focus));
+            Assert.IsTrue(focus.HasAccessibilityAnnouncement);
+            Assert.AreEqual("ready:4:7",focus.AccessibilityAnnouncementToken);
+            Assert.AreEqual("Door. 2 o'clock. about 6 feet away.",focus.AccessibilityAnnouncementText);
+
+            var missingText=new List<byte>();
+            U32(missingText,0x43464653); U16(missingText,3); U16(missingText,1);
+            I64(missingText,9); I64(missingText,4); I64(missingText,8);
+            I64(missingText,300); I64(missingText,2_000);
+            String(missingText,"track-9"); missingText.Add(1); missingText.Add(0); U16(missingText,0);
+            String(missingText,"ready:4:7"); String(missingText,string.Empty);
+            Assert.IsFalse(PerceptionBusBinaryDecoder.TryDecodeFocus(missingText.ToArray(),out _));
+        }
+
+        [Test]
         public void HeadPoseDecodesAndRejectsNonUnitQuaternion()
         {
             var bytes=new List<byte>();
@@ -83,6 +107,30 @@ namespace ConceptFlow.Mpl.PerceptionLab.Tests
             bytes[quaternionOffset]=0; bytes[quaternionOffset+1]=0;
             bytes[quaternionOffset+2]=0; bytes[quaternionOffset+3]=0;
             Assert.IsFalse(PerceptionBusBinaryDecoder.TryDecodeHeadPose(bytes.ToArray(),out _));
+        }
+
+        [Test]
+        public void AmbientProfileDecodesAndRejectsInvalidCalibrationGain()
+        {
+            var bytes=new List<byte>();
+            U32(bytes,0x43464150); U16(bytes,1); U16(bytes,2);
+            I64(bytes,7); I64(bytes,3); I64(bytes,100); I64(bytes,3_000_000_100L);
+            I64(bytes,63_000_000_100L); I32(bytes,16_000); I32(bytes,1); I64(bytes,48_000);
+            F32(bytes,-32f); F32(bytes,-12f); F32(bytes,-41f);
+            F32(bytes,.4f); F32(bytes,.4f); F32(bytes,.2f); F32(bytes,.1f); F32(bytes,.82f);
+            I32(bytes,640);
+            Assert.IsTrue(PerceptionBusBinaryDecoder.TryDecodeAmbientSoundProfile(
+                bytes.ToArray(),out PerceptionAmbientSoundProfileSnapshot profile));
+            Assert.AreEqual(AmbientEnvironmentPrior.Outdoor,profile.Prior);
+            Assert.AreEqual(.82f,profile.RecommendedCalibrationGain);
+            Assert.AreEqual(640,profile.RecommendedPulseIntervalMs);
+
+            byte[] invalid=bytes.ToArray();
+            int gainOffset=invalid.Length-8;
+            byte[] overOne=BitConverter.GetBytes(BitConverter.SingleToInt32Bits(1.2f));
+            if(BitConverter.IsLittleEndian) Array.Reverse(overOne);
+            Buffer.BlockCopy(overOne,0,invalid,gainOffset,4);
+            Assert.IsFalse(PerceptionBusBinaryDecoder.TryDecodeAmbientSoundProfile(invalid,out _));
         }
 
         [Test]

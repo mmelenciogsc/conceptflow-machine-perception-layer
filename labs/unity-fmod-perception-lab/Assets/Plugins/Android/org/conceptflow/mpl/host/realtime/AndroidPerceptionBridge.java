@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host.realtime;
 
+import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -12,8 +13,10 @@ import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.view.View;
 
 import java.lang.reflect.Field;
+import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -29,17 +32,21 @@ public final class AndroidPerceptionBridge {
     private static final int FOCUS_MAGIC = 0x43464653; // CFFS
     private static final int HEAD_POSE_MAGIC = 0x43464850; // CFHP
     private static final int TOUCH_MAGIC = 0x43465442; // CFTB
+    private static final int AMBIENT_MAGIC = 0x43464150; // CFAP
     private static final int BASE_PAYLOAD_VERSION = 1;
-    private static final int FOCUS_PAYLOAD_VERSION = 2;
+    private static final int FOCUS_PAYLOAD_VERSION = 3;
     private static final int TOUCH_HEADER_BYTES = 8;
     private static final int TOUCH_EVENT_BYTES = 36;
     private static final int MAXIMUM_TOUCH_EVENTS = 128;
 
     private static final Client CLIENT = new Client();
+    private static final AccessibilityAnnouncementGate ACCESSIBILITY_ANNOUNCEMENTS =
+            new AccessibilityAnnouncementGate();
 
     private AndroidPerceptionBridge() {}
 
     public static void initialize() {
+        ACCESSIBILITY_ANNOUNCEMENTS.reset();
         CLIENT.startIfPossible();
     }
 
@@ -48,7 +55,52 @@ public final class AndroidPerceptionBridge {
     }
 
     public static void shutdown() {
+        ACCESSIBILITY_ANNOUNCEMENTS.reset();
         CLIENT.stop();
+    }
+
+    /** Cancels pending announcements and rejects new ones while a blinded audio trial is active. */
+    public static void setAccessibilityAnnouncementsSuspended(boolean suspended) {
+        ACCESSIBILITY_ANNOUNCEMENTS.setSuspended(suspended);
+    }
+
+    /** Schedules one deduplicated announcement on the current Unity Activity UI thread. */
+    @SuppressWarnings("deprecation")
+    public static boolean announceForAccessibility(String token, String text) {
+        Activity activity = resolveUnityActivity();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()
+                || !ACCESSIBILITY_ANNOUNCEMENTS.reserve(token, text)) return false;
+        WeakReference<Activity> activityReference = new WeakReference<>(activity);
+        try {
+            activity.runOnUiThread(() -> {
+                Activity target = activityReference.get();
+                Activity current = resolveUnityActivity();
+                if (target == null
+                        || target != current
+                        || target.isFinishing()
+                        || target.isDestroyed()) {
+                    ACCESSIBILITY_ANNOUNCEMENTS.cancel(token);
+                    return;
+                }
+                try {
+                    View root = target.getWindow() == null
+                            ? null
+                            : target.getWindow().getDecorView();
+                    if (root == null) {
+                        ACCESSIBILITY_ANNOUNCEMENTS.cancel(token);
+                        return;
+                    }
+                    ACCESSIBILITY_ANNOUNCEMENTS.deliverIfCurrent(
+                            token, () -> root.announceForAccessibility(text));
+                } catch (RuntimeException error) {
+                    ACCESSIBILITY_ANNOUNCEMENTS.cancel(token);
+                }
+            });
+            return true;
+        } catch (RuntimeException error) {
+            ACCESSIBILITY_ANNOUNCEMENTS.cancel(token);
+            return false;
+        }
     }
 
     public static byte[] pollWorldState(long lastRevision) {
@@ -67,6 +119,12 @@ public final class AndroidPerceptionBridge {
         CLIENT.startIfPossible();
         return CLIENT.snapshotAfter(
                 CLIENT.headPose, CLIENT.headPoseEpoch, HEAD_POSE_MAGIC, lastSequence);
+    }
+
+    public static byte[] pollAmbientSoundProfile(long lastRevision) {
+        CLIENT.startIfPossible();
+        return CLIENT.snapshotAfter(
+                CLIENT.ambientProfile, CLIENT.ambientProfileEpoch, AMBIENT_MAGIC, lastRevision);
     }
 
     public static byte[] drainTouchEvents(int maximumEvents) {
@@ -88,6 +146,7 @@ public final class AndroidPerceptionBridge {
         private static final int TRANSACTION_POLL_FOCUS_STATE = 2;
         private static final int TRANSACTION_POLL_HEAD_POSE = 3;
         private static final int TRANSACTION_DRAIN_TOUCH_EVENTS = 4;
+        private static final int TRANSACTION_POLL_AMBIENT_SOUND_PROFILE = 5;
         private static final int STATUS_OK = 0;
         private static final int STATUS_NO_UPDATE = 1;
         private static final int MAXIMUM_STATUS = 5;
@@ -96,6 +155,7 @@ public final class AndroidPerceptionBridge {
         private static final int MAXIMUM_FOCUS_BYTES = 1_024;
         private static final int MAXIMUM_HEAD_POSE_BYTES = 256;
         private static final int MAXIMUM_TOUCH_BYTES = 8_192;
+        private static final int MAXIMUM_AMBIENT_PROFILE_BYTES = 256;
         private static final long POLL_INTERVAL_MS = 20L;
         private static final long BIND_TIMEOUT_MS = 5_000L;
         private static final long[] RECONNECT_DELAYS_MS =
@@ -106,9 +166,11 @@ public final class AndroidPerceptionBridge {
         private final AtomicReference<byte[]> focus = new AtomicReference<>();
         private final AtomicReference<byte[]> headPose = new AtomicReference<>();
         private final AtomicReference<byte[]> touch = new AtomicReference<>();
+        private final AtomicReference<byte[]> ambientProfile = new AtomicReference<>();
         private final SnapshotEpochGate worldEpoch = new SnapshotEpochGate();
         private final SnapshotEpochGate focusEpoch = new SnapshotEpochGate();
         private final SnapshotEpochGate headPoseEpoch = new SnapshotEpochGate();
+        private final SnapshotEpochGate ambientProfileEpoch = new SnapshotEpochGate();
         private final AtomicInteger requestedTouchMaximum = new AtomicInteger();
         private final AtomicBoolean touchWakePosted = new AtomicBoolean();
         private final CallbackGenerationGate callbackGate = new CallbackGenerationGate();
@@ -125,6 +187,7 @@ public final class AndroidPerceptionBridge {
         private long lastWorldRevision;
         private long lastFocusRevision;
         private long lastHeadSequence;
+        private long lastAmbientProfileRevision;
         private volatile GenerationServiceConnection activeConnection;
 
         private final class GenerationServiceConnection implements ServiceConnection {
@@ -206,6 +269,13 @@ public final class AndroidPerceptionBridge {
                                 HEAD_POSE_MAGIC,
                                 MAXIMUM_HEAD_POSE_BYTES,
                                 headPose);
+                        lastAmbientProfileRevision = pollSnapshot(
+                                current,
+                                TRANSACTION_POLL_AMBIENT_SOUND_PROFILE,
+                                lastAmbientProfileRevision,
+                                AMBIENT_MAGIC,
+                                MAXIMUM_AMBIENT_PROFILE_BYTES,
+                                ambientProfile);
                         drainTouchIfRequested(current);
                     }
                 } catch (RemoteException | RuntimeException error) {
@@ -517,33 +587,30 @@ public final class AndroidPerceptionBridge {
             world.set(null);
             focus.set(null);
             headPose.set(null);
+            ambientProfile.set(null);
             touch.set(null);
             requestedTouchMaximum.set(0);
             touchWakePosted.set(false);
             lastWorldRevision = 0L;
             lastFocusRevision = 0L;
             lastHeadSequence = 0L;
+            lastAmbientProfileRevision = 0L;
             worldEpoch.clear();
             focusEpoch.clear();
             headPoseEpoch.clear();
+            ambientProfileEpoch.clear();
         }
 
         private void armSnapshotRebootstrap() {
             worldEpoch.arm();
             focusEpoch.arm();
             headPoseEpoch.arm();
+            ambientProfileEpoch.arm();
         }
 
         private static Context resolveUnityApplicationContext() {
-            try {
-                Class<?> unityPlayer = Class.forName("com.unity3d.player.UnityPlayer");
-                Field field = unityPlayer.getField("currentActivity");
-                Object activity = field.get(null);
-                if (!(activity instanceof Context)) return null;
-                return ((Context) activity).getApplicationContext();
-            } catch (ReflectiveOperationException | RuntimeException error) {
-                return null;
-            }
+            Activity activity = resolveUnityActivity();
+            return activity == null ? null : activity.getApplicationContext();
         }
 
         private static boolean isExpectedComponent(ComponentName name) {
@@ -602,7 +669,9 @@ public final class AndroidPerceptionBridge {
         if (bytes == null || bytes.length < 16 || readInt(bytes, 0) != expectedMagic) return -1L;
         int version = readUnsignedShort(bytes, 4);
         if (version != BASE_PAYLOAD_VERSION
-                && !(expectedMagic == FOCUS_MAGIC && version == FOCUS_PAYLOAD_VERSION)) return -1L;
+                && !(expectedMagic == FOCUS_MAGIC
+                && version >= 2
+                && version <= FOCUS_PAYLOAD_VERSION)) return -1L;
         long value = 0L;
         for (int index = 8; index < 16; index++) value = (value << 8) | (bytes[index] & 0xffL);
         return value > 0L ? value : -1L;
@@ -630,5 +699,16 @@ public final class AndroidPerceptionBridge {
     private static void writeUnsignedShort(byte[] bytes, int offset, int value) {
         bytes[offset] = (byte) (value >>> 8);
         bytes[offset + 1] = (byte) value;
+    }
+
+    private static Activity resolveUnityActivity() {
+        try {
+            Class<?> unityPlayer = Class.forName("com.unity3d.player.UnityPlayer");
+            Field field = unityPlayer.getField("currentActivity");
+            Object activity = field.get(null);
+            return activity instanceof Activity ? (Activity) activity : null;
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            return null;
+        }
     }
 }

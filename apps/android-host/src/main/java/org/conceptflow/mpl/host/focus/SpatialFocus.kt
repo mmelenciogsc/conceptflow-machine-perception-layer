@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host.focus
 
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
-import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.realtime.TimedTouchEvent
+import org.conceptflow.mpl.host.vision.FocusedVqaTiming
 import org.conceptflow.mpl.host.vision.InstanceMaskGeometry
 import org.conceptflow.mpl.host.vision.LightweightTrackState
 import org.conceptflow.mpl.host.vision.MetricVector3
@@ -229,14 +231,119 @@ data class SpatialFocusState(
     val talkBackPhrase: String,
     val statusReason: String,
     val vqaAnswer: String = "",
+    val vqaRequestId: Long = 0L,
     val operatorNotice: SpatialFocusOperatorNotice = SpatialFocusOperatorNotice.None,
     val beacon: SpatialBeacon? = null,
 ) {
     init {
+        require(vqaRequestId >= 0L)
         require((mode == SpatialFocusMode.BEACON_ACTIVE) == (beacon != null))
         require(beacon == null || target?.stableTrackId == beacon.stableTrackId)
         require(beacon == null || validUntilTimestampNanos == beacon.validUntilTimestampNanos)
     }
+}
+
+data class SpatialFocusAccessibilityAnnouncement(
+    val token: String,
+    val text: String,
+) {
+    init {
+        require(token.isNotBlank() && text.isNotBlank())
+        require(token.encodeToByteArray().size <= SpatialFocusAccessibilityFormatter.MAXIMUM_TOKEN_BYTES)
+        require(text.encodeToByteArray().size <= SpatialFocusAccessibilityFormatter.MAXIMUM_TEXT_BYTES)
+    }
+}
+
+data class SpatialFocusAccessibilityPresentation(
+    val statusText: String,
+    val announcement: SpatialFocusAccessibilityAnnouncement?,
+)
+
+/** Canonical nonvisual wording shared by Android UI and the Unity-facing Binder ABI. */
+object SpatialFocusAccessibilityFormatter {
+    const val MAXIMUM_TOKEN_BYTES = 96
+    const val MAXIMUM_TEXT_BYTES = 384
+
+    fun presentation(state: SpatialFocusState?): SpatialFocusAccessibilityPresentation {
+        val status = boundedText(statusText(state))
+        val token = meaningfulToken(state)
+        return SpatialFocusAccessibilityPresentation(
+            status,
+            token?.let { SpatialFocusAccessibilityAnnouncement(it, status) },
+        )
+    }
+
+    private fun statusText(state: SpatialFocusState?): String = when {
+        state == null || state.mode == SpatialFocusMode.INACTIVE ->
+            "Spatial focus inactive. Use Next or Previous to browse current tracked objects."
+        state.operatorNotice is SpatialFocusOperatorNotice.VqaRejected ->
+            "Focused question not started: ${words(state.operatorNotice.reason.name)}."
+        state.operatorNotice is SpatialFocusOperatorNotice.BeaconRejected ->
+            "Beacon not started: ${words(state.operatorNotice.reason.name)}."
+        state.mode == SpatialFocusMode.ACTION_MENU ->
+            "${menuLabel(state.menuOption)}. Option ${state.menuIndex + 1} of 3."
+        state.mode == SpatialFocusMode.VQA_PENDING -> "Focused visual question is pending."
+        state.mode == SpatialFocusMode.VQA_RESULT ->
+            state.vqaAnswer.ifBlank { "Focused visual answer unavailable." }
+        state.mode == SpatialFocusMode.BEACON_ACTIVE &&
+            state.beacon?.anchorMode == BeaconAnchorMode.ORIENTATION_STABILIZED_RELATIVE ->
+            "Relative bearing beacon active for ${state.talkBackPhrase} Translation is not tracked."
+        state.mode == SpatialFocusMode.BEACON_ACTIVE ->
+            "World anchor beacon active for ${state.talkBackPhrase}"
+        state.itemCount == 0 -> "No current spatial objects are eligible for focus."
+        state.dwell == SpatialFocusDwell.READY ->
+            state.talkBackPhrase.ifBlank { "Focused object details unavailable." }
+        else -> "Moving to object ${state.selectedIndex + 1} of ${state.itemCount}. Pause briefly to hear it."
+    }
+
+    private fun meaningfulToken(state: SpatialFocusState?): String? = when {
+        state == null || state.mode == SpatialFocusMode.INACTIVE -> "inactive"
+        state.mode == SpatialFocusMode.BEACON_ACTIVE ->
+            "beacon:${state.sessionGeneration}:${state.focusGeneration}:${state.beacon?.activationId ?: 0L}"
+        state.itemCount == 0 -> "empty:${state.sessionGeneration}"
+        state.operatorNotice is SpatialFocusOperatorNotice.VqaRejected ->
+            "notice:${state.sessionGeneration}:${state.focusGeneration}:vqa:${state.operatorNotice.reason.name}"
+        state.operatorNotice is SpatialFocusOperatorNotice.BeaconRejected ->
+            "notice:${state.sessionGeneration}:${state.focusGeneration}:beacon:${state.operatorNotice.reason.name}"
+        state.mode == SpatialFocusMode.ACTION_MENU ->
+            "menu:${state.sessionGeneration}:${state.focusGeneration}:${state.menuIndex}"
+        state.mode == SpatialFocusMode.VQA_PENDING && state.vqaRequestId > 0L ->
+            "vqa-pending:${state.sessionGeneration}:${state.focusGeneration}:${state.vqaRequestId}"
+        state.mode == SpatialFocusMode.VQA_RESULT && state.vqaRequestId > 0L ->
+            "vqa-result:${state.sessionGeneration}:${state.focusGeneration}:${state.vqaRequestId}"
+        state.dwell == SpatialFocusDwell.READY ->
+            "ready:${state.sessionGeneration}:${state.focusGeneration}"
+        else -> null
+    }
+
+    private fun menuLabel(option: SpatialFocusMenuOption?): String = when (option) {
+        SpatialFocusMenuOption.VQA -> "Ask about this object"
+        SpatialFocusMenuOption.BEACON -> "Start beacon"
+        SpatialFocusMenuOption.BACK, null -> "Back"
+    }
+
+    private fun words(value: String): String = value.lowercase(Locale.ROOT).replace('_', ' ')
+
+    private fun boundedText(value: String): String {
+        val normalized = value.trim().replace(WHITESPACE, " ")
+        if (normalized.encodeToByteArray().size <= MAXIMUM_TEXT_BYTES) return normalized
+        val result = StringBuilder(normalized.length.coerceAtMost(MAXIMUM_TEXT_BYTES))
+        var offset = 0
+        var byteCount = 0
+        val maximumContentBytes = MAXIMUM_TEXT_BYTES - ELLIPSIS.encodeToByteArray().size
+        while (offset < normalized.length) {
+            val codePoint = Character.codePointAt(normalized, offset)
+            val encodedBytes = String(Character.toChars(codePoint)).encodeToByteArray().size
+            if (byteCount + encodedBytes > maximumContentBytes) break
+            result.appendCodePoint(codePoint)
+            byteCount += encodedBytes
+            offset += Character.charCount(codePoint)
+        }
+        return result.toString().trimEnd() + ELLIPSIS
+    }
+
+    private val WHITESPACE = Regex("\\s+")
+    private const val ELLIPSIS = "…"
 }
 
 data class FocusedVqaCorrelation(
@@ -256,7 +363,7 @@ data class FocusedVqaRequest(
     val imageGeometry: InstanceMaskGeometry? = null,
 )
 
-enum class FocusedVqaRejection { BUSY, COOLDOWN, STALE_FRAME, INVALID_REQUEST, UNAVAILABLE }
+enum class FocusedVqaRejection { BUSY, COOLDOWN, STALE_FRAME, INVALID_REQUEST, TIMED_OUT, UNAVAILABLE }
 sealed interface SpatialFocusOperatorNotice {
     data object None : SpatialFocusOperatorNotice
     data class VqaRejected(val reason: FocusedVqaRejection) : SpatialFocusOperatorNotice
@@ -269,26 +376,15 @@ class SpatialFocusAnnouncementPolicy {
 
     @Synchronized
     fun shouldAnnounce(state: SpatialFocusState?): Boolean {
-        val token = meaningfulToken(state) ?: return false
+        return shouldAnnouncePresentation(SpatialFocusAccessibilityFormatter.presentation(state))
+    }
+
+    @Synchronized
+    fun shouldAnnouncePresentation(presentation: SpatialFocusAccessibilityPresentation): Boolean {
+        val token = presentation.announcement?.token ?: return false
         if (token == lastToken) return false
         lastToken = token
         return true
-    }
-
-    private fun meaningfulToken(state: SpatialFocusState?): String? = when {
-        state == null || state.mode == SpatialFocusMode.INACTIVE -> "inactive"
-        state.mode == SpatialFocusMode.BEACON_ACTIVE ->
-            "beacon:${state.focusGeneration}:${state.beacon?.activationId ?: 0L}"
-        state.itemCount == 0 -> "empty:${state.sessionGeneration}"
-        state.operatorNotice !is SpatialFocusOperatorNotice.None ->
-            "notice:${state.focusGeneration}:${state.operatorNotice}"
-        state.mode == SpatialFocusMode.ACTION_MENU ->
-            "menu:${state.focusGeneration}:${state.menuIndex}"
-        state.mode == SpatialFocusMode.VQA_PENDING -> "vqa-pending:${state.focusGeneration}"
-        state.mode == SpatialFocusMode.VQA_RESULT ->
-            "vqa-result:${state.focusGeneration}:${state.vqaAnswer}"
-        state.dwell == SpatialFocusDwell.READY -> "ready:${state.focusGeneration}"
-        else -> null
     }
 }
 
@@ -427,7 +523,7 @@ class SpatialFocusManager(
     private val stateTtlNanos: Long = 1_500_000_000L,
     private val beaconTtlNanos: Long = 30_000_000_000L,
     private val maximumBeaconHeadPoseAgeNanos: Long = 250_000_000L,
-    private val vqaPendingTtlNanos: Long = 9_000_000_000L,
+    private val vqaPendingTtlNanos: Long = FocusedVqaTiming.PUBLICATION_BUDGET_NANOS,
     private val vqaResultTtlNanos: Long = 10_000_000_000L,
 ) {
     private var revision = 0L
@@ -442,6 +538,7 @@ class SpatialFocusManager(
     private var dwellDeadlineNs = 0L
     private var latestState: SpatialFocusState? = null
     private var vqaAnswer = ""
+    private var vqaRequestId = 0L
     private var currentSessionGeneration = 0L
     private var currentSourceWorldRevision = 0L
     private var operatorNotice: SpatialFocusOperatorNotice = SpatialFocusOperatorNotice.None
@@ -454,7 +551,7 @@ class SpatialFocusManager(
         require(stateTtlNanos >= dwellNanos)
         require(beaconTtlNanos in 1_000_000_000L..300_000_000_000L)
         require(maximumBeaconHeadPoseAgeNanos in 1_000_000L..1_000_000_000L)
-        require(vqaPendingTtlNanos in 1_000_000_000L..30_000_000_000L)
+        require(vqaPendingTtlNanos in 1_000_000_000L..9_000_000_000L)
         require(vqaResultTtlNanos in 1_000_000_000L..60_000_000_000L)
     }
 
@@ -600,11 +697,13 @@ class SpatialFocusManager(
                             is FocusedVqaAdmission.Admitted -> {
                                 if (runCatching { vqaGateway.submit(admission.request) }.getOrDefault(false)) {
                                     mode = SpatialFocusMode.VQA_PENDING
+                                    vqaRequestId = admission.request.correlation.requestId
                                     vqaStateUntilNs = Math.addExact(nowNanos, vqaPendingTtlNanos)
                                     effect = SpatialFocusEffect.RequestVqa(admission.request)
                                     reason = "vqa_requested"
                                 } else {
                                     vqaGate.cancel()
+                                    vqaRequestId = 0L
                                     mode = SpatialFocusMode.ACTION_MENU
                                     operatorNotice = SpatialFocusOperatorNotice.VqaRejected(
                                         FocusedVqaRejection.UNAVAILABLE,
@@ -664,6 +763,7 @@ class SpatialFocusManager(
                     SpatialFocusMode.BROWSING -> resetInternal(snapshot!!.sessionGeneration)
                     else -> mode = SpatialFocusMode.BROWSING
                 }
+                vqaRequestId = 0L
                 cancelDwell()
             }
         }
@@ -704,10 +804,23 @@ class SpatialFocusManager(
     ): Boolean {
         if (!vqaGate.complete(correlation) || mode != SpatialFocusMode.VQA_PENDING) return false
         mode = SpatialFocusMode.ACTION_MENU
+        vqaRequestId = 0L
         vqaStateUntilNs = 0L
         menuIndex = 0
         operatorNotice = SpatialFocusOperatorNotice.VqaRejected(reason)
         publish(nowNanos, "vqa_rejected_${reason.name.lowercase()}")
+        return true
+    }
+
+    @Synchronized
+    fun activeVqaCorrelation(): FocusedVqaCorrelation? = vqaGate.activeCorrelation()
+
+    /** Expires the exact pending request without relying on another camera frame. */
+    @Synchronized
+    fun expireVqa(correlation: FocusedVqaCorrelation, nowNanos: Long): Boolean {
+        if (mode != SpatialFocusMode.VQA_PENDING || nowNanos < vqaStateUntilNs) return false
+        if (!failVqa(correlation, FocusedVqaRejection.TIMED_OUT, nowNanos)) return false
+        runCatching { vqaGateway.cancel(correlation) }
         return true
     }
 
@@ -737,6 +850,7 @@ class SpatialFocusManager(
         dwellStartedNs = nowNanos
         dwellDeadlineNs = Math.addExact(nowNanos, dwellNanos)
         vqaAnswer = ""
+        vqaRequestId = 0L
         vqaStateUntilNs = 0L
     }
 
@@ -792,6 +906,7 @@ class SpatialFocusManager(
         menuIndex = 0
         cancelDwell()
         vqaAnswer = ""
+        vqaRequestId = 0L
         vqaStateUntilNs = 0L
         operatorNotice = SpatialFocusOperatorNotice.None
         activeBeacon = null
@@ -837,6 +952,7 @@ class SpatialFocusManager(
             talkBackPhrase = target?.let(SpatialFocusSpeechFormatter::talkBack).orEmpty(),
             statusReason = reason,
             vqaAnswer = vqaAnswer,
+            vqaRequestId = vqaRequestId,
             operatorNotice = operatorNotice,
             beacon = beacon,
         )

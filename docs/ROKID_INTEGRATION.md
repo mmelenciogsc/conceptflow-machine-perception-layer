@@ -42,11 +42,12 @@ Sources checked on 2026-08-21:
   defines the rotation-vector, gyroscope, and linear-acceleration sources.
 - Android's official
   [alarm scheduling guide](https://developer.android.com/develop/background-work/services/alarms/schedule)
-  documents exact-alarm special access, `setExactAndAllowWhileIdle`, and the
-  inexact `setAndAllowWhileIdle` fallback. Its
+  documents exact-alarm special access and its restrictions. The implementation
+  no longer requests that access because physical YodaOS evidence rejected the
+  resulting background foreground-service re-entry. Android's
   [wake-lock guide](https://developer.android.com/develop/background-work/background-tasks/awake/wakelock)
-  requires finite acquisition and prompt release. These sources were rechecked
-  on 2026-08-24 for the cable-free rendezvous lifecycle.
+  requires finite acquisition and prompt release; the remaining pre-authentication
+  wake lease follows that bounded model.
 - The Linux kernel's official
   [USB error-code documentation](https://docs.kernel.org/driver-api/usb/error-codes.html)
   defines `-EPROTO` as a protocol-level failure such as no response or a
@@ -128,30 +129,34 @@ all absent. The armed service keeps only a bounded outbound mutual-TLS
 rendezvous active on the private network. Before the first authenticated
 session, one transient connection failure ends that rendezvous epoch. The
 service then uses jittered 15-, 30-, and 60-second cooldown levels for genuine
-network or rendezvous failures (bounded to
-plus or minus ten percent and capped at the final level across later failed
-epochs) and tries again only while the same explicit visible-arm generation
-and process capability remain valid. Cooldowns use an elapsed-realtime wakeup
-alarm rather than a main-thread delayed callback. On Android 12 and later the
-service uses exact allow-while-idle delivery only when
-`canScheduleExactAlarms()` reports that the declared `SCHEDULE_EXACT_ALARM`
-special access is available; otherwise it uses inexact allow-while-idle
-delivery and logs that degraded precision. Each managed epoch also has a
-service-owned 15-second total
-pre-authentication deadline covering TCP, TLS, lease, clock synchronization,
-and camera-lane admission; expiry closes its in-flight sockets. A
+network or rendezvous failures (bounded to plus or minus ten percent and capped
+at the final level across later failed epochs) and tries again only while the
+same explicit visible-arm generation remains valid. The cooldown callback is
+owned by the already-running foreground service. It never submits another
+background `startForegroundService` request: physical logs from the target
+YodaOS build showed that the platform accepted that request and then rejected
+the required camera/microphone `startForeground()` confirmation. Removing that
+invalid re-entry also removes the need for exact-alarm special access. If the
+process is killed, the explicitly provisioned AccessibilityService re-enters
+through the same-boot visible broker instead of treating a timer as capture
+authority. Each managed epoch also has a service-owned three-minute total
+pre-authentication ceiling covering endpoint discovery, TCP, TLS, lease, clock
+synchronization, and camera-lane admission; expiry closes its in-flight
+sockets. A definitive network or authentication failure can end the epoch
+earlier. A
 non-reference-counted partial CPU wake lock and a non-reference-counted Wi-Fi
 low-latency lock keep only that deadline and handshake progressing. Both use a
-17-second hard timeout, providing a two-second release margin around the
-15-second deadline, and are released earlier on authentication, terminal,
+182-second hard timeout, providing a two-second release margin around the
+three-minute ceiling, and are released earlier on authentication, terminal,
 failed start, disable, or service destruction. The Wi-Fi lock can keep an
 already-enabled, associated radio responsive; Android does not permit this
 ordinary target-SDK-36 app to turn a disabled Wi-Fi radio on silently. No lock
-is held during cooldown. The nominal 66-second worst-case steady
-cooldown plus the handshake budget is 81 seconds, but neither exact nor
-inexact allow-while-idle alarms are a contractual 90-second delivery guarantee:
-Android can throttle them in Doze and the device vendor can impose additional
-power policy. A
+is held during cooldown. The maximum jittered steady cooldown is 66 seconds;
+the pre-authentication ceiling remains separately bounded while the
+foreground-service process is runnable. Android or vendor freezing can defer a
+process-local callback;
+same-boot process recovery therefore requires the validated AccessibilityService
+broker. A
 successfully authenticated session resets that escalation. Once authenticated,
 up to six transport interruptions remain bounded by the original active
 deadline. No
@@ -756,12 +761,24 @@ current public certificates are exported and installed together:
 ./scripts/android-live-link-pair \
   --rokid-serial "$ROKID_SERIAL" \
   --poco-serial "$POCO_SERIAL" \
-  --poco-address "$POCO_PRIVATE_IP"
+  --poco-address "$POCO_PRIVATE_IP" \
+  --network-topology private-lan-discovery
 ```
 
 The helper transfers only public certificates, verifies each private config
 byte for byte, and never exports a private key. Its values and certificate
 contents are not printed. It does not start either endpoint.
+
+`private_lan_discovery` first listens for a content-free local announcement and
+then uses the provisioned same-subnet address, or the private default gateway
+when the glasses are a Poco-hotspot client, after eight seconds if the WLAN or
+YodaOS filters multicast/broadcast. The current hardware pair physically used
+direct discovery and fallback with TLS 1.3 mutual authentication. If the Poco's
+DHCP address changes on infrastructure Wi-Fi, reserve it on the trusted LAN or
+rerun pairing; hotspot fallback does not depend on that address. Strict
+`wifi_direct_required` remains separately selectable and fail-closed; its peer
+discovery is not working on the currently tested firmware combination. See
+[Local wireless transport](WIFI_DIRECT_TRANSPORT.md).
 
 Arm the Rokid sensor-off rendezvous through authorized development ADB:
 

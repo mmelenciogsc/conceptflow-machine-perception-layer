@@ -136,6 +136,28 @@ that can conceal backpressure or cancellation defects.
   required nor used for runtime messages. A paired Bluetooth state alone does
   not establish this application channel, because a BLE wake/discovery adapter
   is not implemented yet.
+- For the current firmware pair, provision
+  `--network-topology private-lan-discovery`. Rokid waits up to eight seconds
+  for the content-free LAN beacon and then uses the pinned private address.
+  Seeing `result=static_fallback` is expected on a WLAN that filters client
+  broadcast/multicast; it is not an authentication downgrade. If that fallback
+  stops connecting after a DHCP change, reserve the Poco address on the trusted
+  LAN or rerun `android-live-link-pair` with the current private address.
+- For outdoor operation, enable the Poco personal hotspot in system settings
+  and connect the glasses to that saved network. On API 36 Android Node observes
+  the hotspot downstream interface and announces there; if announcements are
+  filtered, Rokid tries its private default gateway and still requires the
+  pinned mutual-TLS identity. Android Node neither stores the hotspot password
+  nor silently enables tethering. If a remembered infrastructure WLAN is also
+  in range, Android may prefer it after a radio restart; test autojoin where the
+  intended hotspot is the only available saved network before relying on the
+  outdoor workflow.
+- `wifi_direct_required` fails closed and never switches to infrastructure
+  WLAN. On the tested API-36 Poco/API-32 YodaOS pair, group creation works on
+  2.4 and 5 GHz but Rokid peer discovery currently returns zero peers, including
+  after ordinary negotiated formation. Use the explicit recovery controls only
+  on an empty phone-owned group; they intentionally refuse active-client or
+  non-owner groups.
 - No Rokid client secret or SDK class is required. This project intentionally
   builds and sideloads a standalone standard-Android APK.
 - Right-arm touch input is wear-gated on the tested unit. An off-head gesture
@@ -145,18 +167,17 @@ that can conceal backpressure or cancellation defects.
 - `idle-enable` briefly uses the nonvisual command Activity to establish a
   camera-capable foreground service, then the Activity exits. Camera, IMU, and
   microphone remain off while the client performs bounded mutual-TLS
-  rendezvous attempts. Cooldowns are scheduled with an elapsed-realtime wakeup
-  alarm, and each pre-authentication epoch has finite 17-second partial CPU and
-  Wi-Fi low-latency locks covering its 15-second handshake deadline; there is
-  no lock during cooldown and no `FLAG_KEEP_SCREEN_ON`. A Wi-Fi lock does not
-  turn a disabled radio on. On API 31+, status reports
-  `wakeup_alarm=exact_allow_idle` only when exact-alarm special access is
-  available; `inexact_allow_idle` is a valid but more readily deferred fallback.
-  Doze and vendor policy can still delay either route, so the Poco's 90-second
-  listener is not a delivery guarantee. Reopen the listener after a missed
-  window rather than weakening authentication or starting sensors in standby. After
-  reboot, only inert service state is restored; run authorized `idle-enable`
-  again before the Poco can request a live session.
+  rendezvous attempts. Cooldowns are process-local callbacks owned by that
+  already-running foreground service; they do not re-enter through a background
+  foreground-service start, which the tested YodaOS build rejects at the
+  camera/microphone `startForeground()` step. Each pre-authentication epoch has
+  finite partial CPU and Wi-Fi low-latency locks covering its handshake
+  deadline; there is no lock during cooldown and no `FLAG_KEEP_SCREEN_ON`. A
+  Wi-Fi lock does not turn a disabled radio on. Doze or vendor freezing may
+  defer the callback. Same-boot recovery after a process kill depends on the
+  explicitly provisioned Rokid gesture AccessibilityService and its visible
+  broker. After reboot, only inert service state is restored; run authorized
+  `idle-enable` again before the Poco can request a live session.
 - On the tested API-32 YodaOS build, both shell `am startservice` forms refuse
   even a resolvable exported debug service. `idle-enable` therefore launches
   the authorized Activity, which requests lock-screen visibility and screen-on

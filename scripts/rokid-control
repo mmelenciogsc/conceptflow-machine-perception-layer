@@ -206,7 +206,10 @@ case "$command_name" in
         else
             printf 'idle foreground service: inactive or unavailable\n'
         fi
-        printf 'Rokid gesture observer: never consumes key events; enable separately if trusted\n'
+        accessibility_status="$(
+            "$SCRIPT_DIRECTORY/rokid-accessibility-control" --serial "$ROKID_SERIAL" status 2>&1
+        )" || fail "could not verify Rokid gesture observer state"
+        printf '%s\n' "$accessibility_status" | sed '/^Rokid target:/d'
         idle_preferences="$(adb -s "$ROKID_SERIAL" shell run-as "$PACKAGE_NAME" \
             cat "shared_prefs/rokid_idle_control.xml" 2>/dev/null || true)"
         if grep -E 'name="enabled" value="true"' <<<"$idle_preferences" >/dev/null; then

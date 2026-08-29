@@ -44,6 +44,10 @@ class FocusedVqaControllerCorrelationTest {
             FocusedVqaRejection.STALE_FRAME,
             LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED.toFocusRejection(),
         )
+        assertEquals(
+            FocusedVqaRejection.TIMED_OUT,
+            LocalVlmFocusedObjectFailure.TIMED_OUT.toFocusRejection(),
+        )
         listOf(
             LocalVlmFocusedObjectFailure.DEFERRED_FOR_QNN,
             LocalVlmFocusedObjectFailure.INFERENCE_FAILED,

@@ -5,6 +5,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -12,6 +14,16 @@ import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.focus.FocusedVqaCorrelation
 import org.conceptflow.mpl.host.focus.FocusedVqaGateway
 import org.conceptflow.mpl.host.focus.FocusedVqaRequest
+
+enum class FocusedVqaPhase { ADMITTED, FRAME_READY, SUBMITTED, TERMINAL }
+
+/** Deliberately excludes image, track, question, and answer content. */
+data class FocusedVqaPhaseTelemetry(
+    val requestId: Long,
+    val phase: FocusedVqaPhase,
+    val elapsedMillis: Long,
+    val outcome: LocalVlmFocusedObjectFailure? = null,
+)
 
 interface LocalFocusedVqaClient {
     /** Must synchronously consume or copy [frame]; its JPEG buffer is wiped when this call returns. */
@@ -36,6 +48,9 @@ class AndroidLocalVlmFocusedVqaGateway(
     private val frameProvider: FocusedVqaFrameProvider,
     private val callback: LocalVlmFocusedObjectCallback,
     private val executor: ExecutorService = newWorker(),
+    private val watchdog: ScheduledExecutorService = newWatchdog(),
+    private val clockNanos: () -> Long = System::nanoTime,
+    private val onTelemetry: (FocusedVqaPhaseTelemetry) -> Unit = {},
 ) : FocusedVqaGateway, AutoCloseable {
     private val active = AtomicReference<GatewayRequest?>(null)
     private val closed = AtomicBoolean(false)
@@ -47,16 +62,29 @@ class AndroidLocalVlmFocusedVqaGateway(
     fun submitDetailed(request: FocusedVqaRequest): LocalVlmSubmissionResult {
         if (closed.get()) return LocalVlmSubmissionResult.UNAVAILABLE
         val localRequest = request.toLocalVlmRequest() ?: return LocalVlmSubmissionResult.INVALID_REQUEST
-        val gatewayRequest = GatewayRequest(request.correlation, localRequest.correlation)
+        if (!FocusedVqaTiming.hasTimeRemaining(localRequest.deadlineMonotonicTimestampNanos, clockNanos())) {
+            return LocalVlmSubmissionResult.INVALID_REQUEST
+        }
+        val gatewayRequest = GatewayRequest(request.correlation, localRequest)
         if (!active.compareAndSet(null, gatewayRequest)) return LocalVlmSubmissionResult.BUSY
         return try {
+            emit(gatewayRequest, FocusedVqaPhase.ADMITTED)
+            val delayNanos =
+                (localRequest.deadlineMonotonicTimestampNanos - clockNanos()).coerceAtLeast(0L)
+            gatewayRequest.watchdog = watchdog.schedule(
+                { timeOut(gatewayRequest) },
+                delayNanos,
+                TimeUnit.NANOSECONDS,
+            )
             gatewayRequest.future = executor.submit { dispatch(gatewayRequest, request, localRequest) }
             LocalVlmSubmissionResult.ACCEPTED
         } catch (_: RejectedExecutionException) {
             active.compareAndSet(gatewayRequest, null)
+            gatewayRequest.watchdog?.cancel(false)
             LocalVlmSubmissionResult.BUSY
         } catch (_: RuntimeException) {
             active.compareAndSet(gatewayRequest, null)
+            gatewayRequest.watchdog?.cancel(false)
             LocalVlmSubmissionResult.UNAVAILABLE
         }
     }
@@ -64,12 +92,14 @@ class AndroidLocalVlmFocusedVqaGateway(
     override fun cancel(correlation: FocusedVqaCorrelation) {
         val current = active.get() ?: return
         if (current.focusCorrelation != correlation || !active.compareAndSet(current, null)) return
+        current.watchdog?.cancel(false)
         current.future?.cancel(true)
         if (current.clientSubmitted.get()) client.cancelFocusedObjectVqa(current.localCorrelation)
     }
 
     fun reset() {
         val current = active.getAndSet(null) ?: return
+        current.watchdog?.cancel(false)
         current.future?.cancel(true)
         if (current.clientSubmitted.get()) client.cancelFocusedObjectVqa(current.localCorrelation)
     }
@@ -78,6 +108,7 @@ class AndroidLocalVlmFocusedVqaGateway(
         if (!closed.compareAndSet(false, true)) return
         reset()
         executor.shutdownNow()
+        watchdog.shutdownNow()
     }
 
     private fun dispatch(
@@ -96,6 +127,7 @@ class AndroidLocalVlmFocusedVqaGateway(
             reject(gatewayRequest, LocalVlmFocusedObjectFailure.INVALID_REQUEST)
             return
         }
+        emit(gatewayRequest, FocusedVqaPhase.FRAME_READY)
         if (closed.get() || active.get() !== gatewayRequest || Thread.currentThread().isInterrupted) {
             frame.jpeg.fill(0)
             return
@@ -113,12 +145,16 @@ class AndroidLocalVlmFocusedVqaGateway(
             // remain gated until this wipe completes, so terminal observers cannot race cleanup.
             frame.jpeg.fill(0)
         }
-        val deferredOutcome = callbackGate.complete(result == LocalVlmSubmissionResult.ACCEPTED)
-        if (result == LocalVlmSubmissionResult.ACCEPTED) {
+        val accepted = result == LocalVlmSubmissionResult.ACCEPTED
+        if (accepted) {
             gatewayRequest.clientSubmitted.set(true)
+            if (active.get() === gatewayRequest) emit(gatewayRequest, FocusedVqaPhase.SUBMITTED)
+        }
+        val deferredOutcome = callbackGate.complete(accepted)
+        if (accepted) {
             deferredOutcome?.let { finishFromClient(gatewayRequest, it) }
             if ((closed.get() || active.get() !== gatewayRequest) &&
-                !gatewayRequest.terminalCallbackReceived.get()
+                !gatewayRequest.clientTerminalWon.get()
             ) {
                 client.cancelFocusedObjectVqa(gatewayRequest.localCorrelation)
             }
@@ -131,8 +167,9 @@ class AndroidLocalVlmFocusedVqaGateway(
         gatewayRequest: GatewayRequest,
         outcome: LocalVlmFocusedObjectOutcome,
     ) {
-        gatewayRequest.terminalCallbackReceived.set(true)
         if (!active.compareAndSet(gatewayRequest, null)) return
+        gatewayRequest.clientTerminalWon.set(true)
+        gatewayRequest.watchdog?.cancel(false)
         val delivered = if (outcome.correlation() == gatewayRequest.localCorrelation) {
             outcome
         } else {
@@ -141,23 +178,62 @@ class AndroidLocalVlmFocusedVqaGateway(
                 LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED,
             )
         }
+        emit(
+            gatewayRequest,
+            FocusedVqaPhase.TERMINAL,
+            (delivered as? LocalVlmFocusedObjectOutcome.Rejected)?.reason,
+        )
         runCatching { callback.onOutcome(delivered) }
     }
 
     private fun reject(gatewayRequest: GatewayRequest, reason: LocalVlmFocusedObjectFailure) {
         if (!active.compareAndSet(gatewayRequest, null)) return
+        gatewayRequest.watchdog?.cancel(false)
+        emit(gatewayRequest, FocusedVqaPhase.TERMINAL, reason)
         runCatching {
             callback.onOutcome(LocalVlmFocusedObjectOutcome.Rejected(gatewayRequest.localCorrelation, reason))
         }
     }
 
+    private fun timeOut(gatewayRequest: GatewayRequest) {
+        if (!active.compareAndSet(gatewayRequest, null)) return
+        gatewayRequest.future?.cancel(true)
+        if (gatewayRequest.clientSubmitted.get()) {
+            client.cancelFocusedObjectVqa(gatewayRequest.localCorrelation)
+        }
+        emit(gatewayRequest, FocusedVqaPhase.TERMINAL, LocalVlmFocusedObjectFailure.TIMED_OUT)
+        runCatching {
+            callback.onOutcome(
+                LocalVlmFocusedObjectOutcome.Rejected(
+                    gatewayRequest.localCorrelation,
+                    LocalVlmFocusedObjectFailure.TIMED_OUT,
+                ),
+            )
+        }
+    }
+
+    private fun emit(
+        request: GatewayRequest,
+        phase: FocusedVqaPhase,
+        outcome: LocalVlmFocusedObjectFailure? = null,
+    ) {
+        val elapsedMillis = ((clockNanos() - request.requestedNanos).coerceAtLeast(0L) / 1_000_000L)
+            .coerceAtMost(60_000L)
+        runCatching {
+            onTelemetry(FocusedVqaPhaseTelemetry(request.localCorrelation.focusRequestId, phase, elapsedMillis, outcome))
+        }
+    }
+
     private class GatewayRequest(
         val focusCorrelation: FocusedVqaCorrelation,
-        val localCorrelation: LocalVlmFocusedObjectCorrelation,
+        localRequest: LocalVlmFocusedObjectRequest,
     ) {
+        val localCorrelation = localRequest.correlation
+        val requestedNanos = localRequest.requestedMonotonicTimestampNanos
         @Volatile var future: Future<*>? = null
+        @Volatile var watchdog: ScheduledFuture<*>? = null
         val clientSubmitted = AtomicBoolean(false)
-        val terminalCallbackReceived = AtomicBoolean(false)
+        val clientTerminalWon = AtomicBoolean(false)
     }
 
     /** Holds callbacks until the synchronous submission result and JPEG cleanup are known. */
@@ -201,6 +277,11 @@ class AndroidLocalVlmFocusedVqaGateway(
             { runnable -> Thread(runnable, "mpl-focused-vqa").apply { isDaemon = true } },
             ThreadPoolExecutor.AbortPolicy(),
         )
+
+        fun newWatchdog(): ScheduledExecutorService =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "mpl-focused-vqa-watchdog").apply { isDaemon = true }
+            }
     }
 }
 
@@ -218,6 +299,7 @@ internal fun FocusedVqaRequest.toLocalVlmRequest(): LocalVlmFocusedObjectRequest
                 sourceCaptureTimestampNanos = sourceCaptureTimestampNanos,
             ),
             requestedMonotonicTimestampNanos = requestedTimestampNanos,
+            deadlineMonotonicTimestampNanos = FocusedVqaTiming.deadlineNanos(requestedTimestampNanos),
             question = sanitizedQuestion,
         )
     }.getOrNull()

@@ -4,9 +4,11 @@ package org.conceptflow.mpl.host.realtime
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.util.ArrayDeque
+import org.conceptflow.mpl.host.audio.AmbientSoundProfile
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.sqrt
+import org.conceptflow.mpl.host.focus.SpatialFocusAccessibilityFormatter
 import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.HeadPoseObservation
 import org.conceptflow.mpl.host.vision.LiveMetricFusionResult
@@ -154,8 +156,10 @@ class PerceptionBus(
     private val latestHead = AtomicReference<PerceptionHeadState?>(null)
     private val latestHeadSnapshot = AtomicReference<PerceptionHeadSnapshot?>(null)
     private val latestFocus = AtomicReference<SpatialFocusState?>(null)
+    private val latestAmbientProfile = AtomicReference<AmbientSoundProfile?>(null)
     private val nextHeadRevision = AtomicLong(0L)
     private val nextFocusRevision = AtomicLong(0L)
+    private val nextAmbientRevision = AtomicLong(0L)
     private val touchEvents = ArrayDeque<PerceptionTouchInput>()
     @Volatile private var sessionGeneration = 0L
     private var publishedStates = 0L
@@ -176,6 +180,7 @@ class PerceptionBus(
         latestHead.set(null)
         latestHeadSnapshot.set(null)
         latestFocus.set(null)
+        latestAmbientProfile.set(null)
         publishState(
             sourceFrameId = 0L,
             sourceCaptureTimestampNs = nowNanos,
@@ -217,6 +222,18 @@ class PerceptionBus(
 
     /** Latest valid orientation for short-lived focus actions; never exposes mutable bus state. */
     fun latestHeadSnapshot(): PerceptionHeadSnapshot? = latestHeadSnapshot.get()
+
+    fun publishAmbientSoundProfile(profile: AmbientSoundProfile): AmbientSoundProfile {
+        require(profile.sessionGeneration == sessionGeneration && sessionGeneration > 0L)
+        val published = profile.copy(revision = nextAmbientRevision.incrementAndGet())
+        latestAmbientProfile.set(published)
+        return published
+    }
+
+    fun latestAmbientSoundProfileAfter(revision: Long, nowNanos: Long): AmbientSoundProfile? =
+        latestAmbientProfile.get()?.takeIf {
+            it.revision > revision && nowNanos <= it.validUntilTimestampNs
+        }
 
     fun latestFocusAfter(revision: Long, nowNanos: Long): SpatialFocusState? =
         latestFocus.get()?.takeIf { it.revision > revision && nowNanos <= it.validUntilTimestampNanos }
@@ -306,6 +323,7 @@ class PerceptionBus(
         latestHead.set(null)
         latestHeadSnapshot.set(null)
         latestFocus.set(null)
+        latestAmbientProfile.set(null)
         publishState(
             sourceFrameId = 0L,
             sourceCaptureTimestampNs = nowNanos,
@@ -454,8 +472,9 @@ object PerceptionBusBinaryCodec {
     private const val TOUCH_MAGIC = 0x43465442 // CFTB
     private const val FOCUS_MAGIC = 0x43464653 // CFFS
     private const val HEAD_MAGIC = 0x43464850 // CFHP
+    private const val AMBIENT_MAGIC = 0x43464150 // CFAP
     private const val VERSION = 1
-    private const val FOCUS_VERSION = 2
+    private const val FOCUS_VERSION = 3
 
     fun encodeWorld(state: PerceptionWorldState): ByteArray = output { data ->
         data.writeInt(WORLD_MAGIC)
@@ -532,7 +551,31 @@ object PerceptionBusBinaryCodec {
         data.writeFloat(snapshot.state.z)
     }
 
+    fun encodeAmbientSoundProfile(profile: AmbientSoundProfile): ByteArray = output { data ->
+        data.writeInt(AMBIENT_MAGIC)
+        data.writeShort(VERSION)
+        data.writeShort(profile.prior.wireValue)
+        data.writeLong(profile.revision)
+        data.writeLong(profile.sessionGeneration)
+        data.writeLong(profile.captureStartTimestampNs)
+        data.writeLong(profile.captureEndTimestampNs)
+        data.writeLong(profile.validUntilTimestampNs)
+        data.writeInt(profile.sampleRateHz)
+        data.writeInt(profile.channelCount)
+        data.writeLong(profile.sampleCount)
+        data.writeFloat(profile.rmsDbFs)
+        data.writeFloat(profile.peakDbFs)
+        data.writeFloat(profile.noiseFloorDbFs)
+        data.writeFloat(profile.lowBandRatio)
+        data.writeFloat(profile.midBandRatio)
+        data.writeFloat(profile.highBandRatio)
+        data.writeFloat(profile.transientDensity)
+        data.writeFloat(profile.recommendedCalibrationGain)
+        data.writeInt(profile.recommendedPulseIntervalMs)
+    }
+
     fun encodeFocus(state: SpatialFocusState): ByteArray = output { data ->
+        val accessibility = SpatialFocusAccessibilityFormatter.presentation(state).announcement
         data.writeInt(FOCUS_MAGIC)
         data.writeShort(FOCUS_VERSION)
         var flags = 0
@@ -575,6 +618,16 @@ object PerceptionBusBinaryCodec {
                 data.writeFloat(reference.z.toFloat())
             }
         }
+        writeString(
+            data,
+            accessibility?.token.orEmpty(),
+            SpatialFocusAccessibilityFormatter.MAXIMUM_TOKEN_BYTES,
+        )
+        writeString(
+            data,
+            accessibility?.text.orEmpty(),
+            SpatialFocusAccessibilityFormatter.MAXIMUM_TEXT_BYTES,
+        )
     }
 
     private inline fun output(block: (DataOutputStream) -> Unit): ByteArray {
@@ -583,9 +636,13 @@ object PerceptionBusBinaryCodec {
         return bytes.toByteArray()
     }
 
-    private fun writeString(output: DataOutputStream, value: String) {
+    private fun writeString(
+        output: DataOutputStream,
+        value: String,
+        maximumBytes: Int = PerceptionEntityState.MAXIMUM_STRING_BYTES,
+    ) {
         val bytes = value.encodeToByteArray()
-        require(bytes.size <= PerceptionEntityState.MAXIMUM_STRING_BYTES)
+        require(bytes.size <= maximumBytes)
         output.writeShort(bytes.size)
         output.write(bytes)
     }

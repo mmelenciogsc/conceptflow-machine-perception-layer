@@ -20,6 +20,11 @@ import org.conceptflow.mpl.host.focus.SpatialFocusCommand
 import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.GnssQualitySample
+import org.conceptflow.mpl.transport.AndroidWifiDirectGroupRecovery
+import org.conceptflow.mpl.transport.WifiDirectRecoveryBand
+import org.conceptflow.mpl.transport.WifiDirectRecoveryMode
+import org.conceptflow.mpl.transport.WifiDirectGroupRecoveryOutcome
+import org.conceptflow.mpl.transport.WifiDirectGroupRecoveryResult
 
 /**
  * Process-local observable state for the foreground Android Node runtime.
@@ -68,9 +73,37 @@ object AndroidNodeRuntimeState {
     }
 }
 
+data class AndroidNodeWifiDirectRecoverySnapshot(
+    val running: Boolean,
+    val result: WifiDirectGroupRecoveryResult? = null,
+) {
+    fun accessibleSummary(): String = when {
+        running -> "wifi_direct_recovery_running"
+        result == null -> "wifi_direct_recovery_idle"
+        else -> "wifi_direct_recovery_${result.outcome.name.lowercase()}_" +
+            "removed_existing_${result.removedExistingGroup}"
+    }
+}
+
+object AndroidNodeWifiDirectRecoveryState {
+    @Volatile
+    private var latest = AndroidNodeWifiDirectRecoverySnapshot(running = false)
+
+    fun current(): AndroidNodeWifiDirectRecoverySnapshot = latest
+
+    internal fun begin() {
+        latest = AndroidNodeWifiDirectRecoverySnapshot(running = true)
+    }
+
+    internal fun complete(result: WifiDirectGroupRecoveryResult) {
+        latest = AndroidNodeWifiDirectRecoverySnapshot(running = false, result = result)
+    }
+}
+
 /** Persistent, explicitly started owner of the Android Node listener and QNN sessions. */
 class AndroidNodeForegroundService : Service() {
     private var controller: LiveMachineVisionController? = null
+    private var wifiDirectRecovery: AndroidWifiDirectGroupRecovery? = null
     private lateinit var desiredStateStore: AndroidNodeDesiredStateStore
 
     override fun onCreate() {
@@ -115,6 +148,11 @@ class AndroidNodeForegroundService : Service() {
                 controller?.requestMicrophone()
                 restartDisposition()
             }
+            ACTION_REQUEST_AMBIENT_PROFILE -> {
+                restoreControllerIfDesired()
+                controller?.requestAmbientSoundProfile()
+                restartDisposition()
+            }
             ACTION_PLAY_BRAND_SEQUENCE -> {
                 restoreControllerIfDesired()
                 controller?.playRokidBrandSequence()
@@ -124,6 +162,14 @@ class AndroidNodeForegroundService : Service() {
                 restoreControllerIfDesired()
                 intent.focusCommand()?.let { controller?.handleFocusCommand(it) }
                 restartDisposition()
+            }
+            ACTION_RECOVER_WIFI_DIRECT -> {
+                startForegroundServiceState(getString(R.string.android_node_starting))
+                recoverWifiDirectGroup(
+                    preferredBand = intent.wifiDirectRecoveryBand(),
+                    recoveryMode = intent.wifiDirectRecoveryMode(),
+                )
+                START_STICKY
             }
             else -> {
                 Log.w(TAG, "state=android_node_service action=rejected")
@@ -136,6 +182,9 @@ class AndroidNodeForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        val recovery = wifiDirectRecovery
+        wifiDirectRecovery = null
+        recovery?.close()
         controller?.close()
         controller = null
         if (instance === this) instance = null
@@ -144,6 +193,7 @@ class AndroidNodeForegroundService : Service() {
 
     @Synchronized
     private fun startNode(environmentMode: EnvironmentSelectionMode) {
+        if (wifiDirectRecovery != null) return
         val existing = controller
         if (existing?.snapshot()?.phase in ACTIVE_NODE_PHASES) {
             existing?.snapshot()?.let(AndroidNodeRuntimeState::publish)
@@ -174,11 +224,70 @@ class AndroidNodeForegroundService : Service() {
 
     @Synchronized
     private fun stopNode() {
+        val recovery = wifiDirectRecovery
+        wifiDirectRecovery = null
+        recovery?.close()
         controller?.close()
         controller = null
         AndroidNodeRuntimeState.publishFocus(null)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    @Synchronized
+    private fun recoverWifiDirectGroup(
+        preferredBand: WifiDirectRecoveryBand,
+        recoveryMode: WifiDirectRecoveryMode,
+    ) {
+        if (wifiDirectRecovery != null) {
+            Log.i(TAG, "state=wifi_direct_recovery result=already_running")
+            return
+        }
+        controller?.close()
+        controller = null
+        AndroidNodeRuntimeState.publishFocus(null)
+        AndroidNodeWifiDirectRecoveryState.begin()
+        updateNotification(getString(R.string.android_node_wifi_direct_recovery))
+
+        lateinit var recovery: AndroidWifiDirectGroupRecovery
+        recovery = AndroidWifiDirectGroupRecovery(
+            applicationContext,
+            preferredBand,
+            recoveryMode,
+        ) { result ->
+            synchronized(this) {
+                if (wifiDirectRecovery === recovery) {
+                    wifiDirectRecovery = null
+                    AndroidNodeWifiDirectRecoveryState.complete(result)
+                    Log.i(
+                        TAG,
+                        "state=wifi_direct_recovery result=${result.outcome.name.lowercase()} " +
+                            "removed_existing=${result.removedExistingGroup}",
+                    )
+                    val desiredState = desiredStateStore.read()
+                    if (desiredState.enabled) {
+                        updateNotification(getString(R.string.android_node_wifi_direct_recovery_complete))
+                        startNode(desiredState.environmentMode)
+                    } else {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+            }
+        }
+        wifiDirectRecovery = recovery
+        runCatching { recovery.start() }.onFailure {
+            wifiDirectRecovery = null
+            recovery.close()
+            val result = WifiDirectGroupRecoveryResult(
+                WifiDirectGroupRecoveryOutcome.VALIDATION_FAILED,
+                removedExistingGroup = false,
+            )
+            AndroidNodeWifiDirectRecoveryState.complete(result)
+            Log.e(TAG, "state=wifi_direct_recovery result=start_failed")
+            val desiredState = desiredStateStore.read()
+            if (desiredState.enabled) startNode(desiredState.environmentMode)
+        }
     }
 
     private fun startForegroundServiceState(summary: String) {
@@ -266,6 +375,16 @@ class AndroidNodeForegroundService : Service() {
         getStringExtra(EXTRA_FOCUS_COMMAND)
             ?.let { value -> runCatching { SpatialFocusCommand.valueOf(value) }.getOrNull() }
 
+    private fun Intent.wifiDirectRecoveryBand(): WifiDirectRecoveryBand =
+        getStringExtra(EXTRA_WIFI_DIRECT_RECOVERY_BAND)
+            ?.let { value -> runCatching { WifiDirectRecoveryBand.valueOf(value) }.getOrNull() }
+            ?: WifiDirectRecoveryBand.TWO_GHZ
+
+    private fun Intent.wifiDirectRecoveryMode(): WifiDirectRecoveryMode =
+        getStringExtra(EXTRA_WIFI_DIRECT_RECOVERY_MODE)
+            ?.let { value -> runCatching { WifiDirectRecoveryMode.valueOf(value) }.getOrNull() }
+            ?: WifiDirectRecoveryMode.RECREATE_AUTONOMOUS
+
     companion object {
         private const val TAG = "ConceptFlowHost"
         private const val NOTIFICATION_CHANNEL_ID = "conceptflow_android_node"
@@ -275,11 +394,17 @@ class AndroidNodeForegroundService : Service() {
         private const val ACTION_STOP = "org.conceptflow.mpl.host.action.STOP_ANDROID_NODE"
         private const val ACTION_REQUEST_MICROPHONE =
             "org.conceptflow.mpl.host.action.REQUEST_ROKID_MICROPHONE"
+        private const val ACTION_REQUEST_AMBIENT_PROFILE =
+            "org.conceptflow.mpl.host.action.REQUEST_AMBIENT_PROFILE"
         private const val ACTION_PLAY_BRAND_SEQUENCE =
             "org.conceptflow.mpl.host.action.PLAY_ROKID_BRAND_SEQUENCE"
         private const val ACTION_FOCUS_COMMAND = "org.conceptflow.mpl.host.action.FOCUS_COMMAND"
+        private const val ACTION_RECOVER_WIFI_DIRECT =
+            "org.conceptflow.mpl.host.action.RECOVER_WIFI_DIRECT"
         private const val EXTRA_ENVIRONMENT_MODE = "environment_mode"
         private const val EXTRA_FOCUS_COMMAND = "focus_command"
+        private const val EXTRA_WIFI_DIRECT_RECOVERY_BAND = "wifi_direct_recovery_band"
+        private const val EXTRA_WIFI_DIRECT_RECOVERY_MODE = "wifi_direct_recovery_mode"
         private const val MAXIMUM_FOCUS_COMMAND_SEQUENCE = 6
         private val ACTIVE_NODE_PHASES = setOf(
             LiveMachineVisionPhase.OPENING_QNN_HTP,
@@ -312,6 +437,13 @@ class AndroidNodeForegroundService : Service() {
             )
         }
 
+        fun requestAmbientProfile(context: Context) {
+            context.startService(
+                Intent(context, AndroidNodeForegroundService::class.java)
+                    .setAction(ACTION_REQUEST_AMBIENT_PROFILE),
+            )
+        }
+
         fun playBrandSequence(context: Context) {
             context.startService(
                 Intent(context, AndroidNodeForegroundService::class.java)
@@ -324,6 +456,20 @@ class AndroidNodeForegroundService : Service() {
                 Intent(context, AndroidNodeForegroundService::class.java)
                     .setAction(ACTION_FOCUS_COMMAND)
                     .putExtra(EXTRA_FOCUS_COMMAND, command.name),
+            )
+        }
+
+        fun recoverWifiDirect(
+            context: Context,
+            preferredBand: WifiDirectRecoveryBand = WifiDirectRecoveryBand.TWO_GHZ,
+            recoveryMode: WifiDirectRecoveryMode = WifiDirectRecoveryMode.RECREATE_AUTONOMOUS,
+        ) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AndroidNodeForegroundService::class.java)
+                    .setAction(ACTION_RECOVER_WIFI_DIRECT)
+                    .putExtra(EXTRA_WIFI_DIRECT_RECOVERY_BAND, preferredBand.name)
+                    .putExtra(EXTRA_WIFI_DIRECT_RECOVERY_MODE, recoveryMode.name),
             )
         }
 

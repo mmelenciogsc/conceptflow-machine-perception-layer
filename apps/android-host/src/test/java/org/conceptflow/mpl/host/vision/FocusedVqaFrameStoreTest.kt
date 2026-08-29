@@ -4,6 +4,7 @@ package org.conceptflow.mpl.host.vision
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.conceptflow.mpl.host.focus.FocusedVqaCorrelation
 import org.conceptflow.mpl.host.focus.FocusedVqaRequest
@@ -137,6 +138,7 @@ class FocusedVqaFrameStoreTest {
                 outcome.set(it)
                 outcomeLatch.countDown()
             },
+            clockNanos = { 1_000L },
         )
         val request = focusRequest(14L, 1_000L)
 
@@ -154,6 +156,70 @@ class FocusedVqaFrameStoreTest {
     }
 
     @Test
+    fun `accepted submission telemetry precedes concurrent terminal and rejection omits submitted`() {
+        val submittedEmissionStarted = CountDownLatch(1)
+        val callbackReturned = CountDownLatch(1)
+        val outcomeLatch = CountDownLatch(1)
+        val callbackThread = AtomicReference<Thread>()
+        val phases = mutableListOf<FocusedVqaPhase>()
+        val client = RecordingClient { request, _, callback ->
+            callbackThread.set(
+                Thread({
+                    submittedEmissionStarted.await(1L, TimeUnit.SECONDS)
+                    callback.onOutcome(
+                        LocalVlmFocusedObjectOutcome.Answered(
+                            LocalVlmFocusedObjectAnswer(request.correlation, 5_200L, "A doorway."),
+                        ),
+                    )
+                    callbackReturned.countDown()
+                }, "focused-vqa-test-callback").also(Thread::start),
+            )
+            LocalVlmSubmissionResult.ACCEPTED
+        }
+        val gateway = AndroidLocalVlmFocusedVqaGateway(
+            client,
+            FocusedVqaFrameProvider(::encoded),
+            LocalVlmFocusedObjectCallback { outcomeLatch.countDown() },
+            clockNanos = { 5_000L },
+            onTelemetry = { event ->
+                if (event.phase == FocusedVqaPhase.SUBMITTED) {
+                    submittedEmissionStarted.countDown()
+                    callbackReturned.await(1L, TimeUnit.SECONDS)
+                }
+                synchronized(phases) { phases += event.phase }
+            },
+        )
+
+        assertTrue(gateway.submit(focusRequest(51L, 5_000L)))
+        assertTrue(outcomeLatch.await(2L, TimeUnit.SECONDS))
+        callbackThread.get()?.join(1_000L)
+        assertEquals(
+            listOf(
+                FocusedVqaPhase.ADMITTED,
+                FocusedVqaPhase.FRAME_READY,
+                FocusedVqaPhase.SUBMITTED,
+                FocusedVqaPhase.TERMINAL,
+            ),
+            synchronized(phases) { phases.toList() },
+        )
+        gateway.close()
+
+        val rejectedPhases = mutableListOf<FocusedVqaPhase>()
+        val rejectedOutcome = CountDownLatch(1)
+        val rejectedGateway = AndroidLocalVlmFocusedVqaGateway(
+            RecordingClient { _, _, _ -> LocalVlmSubmissionResult.BUSY },
+            FocusedVqaFrameProvider(::encoded),
+            LocalVlmFocusedObjectCallback { rejectedOutcome.countDown() },
+            clockNanos = { 5_000L },
+            onTelemetry = { synchronized(rejectedPhases) { rejectedPhases += it.phase } },
+        )
+        assertTrue(rejectedGateway.submit(focusRequest(52L, 5_000L)))
+        assertTrue(rejectedOutcome.await(2L, TimeUnit.SECONDS))
+        assertFalse(synchronized(rejectedPhases) { FocusedVqaPhase.SUBMITTED in rejectedPhases })
+        rejectedGateway.close()
+    }
+
+    @Test
     fun `missing and mismatched sources fail closed with expected correlation`() {
         val missingOutcome = AtomicReference<LocalVlmFocusedObjectOutcome>()
         val missingLatch = CountDownLatch(1)
@@ -164,6 +230,7 @@ class FocusedVqaFrameStoreTest {
                 missingOutcome.set(it)
                 missingLatch.countDown()
             },
+            clockNanos = { 2_000L },
         )
         val request = focusRequest(21L, 2_000L)
         assertTrue(missingGateway.submit(request))
@@ -191,6 +258,7 @@ class FocusedVqaFrameStoreTest {
                 mismatchOutcome.set(it)
                 mismatchLatch.countDown()
             },
+            clockNanos = { 2_000L },
         )
         assertTrue(mismatchGateway.submit(request))
         assertTrue(mismatchLatch.await(2, TimeUnit.SECONDS))
@@ -214,6 +282,7 @@ class FocusedVqaFrameStoreTest {
                 encoded(request)
             },
             LocalVlmFocusedObjectCallback { callbackCount.incrementAndGet() },
+            clockNanos = { 3_000L },
         )
 
         assertTrue(gateway.submit(focusRequest(31L, 3_000L)))
@@ -227,6 +296,64 @@ class FocusedVqaFrameStoreTest {
         gateway.close()
     }
 
+    @Test
+    fun `watchdog times out no-callback request ignores late reply and reuses slot`() {
+        val firstSubmitted = CountDownLatch(1)
+        val outcomeLatch = CountDownLatch(1)
+        val outcomeCount = AtomicInteger()
+        val outcome = AtomicReference<LocalVlmFocusedObjectOutcome>()
+        val nowNanos = AtomicLong()
+        val telemetry = mutableListOf<FocusedVqaPhaseTelemetry>()
+        val client = RecordingClient { _, _, _ ->
+            firstSubmitted.countDown()
+            LocalVlmSubmissionResult.ACCEPTED
+        }
+        val first = focusRequest(41L, 1_000L)
+        nowNanos.set(
+            FocusedVqaTiming.deadlineNanos(first.requestedTimestampNanos) - 150_000_000L,
+        )
+        val gateway = AndroidLocalVlmFocusedVqaGateway(
+            client,
+            FocusedVqaFrameProvider(::encoded),
+            LocalVlmFocusedObjectCallback {
+                outcome.set(it)
+                outcomeCount.incrementAndGet()
+                outcomeLatch.countDown()
+            },
+            clockNanos = nowNanos::get,
+            onTelemetry = { synchronized(telemetry) { telemetry += it } },
+        )
+
+        assertTrue(gateway.submit(first))
+        assertTrue(firstSubmitted.await(1L, TimeUnit.SECONDS))
+        assertTrue(outcomeLatch.await(1L, TimeUnit.SECONDS))
+        assertEquals(
+            LocalVlmFocusedObjectFailure.TIMED_OUT,
+            (outcome.get() as LocalVlmFocusedObjectOutcome.Rejected).reason,
+        )
+        assertEquals(1, client.cancellations.get())
+        assertEquals(requireNotNull(first.toLocalVlmRequest()).correlation, client.lastCancellation.get())
+
+        val lateCallback = requireNotNull(client.lastCallback.get())
+        val localCorrelation = requireNotNull(first.toLocalVlmRequest()).correlation
+        lateCallback.onOutcome(
+            LocalVlmFocusedObjectOutcome.Answered(
+                LocalVlmFocusedObjectAnswer(localCorrelation, nowNanos.get(), "A late answer."),
+            ),
+        )
+        Thread.sleep(25L)
+        assertEquals(1, outcomeCount.get())
+
+        val second = focusRequest(42L, nowNanos.get())
+        assertEquals(LocalVlmSubmissionResult.ACCEPTED, gateway.submitDetailed(second))
+        assertTrue(synchronized(telemetry) { telemetry.any {
+            it.requestId == first.correlation.requestId &&
+                it.phase == FocusedVqaPhase.TERMINAL &&
+                it.outcome == LocalVlmFocusedObjectFailure.TIMED_OUT
+        } })
+        gateway.close()
+    }
+
     private class RecordingClient(
         private val onSubmit: (
             LocalVlmFocusedObjectRequest,
@@ -235,7 +362,10 @@ class FocusedVqaFrameStoreTest {
         ) -> LocalVlmSubmissionResult,
     ) : LocalFocusedVqaClient {
         val submissions = AtomicInteger()
+        val cancellations = AtomicInteger()
         val lastFrame = AtomicReference<EncodedJpegFrame>()
+        val lastCallback = AtomicReference<LocalVlmFocusedObjectCallback>()
+        val lastCancellation = AtomicReference<LocalVlmFocusedObjectCorrelation>()
 
         override fun submitFocusedObjectVqa(
             request: LocalVlmFocusedObjectRequest,
@@ -244,10 +374,15 @@ class FocusedVqaFrameStoreTest {
         ): LocalVlmSubmissionResult {
             submissions.incrementAndGet()
             lastFrame.set(frame)
+            lastCallback.set(callback)
             return onSubmit(request, frame, callback)
         }
 
-        override fun cancelFocusedObjectVqa(correlation: LocalVlmFocusedObjectCorrelation) = true
+        override fun cancelFocusedObjectVqa(correlation: LocalVlmFocusedObjectCorrelation): Boolean {
+            cancellations.incrementAndGet()
+            lastCancellation.set(correlation)
+            return true
+        }
     }
 
     private companion object {

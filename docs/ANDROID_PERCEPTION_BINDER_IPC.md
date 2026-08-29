@@ -36,6 +36,7 @@ above, followed by exactly one argument. Trailing request data is rejected.
 | 2 | poll focus state | signed 64-bit last revision, at least 0 | 1,024 bytes |
 | 3 | poll head pose | signed 64-bit last sequence, at least 0 | 256 bytes |
 | 4 | drain touch events | signed 32-bit maximum, 1 through 128 | 8,192 bytes |
+| 5 | poll ambient sound profile | signed 64-bit last revision, at least 0 | 256 bytes |
 
 A handled response is `writeNoException()`, one signed 32-bit status, and, only for status `0`, one
 `writeByteArray()` payload. Status values are fixed:
@@ -55,10 +56,12 @@ status `4`; malformed parcels are converted to status `5`. No exception text or 
 returned.
 
 The payload bytes retain the deterministic big-endian ABI: `CFWS` version 1 for world snapshots,
-`CFFS` version 2 for focus and immutable beacon state, `CFHP` version 1 for head pose, and `CFTB`
-version 1 for touch batches. Their embedded revision or sequence is the monotonic cache key.
-The Unity decoder continues to accept `CFFS` version 1 as a browsing-only compatibility payload.
-Binder adds no alternate sensor framing.
+`CFFS` version 3 for focus, immutable beacon state, and a bounded accessibility announcement,
+`CFHP` version 1 for head pose, `CFTB` version 1 for touch batches, and `CFAP`
+version 1 for a content-free ambient sound profile. Their embedded revision or
+sequence is the monotonic cache key. The Unity decoder continues to accept `CFFS` version 1 as a
+browsing-only compatibility payload and version 2 as a beacon-capable payload. Binder adds no
+alternate sensor framing.
 
 `CFFS` version 2 adds an explicit focus mode and optional bounded beacon record. Beacon anchor
 mode `1` is a translated WORLD anchor. Mode `2` is an orientation-stabilized relative bearing:
@@ -69,9 +72,18 @@ it cannot be presented as a fixed world point or navigation instruction. Presenc
 enum values, finite numeric fields, quaternion normalization, exact track correlation, payload
 length, and complete consumption are all validated before Unity accepts either anchor form.
 
+`CFFS` version 3 appends an optional accessibility token and its authoritative plain-text
+announcement. The token is at most 96 UTF-8 bytes and the text at most 384 UTF-8 bytes. Both must
+be present together. The Unity decoder validates those bounds, rejects control characters and
+malformed UTF-8, and forwards a fresh token at most once to Android's accessibility announcement
+API. Unity requires the focus timestamp interval to contain the current Android monotonic time;
+expired reconnect/rebootstrap state is never spoken. VQA tokens use the non-content request identity,
+not a digest of the answer. The plug-in does not derive or rewrite the text. This lets TalkBack
+announce dwell, menu, VQA, rejection, and beacon transitions while the Unity activity is foreground.
+
 ## Unity client behavior
 
-`Assets/Plugins/Android` provides the same four static Java methods expected by the C# bridge. The
+`Assets/Plugins/Android` provides the same bounded static Java methods expected by the C# bridge. The
 first call resolves Unity's application context, starts one background `HandlerThread`, and binds
 explicitly to Android Node. World, focus, and head polling uses elapsed-realtime scheduling and
 never blocks Unity's calling thread. Published cached byte arrays are cloned on both write and read.
@@ -80,6 +92,13 @@ Touch is demand-driven: Unity requests a bounded drain, the background thread pe
 the prior batch has been consumed, and the next Unity call receives the cached batch. If a later
 caller asks for fewer events, the plug-in splits the fixed-width `CFTB` batch without reordering it.
 
+Ambient profiling remains off the Unity main thread. `CFAP` carries the classified
+indoor/outdoor/transition prior, capture interval, PCM format, sample count, relative dBFS
+statistics, normalized low/mid/high energy, transient density, and bounded calibration gain and
+pulse-spacing recommendations. It contains no PCM, speech, transcript, embedding, or calibrated
+SPL claim. The currently validated Rokid capture is 16 kHz PCM16LE mono; array directionality is
+not claimed.
+
 Binder death, service disconnection, null binding, and malformed replies clear every cache and all
 remote counters. Rebinding uses capped monotonic delays of 250 ms, 500 ms, 1 s, 2 s, 5 s, 15 s, and
 then 30 s. A missing Android Node install or signing mismatch therefore produces no snapshot rather
@@ -87,7 +106,9 @@ than blocking or crashing Unity.
 
 ## Privacy boundary
 
-The service exposes only the four operations in the table. It delegates to
+The service exposes only the five operations in the table. It delegates to
 `AndroidPerceptionBridge` for bounded encoded world/focus/head snapshots and ordered raw touch
-events. Camera frames, microphone samples, raw IMU/sensor buffers, model tensors, transport
-objects, and inference controls have no transaction code and cannot cross this Binder surface.
+events and the content-free ambient profile. A version-3 focus payload may contain the bounded user-facing accessibility phrase,
+including an explicitly requested VQA answer. Camera frames, microphone samples, raw IMU/sensor
+buffers, microphone PCM, model tensors, transport objects, and inference controls have no transaction code and
+cannot cross this Binder surface.

@@ -53,11 +53,10 @@ import org.conceptflow.mpl.rokid.core.ProcessStartupAnnouncementGate
 import org.conceptflow.mpl.rokid.core.PreAuthenticationRendezvousDeadlineGate
 import org.conceptflow.mpl.rokid.core.RemoteCall
 import org.conceptflow.mpl.rokid.core.RemotePerceptionClient
-import org.conceptflow.mpl.rokid.core.RendezvousAlarmDecision
-import org.conceptflow.mpl.rokid.core.RendezvousAlarmPolicy
-import org.conceptflow.mpl.rokid.core.RendezvousAlarmPrecision
 import org.conceptflow.mpl.rokid.core.RendezvousBackoff
 import org.conceptflow.mpl.rokid.core.RendezvousGeneration
+import org.conceptflow.mpl.rokid.core.RendezvousRetryDecision
+import org.conceptflow.mpl.rokid.core.RendezvousRetryPolicy
 import org.conceptflow.mpl.rokid.core.RendezvousTerminalDecision
 import org.conceptflow.mpl.rokid.core.RenderDisposition
 import org.conceptflow.mpl.rokid.core.RokidRendezvousPolicy
@@ -89,6 +88,8 @@ import org.conceptflow.mpl.transport.MicrophoneGestureDispatch
 import org.conceptflow.mpl.transport.RokidGestureDispatch
 import org.conceptflow.mpl.transport.RokidLiveLinkClient
 import org.conceptflow.mpl.transport.AndroidWifiDirectEndpointResolver
+import org.conceptflow.mpl.transport.AndroidPrivateLanDiscoveryEndpointResolver
+import org.conceptflow.mpl.transport.PrivateLanDiscoveryRole
 import org.conceptflow.mpl.transport.StaticLiveLinkEndpointResolver
 import org.conceptflow.mpl.transport.WifiDirectNodeRole
 import org.conceptflow.mpl.v1.Direction
@@ -103,7 +104,6 @@ import org.conceptflow.mpl.v1.RokidNodeCommandOperation
 import org.conceptflow.mpl.v1.SensorStreamKind
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.security.SecureRandom
 
 class RokidRuntimeService : Service() {
     private lateinit var audioOutput: PlatformStereoAudioOutput
@@ -165,14 +165,13 @@ class RokidRuntimeService : Service() {
         }
         dispatch == MicrophoneGestureDispatch.QUEUED
     }
-    private var rendezvousAlarm: PendingIntent? = null
-    private var processRendezvousCapability = 0L
+    private var rendezvousRetry: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
+        cancelLegacyRendezvousAlarm()
         idleModeStore = IdleControlModeStore(this)
         rendezvousWakeLease = BoundedRendezvousWakeLease(this)
-        processRendezvousCapability = SecureRandom().nextLong()
         audioOutput = PlatformStereoAudioOutput()
         renderer = InspectableCueRenderer(
             clock = ElapsedRealtimeClock,
@@ -196,6 +195,18 @@ class RokidRuntimeService : Service() {
     }.getOrNull()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // APK replacement does not necessarily remove an exact PendingIntent scheduled by an
+        // earlier release. Absorb that obsolete delivery without attempting another background
+        // camera/microphone foreground transition. A currently foreground service remains alive;
+        // a process created only for the stale delivery is stopped immediately.
+        if (intent?.action == ACTION_LEGACY_RENDEZVOUS_RETRY) {
+            cancelLegacyRendezvousAlarm()
+            Log.i(TAG, "state=legacy_live_link_alarm result=ignored_and_cancelled")
+            return if (idleForeground) START_STICKY else {
+                stopSelfResult(startId)
+                START_NOT_STICKY
+            }
+        }
         // A newly created Service must acknowledge startForegroundService promptly. Once YodaOS
         // has accepted the visible broker's foreground promotion, repeating startForeground from
         // a background retry is rejected even though the Service is already foreground.
@@ -232,7 +243,6 @@ class RokidRuntimeService : Service() {
                     IdleControlRestoreReason.PACKAGE_REPLACED,
                     startId,
                 )
-            ACTION_RENDEZVOUS_RETRY -> resumeRendezvousFromAlarm(intent, startId)
             ACTION_RECOVER_SAME_BOOT -> resumeExplicitSameBootArm(startId)
             null -> restoreIdleControl(IdleControlRestoreReason.STICKY_RESTART, startId)
             else -> {
@@ -247,7 +257,7 @@ class RokidRuntimeService : Service() {
         RokidTouchEventHub.clear(touchEventSink)
         RokidSystemTouchEventHub.clear(systemTouchEventSink)
         rendezvousGeneration.invalidate()
-        cancelRendezvousAlarm()
+        cancelRendezvousRetry()
         if (::rendezvousWakeLease.isInitialized) rendezvousWakeLease.close()
         stopLiveLink(LiveLinkCaptureStopReason.SERVICE_DESTROYED)
         abandonPhysicalTrace()
@@ -564,6 +574,13 @@ class RokidRuntimeService : Service() {
                     endpointResolver = when (configuration.networkTopology) {
                         LiveLinkNetworkTopology.PRIVATE_LAN ->
                             StaticLiveLinkEndpointResolver(configuration.address)
+                        LiveLinkNetworkTopology.PRIVATE_LAN_DISCOVERY ->
+                            AndroidPrivateLanDiscoveryEndpointResolver(
+                                context = this,
+                                role = PrivateLanDiscoveryRole.ROKID_LISTENER,
+                                configuredFallbackAddress = configuration.address,
+                                realtimePort = configuration.realtimePort,
+                            )
                         LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED ->
                             AndroidWifiDirectEndpointResolver(this, WifiDirectNodeRole.ROKID_CLIENT)
                     },
@@ -575,6 +592,13 @@ class RokidRuntimeService : Service() {
                     endpointResolver = when (configuration.networkTopology) {
                         LiveLinkNetworkTopology.PRIVATE_LAN ->
                             StaticLiveLinkEndpointResolver(configuration.address)
+                        LiveLinkNetworkTopology.PRIVATE_LAN_DISCOVERY ->
+                            AndroidPrivateLanDiscoveryEndpointResolver(
+                                context = this,
+                                role = PrivateLanDiscoveryRole.ROKID_LISTENER,
+                                configuredFallbackAddress = configuration.address,
+                                realtimePort = configuration.realtimePort,
+                            )
                         LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED ->
                             AndroidWifiDirectEndpointResolver(this, WifiDirectNodeRole.ROKID_CLIENT)
                     },
@@ -587,7 +611,7 @@ class RokidRuntimeService : Service() {
             return false
         }
 
-        cancelRendezvousAlarm()
+        cancelRendezvousRetry()
         lateinit var run: LiveLinkServiceRun
         lateinit var controller: LiveLinkCaptureController
         controller = LiveLinkCaptureController(
@@ -1136,7 +1160,7 @@ class RokidRuntimeService : Service() {
         val persistenceSucceeded = idleModeStore.setEnabled(false)
         visibleArmEligible = false
         rendezvousGeneration.invalidate()
-        cancelRendezvousAlarm()
+        cancelRendezvousRetry()
         rendezvousWakeLease.release()
         val liveCaptureActive = liveLinkRun != null
         val transition = foregroundLifecycle.disable(persistenceSucceeded, liveCaptureActive)
@@ -1206,8 +1230,8 @@ class RokidRuntimeService : Service() {
             TAG,
             "state=idle_control enabled=${idleModeStore.isEnabled()} foreground=$idleForeground " +
             "visible_arm_eligible=$visibleArmEligible capture_authority=poco_authenticated_session " +
-            "source=$source rendezvous=${if (liveLinkRun == null) "inactive" else "active"} " +
-                "wakeup_alarm=${currentRendezvousAlarmPrecision().name.lowercase()} microphone=false",
+                "source=$source rendezvous=${if (liveLinkRun == null) "inactive" else "active"} " +
+                "retry_scheduler=in_process_foreground microphone=false",
         )
     }
 
@@ -1266,113 +1290,64 @@ class RokidRuntimeService : Service() {
     }
 
     private fun scheduleRendezvousRetry(completedGeneration: Long) {
-        cancelRendezvousAlarm()
+        cancelRendezvousRetry()
         val delayMillis = rendezvousBackoff.nextDelayMillis()
-        val alarmManager = getSystemService(AlarmManager::class.java)
-        val precision = currentRendezvousAlarmPrecision(alarmManager)
-        val alarmIntent = Intent(this, RokidRuntimeService::class.java)
-            .setAction(ACTION_RENDEZVOUS_RETRY)
-            .putExtra(EXTRA_RENDEZVOUS_GENERATION, completedGeneration)
-            .putExtra(EXTRA_PROCESS_RENDEZVOUS_CAPABILITY, processRendezvousCapability)
-        // The retry must enter through the foreground-service PendingIntent path. YodaOS accepts
-        // the exact alarm itself while the app is idle, but a regular service PendingIntent is
-        // still classified as a background start; its subsequent startForeground() call can then
-        // be ignored and CameraService rejects the UID as idle. The foreground-service PendingIntent
-        // preserves the platform's temporary allow-list through onStartCommand, where the service
-        // immediately confirms its existing foreground notification before touching the camera.
-        val alarm = PendingIntent.getForegroundService(
-            this,
-            RENDEZVOUS_ALARM_REQUEST_CODE,
-            alarmIntent,
-            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val triggerAtMillis = if (Long.MAX_VALUE - SystemClock.elapsedRealtime() < delayMillis) {
-            Long.MAX_VALUE
-        } else {
-            SystemClock.elapsedRealtime() + delayMillis
-        }
-        val scheduled = runCatching {
-            when (precision) {
-                RendezvousAlarmPrecision.EXACT_ALLOW_IDLE -> alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    triggerAtMillis,
-                    alarm,
+        lateinit var retry: Runnable
+        retry = Runnable {
+            if (rendezvousRetry !== retry) return@Runnable
+            rendezvousRetry = null
+            when (
+                RendezvousRetryPolicy.decide(
+                    liveEpochActive = liveLinkRun != null,
+                    generationMatches = rendezvousGeneration.isCurrent(completedGeneration),
+                    idleEnabled = idleModeStore.isEnabled(),
+                    visibleArmEligible = visibleArmEligible,
+                    serviceStopping = pendingServiceShutdown != null,
                 )
-                RendezvousAlarmPrecision.INEXACT_ALLOW_IDLE -> alarmManager.setAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    triggerAtMillis,
-                    alarm,
-                )
+            ) {
+                RendezvousRetryDecision.IGNORE_ACTIVE_EPOCH ->
+                    Log.i(TAG, "state=live_link_retry_ignored reason=epoch_already_active")
+                RendezvousRetryDecision.REJECT ->
+                    Log.w(TAG, "state=live_link_retry_rejected reason=stale_or_ineligible")
+                RendezvousRetryDecision.START_EPOCH -> {
+                    if (!startLiveLinkTest(onTerminal = {}, managedStandby = true) &&
+                        rendezvousGeneration.isCurrent(completedGeneration) &&
+                        idleModeStore.isEnabled() && visibleArmEligible &&
+                        pendingServiceShutdown == null
+                    ) {
+                        Log.w(TAG, "state=live_link_retry result=rendezvous_start_failed")
+                        scheduleRendezvousRetry(completedGeneration)
+                    }
+                }
             }
-        }.isSuccess
-        if (!scheduled) {
-            alarm.cancel()
-            visibleArmEligible = false
-            Log.e(TAG, "state=live_link_standby_failed reason=wakeup_alarm_rejected")
-            return
         }
-        rendezvousAlarm = alarm
+        rendezvousRetry = retry
+        mainHandler.postDelayed(retry, delayMillis)
         Log.i(
             TAG,
-            "state=live_link_standby cooldown_ms=$delayMillis sensors=off wakeup_alarm=" +
-                precision.name.lowercase(),
+            "state=live_link_standby cooldown_ms=$delayMillis sensors=off " +
+                "retry_scheduler=in_process_foreground",
         )
     }
 
-    private fun resumeRendezvousFromAlarm(intent: Intent, startId: Int): Int {
-        val processCapabilityMatches = intent.getLongExtra(
-            EXTRA_PROCESS_RENDEZVOUS_CAPABILITY,
-            Long.MIN_VALUE,
-        ) == processRendezvousCapability
-        val generationMatches = rendezvousGeneration.isCurrent(
-            intent.getLongExtra(EXTRA_RENDEZVOUS_GENERATION, Long.MIN_VALUE),
-        )
-        if (RendezvousAlarmPolicy.shouldConsumeScheduledAlarm(processCapabilityMatches, generationMatches)) {
-            rendezvousAlarm?.cancel()
-            rendezvousAlarm = null
-        }
-        val decision = RendezvousAlarmPolicy.decide(
-            liveEpochActive = liveLinkRun != null,
-            processCapabilityMatches = processCapabilityMatches,
-            generationMatches = generationMatches,
-            idleEnabled = idleModeStore.isEnabled(),
-            visibleArmEligible = visibleArmEligible,
-            serviceStopping = pendingServiceShutdown != null,
-        )
-        return when (decision) {
-            RendezvousAlarmDecision.IGNORE_ACTIVE_EPOCH -> {
-                Log.i(TAG, "state=live_link_alarm_ignored reason=epoch_already_active")
-                START_STICKY
-            }
-            RendezvousAlarmDecision.REJECT -> {
-                Log.w(TAG, "state=live_link_alarm_rejected reason=stale_or_ineligible")
-                if (!idleForeground && liveLinkRun == null && pendingServiceShutdown == null) {
-                    stopSelfResult(startId)
-                }
-                START_NOT_STICKY
-            }
-            RendezvousAlarmDecision.START_EPOCH -> {
-                if (!startLiveLinkTest(onTerminal = {}, managedStandby = true)) {
-                    visibleArmEligible = false
-                    Log.e(TAG, "state=live_link_alarm_failed reason=rendezvous_start_rejected")
-                }
-                START_STICKY
-            }
-        }
+    private fun cancelRendezvousRetry() {
+        val retry = rendezvousRetry ?: return
+        mainHandler.removeCallbacks(retry)
+        rendezvousRetry = null
     }
 
-    private fun cancelRendezvousAlarm() {
-        val alarm = rendezvousAlarm ?: return
-        runCatching { getSystemService(AlarmManager::class.java).cancel(alarm) }
-        alarm.cancel()
-        rendezvousAlarm = null
-    }
-
-    private fun currentRendezvousAlarmPrecision(
-        alarmManager: AlarmManager = getSystemService(AlarmManager::class.java),
-    ): RendezvousAlarmPrecision {
-        val exactAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms()
-        return RendezvousAlarmPolicy.precision(Build.VERSION.SDK_INT, exactAccess)
+    private fun cancelLegacyRendezvousAlarm() {
+        val legacyIntent = Intent(this, RokidRuntimeService::class.java)
+            .setAction(ACTION_LEGACY_RENDEZVOUS_RETRY)
+        val legacyAlarm = PendingIntent.getForegroundService(
+            this,
+            LEGACY_RENDEZVOUS_ALARM_REQUEST_CODE,
+            legacyIntent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+        ) ?: return
+        runCatching { getSystemService(AlarmManager::class.java).cancel(legacyAlarm) }
+        legacyAlarm.cancel()
+        Log.i(TAG, "state=legacy_live_link_alarm result=cancelled")
     }
 
     private fun applyTerminalTransition(transition: IdleLifecycleTransition) {
@@ -2056,7 +2031,7 @@ class RokidRuntimeService : Service() {
         private const val IDLE_NOTIFICATION_ID = 1107
         private const val LIVE_TERMINAL_WATCHDOG_MS = 12_000L
         private const val MAX_RENDEZVOUS_CONNECT_TIMEOUT_MS = 5_000
-        private const val RENDEZVOUS_ALARM_REQUEST_CODE = 1108
+        private const val LEGACY_RENDEZVOUS_ALARM_REQUEST_CODE = 1108
         private const val NANOS_PER_MILLISECOND = 1_000_000L
         private const val MAX_REASON_LENGTH = 80
         private const val LOCAL_DISABLE_FAILSAFE_MILLIS = 750L
@@ -2067,7 +2042,7 @@ class RokidRuntimeService : Service() {
         const val ACTION_RESTORE_AFTER_BOOT = "org.conceptflow.mpl.rokid.internal.RESTORE_AFTER_BOOT"
         const val ACTION_RESTORE_AFTER_PACKAGE_REPLACED =
             "org.conceptflow.mpl.rokid.internal.RESTORE_AFTER_PACKAGE_REPLACED"
-        const val ACTION_RENDEZVOUS_RETRY =
+        private const val ACTION_LEGACY_RENDEZVOUS_RETRY =
             "org.conceptflow.mpl.rokid.internal.RENDEZVOUS_RETRY"
         const val ACTION_RECOVER_SAME_BOOT =
             "org.conceptflow.mpl.rokid.internal.RECOVER_SAME_BOOT"
@@ -2075,10 +2050,6 @@ class RokidRuntimeService : Service() {
         const val EXTRA_INTERNAL_RESTORE_PROOF = "org.conceptflow.mpl.rokid.extra.INTERNAL_RESTORE_PROOF"
         const val EXTRA_GESTURE_OBSERVED_MONOTONIC_NS =
             "org.conceptflow.mpl.rokid.extra.GESTURE_OBSERVED_MONOTONIC_NS"
-        private const val EXTRA_RENDEZVOUS_GENERATION =
-            "org.conceptflow.mpl.rokid.extra.RENDEZVOUS_GENERATION"
-        private const val EXTRA_PROCESS_RENDEZVOUS_CAPABILITY =
-            "org.conceptflow.mpl.rokid.extra.PROCESS_RENDEZVOUS_CAPABILITY"
     }
 }
 

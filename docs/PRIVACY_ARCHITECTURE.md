@@ -14,6 +14,7 @@ privacy failures.
 | Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture; acknowledged Rokid-to-Poco pull spool and transient QNN input | App-private no-backup spool until authenticated acknowledgement, new-session purge, or quota eviction |
 | Pose and intrinsics | Optional frame context; Android pose sampling; gated IMU batches and optional validated Camera2 calibration metadata | Bounded app-private JSON manifest until acknowledgement, new-session purge, or quota eviction |
 | On-demand microphone PCM | Explicit, maximum-ten-second Rokid microphone sublease | App-private WAV chunks until acknowledgement, new-session purge, or quota eviction |
+| Ambient sound profile | One bounded three-second microphone window after a newly accepted scene classification | Content-free statistics in memory for at most 60 seconds; PCM is not retained |
 | Environment evidence | Ephemeral semantic probabilities and optional aggregate GNSS reception quality | In-memory only; selected manual mode only is persisted |
 | Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status; ephemeral live session, lease, nonce, lane-ticket, and sequence state | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
@@ -39,7 +40,10 @@ one-shot `physical-trace` are separate authorized-ADB commands. The debug-only
 direct live test is another explicit action: it runs for at most 30 seconds,
 negotiates camera and IMU only, and can be stopped from either device. A
 separate accessible Android control may request one mic-only window of at most
-ten seconds after that session is mutually authenticated. The request is bound
+ten seconds after that session is mutually authenticated. An explicitly enabled
+Machine Perception Layer session may also request one three-second ambient-profile
+window after a new VLM scene classification; that path emits statistics only.
+Each request is bound
 to the exact active session/lease and must set explicit microphone intent;
 missing permission or any mismatch rejects it without affecting camera/IMU.
 Pairing, Poco listener startup, and Rokid client startup are separate steps;
@@ -71,6 +75,16 @@ aggregate chunk and byte counts. Per-chunk admission enforces the monotonic micr
 a dedicated deadline task closes the recorder, with the 20 ms controller poll
 as a fallback. The Rokid emits short local start/stop earcon hooks; these are
 status indicators, not content recording.
+
+Ambient profiling is a distinct bounded use of the same authenticated
+microphone lease. It runs after a newly accepted indoor/outdoor/transition VLM
+classification, deduplicated by originating frame ID. The analyzer accumulates
+relative dBFS level, low/mid/high energy ratios, and transient density directly
+from streamed PCM, then drops the PCM. Only those content-free values and
+bounded calibration recommendations reach the signature-protected Unity IPC.
+The current source is validated as 16 kHz PCM16LE mono; neither calibrated SPL
+nor microphone-array direction is inferred. Reconnect, stop, and 60-second
+expiry clear the profile.
 
 The pull spool is capped at 512 manifest records and 64 MiB of artifacts. It
 uses atomic JSON/index replacement, coalesces IMU-only durability updates to at
@@ -156,6 +170,18 @@ role-specific configuration to private no-backup storage without printing it.
 The second lane must present a short-lived, single-use ticket issued over the
 authenticated first lane. Only private or link-local address literals are
 accepted.
+
+The optional private-LAN rendezvous beacon contains only a fixed protocol
+marker, version, service port, and opaque process-local sequence. It contains
+no device identity, sensor data, session identifier, certificate, user
+content, or stable tracking value. The receiver accepts only the exact bounded
+format from a private/link-local IPv4 source. The beacon is a reachability hint,
+not authentication: an untrusted sender can at worst direct a failed TLS
+attempt, and no sensor starts until the exact pinned peer completes mutual TLS.
+Discovery is time-bounded and falls back to the same-subnet provisioned private
+address or, for a hotspot client, its private default gateway rather than
+scanning the LAN. Android Node does not retain or log SSIDs, passphrases, peer
+addresses, or hotspot configuration.
 
 TLS is necessary but not sufficient. A production deployment must add an
 approved enrollment, certificate rotation/revocation, recovery, and device

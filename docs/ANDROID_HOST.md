@@ -67,6 +67,7 @@ The debug APK is produced at
 | `CueScheduler.submit` | Confidence, freshness, modality, verbosity, cooldown, capacity, priority, cancellation, and supersession. |
 | `GrpcPerceptionTransport.secure` | TLS gRPC unary negotiation and frame processing with deadlines and caller cancellation. |
 | `GlassesStreamIngress.accept` | Lease/session validation, ordered camera chunk assembly with SHA-256, absolute IMU batch validation, explicit microphone authorization, and latest-unread camera retention. |
+| `AndroidPrivateLanDiscoveryEndpointResolver` | Content-free private-WLAN announcement with an eight-second receive window and provisioned-address fallback; endpoint reachability never replaces exact-pin mutual TLS. |
 | `SensorTimeline` | Bounded normalized camera/IMU/audio/touch ownership, modality-specific freshness, overflow counters, and timestamp-window association. |
 | `PerceptionBus` / `AndroidPerceptionBridge` | Compact latest world state and ordered touch delivery to Unity without exposing raw camera/audio buffers or blocking Unity's main thread. |
 | `DeterministicSensorReplay` | Bounded original/slowed/accelerated/stepwise delivery through the same transport-observer seam for sanitized offline fixtures. |

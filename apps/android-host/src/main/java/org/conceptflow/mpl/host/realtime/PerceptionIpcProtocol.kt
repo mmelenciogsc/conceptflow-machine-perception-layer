@@ -11,6 +11,7 @@ internal object PerceptionIpcProtocol {
     const val TRANSACTION_POLL_FOCUS_STATE = 2
     const val TRANSACTION_POLL_HEAD_POSE = 3
     const val TRANSACTION_DRAIN_TOUCH_EVENTS = 4
+    const val TRANSACTION_POLL_AMBIENT_SOUND_PROFILE = 5
 
     const val STATUS_OK = 0
     const val STATUS_NO_UPDATE = 1
@@ -24,12 +25,14 @@ internal object PerceptionIpcProtocol {
     const val MAXIMUM_FOCUS_BYTES = 1_024
     const val MAXIMUM_HEAD_POSE_BYTES = 256
     const val MAXIMUM_TOUCH_BYTES = 8_192
+    const val MAXIMUM_AMBIENT_PROFILE_BYTES = 256
 
     fun maximumPayloadBytes(transactionCode: Int): Int = when (transactionCode) {
         TRANSACTION_POLL_WORLD_STATE -> MAXIMUM_WORLD_BYTES
         TRANSACTION_POLL_FOCUS_STATE -> MAXIMUM_FOCUS_BYTES
         TRANSACTION_POLL_HEAD_POSE -> MAXIMUM_HEAD_POSE_BYTES
         TRANSACTION_DRAIN_TOUCH_EVENTS -> MAXIMUM_TOUCH_BYTES
+        TRANSACTION_POLL_AMBIENT_SOUND_PROFILE -> MAXIMUM_AMBIENT_PROFILE_BYTES
         else -> 0
     }
 }
@@ -42,6 +45,8 @@ internal interface PerceptionIpcSource {
     fun pollHeadPose(lastSequence: Long): ByteArray?
 
     fun drainTouchEvents(maximumEvents: Int): ByteArray
+
+    fun pollAmbientSoundProfile(lastRevision: Long): ByteArray? = null
 }
 
 internal data class PerceptionIpcResponse(
@@ -70,6 +75,8 @@ internal class PerceptionIpcDispatcher(
                     source.pollHeadPose(argument)
                 PerceptionIpcProtocol.TRANSACTION_DRAIN_TOUCH_EVENTS ->
                     source.drainTouchEvents(argument.toInt())
+                PerceptionIpcProtocol.TRANSACTION_POLL_AMBIENT_SOUND_PROFILE ->
+                    source.pollAmbientSoundProfile(argument)
                 else -> return PerceptionIpcResponse(PerceptionIpcProtocol.STATUS_MALFORMED_REQUEST)
             }
         } catch (_: RuntimeException) {
@@ -88,6 +95,7 @@ internal class PerceptionIpcDispatcher(
         PerceptionIpcProtocol.TRANSACTION_POLL_WORLD_STATE,
         PerceptionIpcProtocol.TRANSACTION_POLL_FOCUS_STATE,
         PerceptionIpcProtocol.TRANSACTION_POLL_HEAD_POSE,
+        PerceptionIpcProtocol.TRANSACTION_POLL_AMBIENT_SOUND_PROFILE,
         -> argument >= 0L
         PerceptionIpcProtocol.TRANSACTION_DRAIN_TOUCH_EVENTS ->
             argument in 1L..PerceptionIpcProtocol.MAXIMUM_TOUCH_EVENTS.toLong()

@@ -3,6 +3,8 @@ package org.conceptflow.mpl.host.realtime
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import org.conceptflow.mpl.host.audio.AmbientEnvironmentPrior
+import org.conceptflow.mpl.host.audio.AmbientSoundProfile
 import org.conceptflow.mpl.host.vision.HeadPoseObservation
 import org.conceptflow.mpl.host.vision.LiveMetricFusionReason
 import org.conceptflow.mpl.host.vision.LiveMetricFusionResult
@@ -120,6 +122,46 @@ class PerceptionBusTest {
         bus.publishHeadPose(HeadPoseObservation(30L, UnitQuaternion.IDENTITY, 3))
         bus.invalidate(PerceptionValidityReason.DISCONNECTED, 40L)
         assertNull(requireNotNull(bus.latestAfter(0L, 40L)).head)
+    }
+
+    @Test
+    fun `ambient profile is compact versioned expires and clears with session`() {
+        val bus = PerceptionBus()
+        bus.beginSession(7L, 1_000L)
+        val profile = bus.publishAmbientSoundProfile(
+            AmbientSoundProfile(
+                sessionGeneration = 7L,
+                prior = AmbientEnvironmentPrior.INDOOR,
+                captureStartTimestampNs = 2_000L,
+                captureEndTimestampNs = 3_000L,
+                validUntilTimestampNs = 4_000L,
+                sampleRateHz = 16_000,
+                channelCount = 1,
+                sampleCount = 16_000L,
+                rmsDbFs = -30f,
+                peakDbFs = -12f,
+                noiseFloorDbFs = -42f,
+                lowBandRatio = .2f,
+                midBandRatio = .5f,
+                highBandRatio = .3f,
+                transientDensity = .1f,
+                recommendedCalibrationGain = .72f,
+                recommendedPulseIntervalMs = 580,
+            ),
+        )
+
+        assertNotNull(bus.latestAmbientSoundProfileAfter(0L, 3_500L))
+        assertNull(bus.latestAmbientSoundProfileAfter(profile.revision, 3_500L))
+        assertNull(bus.latestAmbientSoundProfileAfter(0L, 4_001L))
+        val input = ByteBuffer.wrap(PerceptionBusBinaryCodec.encodeAmbientSoundProfile(profile))
+            .order(ByteOrder.BIG_ENDIAN)
+        assertEquals(0x43464150, input.int)
+        assertEquals(1, input.short.toInt())
+        assertEquals(AmbientEnvironmentPrior.INDOOR.wireValue, input.short.toInt())
+        assertEquals(profile.revision, input.long)
+
+        bus.beginSession(8L, 5_000L)
+        assertNull(bus.latestAmbientSoundProfileAfter(0L, 5_000L))
     }
 
     private fun touch(id: Long) = TimedTouchEvent(
