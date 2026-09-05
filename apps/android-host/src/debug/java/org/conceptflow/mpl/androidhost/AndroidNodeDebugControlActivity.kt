@@ -23,6 +23,7 @@ class AndroidNodeDebugControlActivity : Activity() {
             ACTION_START_OUTDOOR -> start(EnvironmentSelectionMode.FORCE_OUTDOOR)
             ACTION_MICROPHONE -> AndroidNodeForegroundService.requestMicrophone(this)
             ACTION_AMBIENT_PROFILE -> AndroidNodeForegroundService.requestAmbientProfile(this)
+            ACTION_SPEECH_TIMEOUT_PROBE -> AndroidWhisperTimeoutProbe.start(this)
             ACTION_RECOVER_WIFI_DIRECT -> AndroidNodeForegroundService.recoverWifiDirect(this)
             ACTION_RECOVER_WIFI_DIRECT_5GHZ -> AndroidNodeForegroundService.recoverWifiDirect(
                 this,
@@ -45,6 +46,8 @@ class AndroidNodeDebugControlActivity : Activity() {
         const val ACTION_START_OUTDOOR = "org.conceptflow.mpl.host.debug.START_OUTDOOR"
         const val ACTION_MICROPHONE = "org.conceptflow.mpl.host.debug.REQUEST_MICROPHONE"
         const val ACTION_AMBIENT_PROFILE = "org.conceptflow.mpl.host.debug.REQUEST_AMBIENT_PROFILE"
+        const val ACTION_SPEECH_TIMEOUT_PROBE =
+            "org.conceptflow.mpl.host.debug.SPEECH_TIMEOUT_PROBE"
         const val ACTION_RECOVER_WIFI_DIRECT = "org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT"
         const val ACTION_RECOVER_WIFI_DIRECT_5GHZ =
             "org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT_5GHZ"

@@ -63,6 +63,17 @@ class BoundedFramePreprocessor(private val limits: PreprocessingLimits) {
     }
 
     private fun hasValidStrideAndByteCount(frame: FramePayload): Boolean {
+        if (frame.image.encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420) {
+            val width = frame.image.width.toLong()
+            val height = frame.image.height.toLong()
+            if (width % 2L != 0L || height % 2L != 0L ||
+                Integer.toUnsignedLong(frame.image.rowStrideBytes) != width
+            ) {
+                return false
+            }
+            val lumaBytes = Math.multiplyExact(width, height)
+            return Math.addExact(lumaBytes, lumaBytes / 2L) == frame.frameData.size().toLong()
+        }
         val channels = when (frame.image.encoding) {
             ImageEncoding.IMAGE_ENCODING_RGB8 -> 3L
             ImageEncoding.IMAGE_ENCODING_GRAY8 -> 1L
@@ -75,7 +86,8 @@ class BoundedFramePreprocessor(private val limits: PreprocessingLimits) {
 
     private fun strideRejection(frame: FramePayload): PreprocessingRejection {
         val isRaw = frame.image.encoding == ImageEncoding.IMAGE_ENCODING_RGB8 ||
-            frame.image.encoding == ImageEncoding.IMAGE_ENCODING_GRAY8
+            frame.image.encoding == ImageEncoding.IMAGE_ENCODING_GRAY8 ||
+            frame.image.encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420
         if (!isRaw || Integer.toUnsignedLong(frame.image.rowStrideBytes) < minimumRawStride(frame)) {
             return PreprocessingRejection.INVALID_STRIDE
         }
@@ -267,6 +279,7 @@ private object EncodedImageHeaders {
 private val CANONICAL_MEDIA_TYPES = mapOf(
     ImageEncoding.IMAGE_ENCODING_RGB8 to "application/x-conceptflow-rgb8",
     ImageEncoding.IMAGE_ENCODING_GRAY8 to "application/x-conceptflow-gray8",
+    ImageEncoding.IMAGE_ENCODING_YUV420_I420 to "application/x-conceptflow-i420",
     ImageEncoding.IMAGE_ENCODING_JPEG to "image/jpeg",
     ImageEncoding.IMAGE_ENCODING_PNG to "image/png",
 )

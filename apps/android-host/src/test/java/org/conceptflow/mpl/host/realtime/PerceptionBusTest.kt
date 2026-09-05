@@ -110,6 +110,30 @@ class PerceptionBusTest {
     }
 
     @Test
+    fun `tentative maintained tracks remain private tracker evidence`() {
+        val bus = PerceptionBus()
+        bus.beginSession(1L, 0L)
+
+        val state = bus.publishTrackedPerception(
+            9L,
+            1_000L,
+            1_100L,
+            "depth-profile",
+            "candidate",
+            listOf(
+                maintained(
+                    "candidate",
+                    cameraVector = org.conceptflow.mpl.host.vision.MetricVector3(0.0, 0.0, 2.0),
+                ).copy(confirmedForPublication = false),
+            ),
+            PerceptionValidityReason.PERCEPTION_READY,
+        )
+
+        assertTrue(state.entities.isEmpty())
+        assertEquals(PerceptionValidityReason.SENSOR_STREAM_ACTIVE, state.validity)
+    }
+
+    @Test
     fun `new session and invalidation clear prior head state`() {
         val bus = PerceptionBus()
         bus.beginSession(1L, 0L)

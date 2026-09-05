@@ -37,6 +37,7 @@ class PocoLiveLinkServer(
     }
     private val metrics = SanitizedTransportMetrics()
     private val metricAccounting = EndpointMetricAccounting(metrics)
+    private val cameraFallbackPolicy = CameraTransportFallbackPolicy(config.cameraTransport)
     private val activeAttempt = ActiveConnectionAttempt()
     private val activeShutdown = AtomicReference<ServerShutdownContext?>()
     private val activeMicrophoneControl = AtomicReference<ServerMicrophoneControl?>()
@@ -70,6 +71,20 @@ class PocoLiveLinkServer(
     }
 
     fun metricsSnapshot(): TransportMetricsSnapshot = metrics.snapshot()
+
+    fun cameraTransportFallbackSnapshot(): CameraTransportFallbackSnapshot =
+        cameraFallbackPolicy.snapshot()
+
+    /** Demotes future leases to I420 and interrupts only the current attempt so it can renegotiate. */
+    fun requestCameraTransportFallbackToI420(): CameraTransportFallbackDispatch {
+        val dispatch = cameraFallbackPolicy.requestI420Demotion()
+        if (dispatch == CameraTransportFallbackDispatch.DEMOTED_RECONNECT_REQUIRED) {
+            // Close the attempt synchronously while it is still the failing attempt. Deferring an
+            // unqualified close could race the serve loop and accidentally close its replacement.
+            activeAttempt.closeCurrent()
+        }
+        return dispatch
+    }
 
     fun requestMicrophone(
         durationMillis: Int = MAXIMUM_MICROPHONE_LEASE_MILLIS,
@@ -436,6 +451,7 @@ class PocoLiveLinkServer(
         acceptInbound(state, helloEnvelope)
         val output = LiveEnvelopeFactory(binding, state, clock)
         var peerSupportsDiagnosticSpool = false
+        var peerSupportsAvcIntra = false
         if (hello.hello.protocolVersion.minor >= 1) {
             val capabilitiesEnvelope = readTracked(lane, metrics)
                 ?: throw java.io.EOFException("realtime lane closed during capability negotiation")
@@ -447,13 +463,17 @@ class PocoLiveLinkServer(
                 )
             }.getOrElse { throw LaneProtocolException(LaneProtocolFailure.MALFORMED_CONTROL) }
             peerSupportsDiagnosticSpool = peerCapabilities.supportsDiagnosticSpool
+            peerSupportsAvcIntra = peerCapabilities.cameraEncodingsList.contains(
+                org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
+            )
             writeTracked(
                 lane,
                 output.control(
                     LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
-                    LiveControlMessages.capabilities(
-                        LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST,
-                        supportsDiagnosticSpool = true,
+                        LiveControlMessages.capabilities(
+                            LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST,
+                            supportsDiagnosticSpool = true,
+                            supportsAvcIntra = cameraFallbackPolicy.allowsAvcIntra(),
                     ),
                 ),
                 metrics,
@@ -480,7 +500,10 @@ class PocoLiveLinkServer(
         require(leaseEnvelope.control.payloadCase == LiveLinkControl.PayloadCase.LEASE_REQUEST) {
             "expected a stream lease request"
         }
-        val grant = LiveControlMessages.leaseGrant(leaseEnvelope.control.leaseRequest)
+        val grant = LiveControlMessages.leaseGrant(
+            leaseEnvelope.control.leaseRequest,
+            allowAvcIntra = cameraFallbackPolicy.allowsAvcIntra() && peerSupportsAvcIntra,
+        )
         writeTracked(
             lane,
             output.control(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL, grant),

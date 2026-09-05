@@ -247,6 +247,17 @@ data class YoloMaskDetection(
     val maskFingerprint: String,
 )
 
+/**
+ * Two-tier semantic admission. Proposal detections are retained only as private tracker evidence;
+ * they must never reach focus, speech, Unity, or beacon consumers until the maintainer confirms
+ * them. A strong observation can be published immediately.
+ */
+object YoloSemanticConfidencePolicy {
+    const val PROPOSAL_CONFIDENCE = 0.45
+    const val IMMEDIATE_PUBLICATION_CONFIDENCE = 0.55
+    const val CONSISTENT_OBSERVATIONS_REQUIRED = 3
+}
+
 object YoloFixedVocabularyPostprocessor {
     private data class PrototypeCoordinates(
         val targetX: DoubleArray,
@@ -265,7 +276,7 @@ object YoloFixedVocabularyPostprocessor {
         detectionsFloat32: ByteArray,
         prototypesFloat32: ByteArray,
         transform: LetterboxTransform,
-        confidenceThreshold: Double = 0.55,
+        confidenceThreshold: Double = YoloSemanticConfidencePolicy.PROPOSAL_CONFIDENCE,
         maskThreshold: Double = 0.5,
         maximumObjects: Int = 64,
     ): List<YoloMaskDetection> {
@@ -281,22 +292,26 @@ object YoloFixedVocabularyPostprocessor {
         }
         val coordinates = prototypeCoordinates(transform)
         val fingerprintDigest = MessageDigest.getInstance("SHA-256")
-        return (0 until DETECTION_COUNT).asSequence()
-            .mapNotNull { row ->
-                decodeRow(
-                    row,
-                    rows,
-                    prototypes,
-                    transform,
-                    confidenceThreshold,
-                    maskThreshold,
-                    coordinates,
-                    fingerprintDigest,
-                )
+        val rankedRows = (0 until DETECTION_COUNT)
+            .filter { row -> rows[row * DETECTION_COLUMNS + 4] >= confidenceThreshold }
+            .sortedByDescending { row -> rows[row * DETECTION_COLUMNS + 4] }
+        val detections = ArrayList<YoloMaskDetection>(min(maximumObjects, rankedRows.size))
+        for (row in rankedRows) {
+            decodeRow(
+                row,
+                rows,
+                prototypes,
+                transform,
+                confidenceThreshold,
+                maskThreshold,
+                coordinates,
+                fingerprintDigest,
+            )?.let { detection ->
+                detections += detection
+                if (detections.size == maximumObjects) return detections
             }
-            .sortedByDescending(YoloMaskDetection::confidence)
-            .take(maximumObjects)
-            .toList()
+        }
+        return detections
     }
 
     private fun decodeRow(

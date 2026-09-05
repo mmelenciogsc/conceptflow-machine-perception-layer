@@ -222,10 +222,12 @@ class LiveMetricTemporalFusion(
     private val poseBuffer: BoundedHeadPoseBuffer = BoundedHeadPoseBuffer(),
     private val trackStore: TemporalMetricTrackStore = TemporalMetricTrackStore(),
     private val maximumSemanticAgeNanos: Long = 2_000_000_000L,
+    private val minimumSemanticConfidence: Double = 0.55,
 ) {
     private var activeHeadCameraExtrinsic = initialHeadCameraExtrinsic
     init {
         require(maximumSemanticAgeNanos in 1_000_000L..5_000_000_000L)
+        require(minimumSemanticConfidence.isFinite() && minimumSemanticConfidence in 0.0..1.0)
     }
 
     @Synchronized
@@ -291,6 +293,7 @@ class LiveMetricTemporalFusion(
             MachineVisionInferenceAdapter { _, _ -> result.inference },
             calibration,
             maximumResultAgeNanos = maximumSemanticAgeNanos,
+            minimumSemanticConfidence = minimumSemanticConfidence,
             calibrationBindingPolicy = CalibrationBindingPolicy.REQUIRE_BOUND,
         ).process(frame, profile, nowNanos)
         if (perception.reason != "processed") return unavailable(

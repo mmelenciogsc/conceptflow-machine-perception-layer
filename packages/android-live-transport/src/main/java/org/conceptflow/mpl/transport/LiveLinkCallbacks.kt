@@ -2,6 +2,7 @@
 package org.conceptflow.mpl.transport
 
 import org.conceptflow.mpl.v1.SensorStreamEnvelope
+import org.conceptflow.mpl.v1.ImageEncoding
 
 data class LiveLinkSession(
     val binding: LiveSessionBinding,
@@ -47,11 +48,14 @@ data class NegotiatedLiveLease(
     val cameraMotionFps: Int,
     val imuMaximumBatchDelayMs: Int,
     val imuMaximumSilenceMs: Int,
+    val cameraEncoding: ImageEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420,
 ) {
     init {
         require(expiresAtMonotonicNs > 0)
         require(cameraRelaxedFps == 3 && cameraMotionFps == 5)
         require(imuMaximumBatchDelayMs in 1..20 && imuMaximumSilenceMs in 1..1_000)
+        require(cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
+            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
     }
 }
 

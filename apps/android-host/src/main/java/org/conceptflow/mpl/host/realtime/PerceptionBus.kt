@@ -281,13 +281,21 @@ class PerceptionBus(
         require(tracks.size <= PerceptionWorldState.MAXIMUM_ENTITIES)
         require(validity == PerceptionValidityReason.SENSOR_STREAM_ACTIVE ||
             validity == PerceptionValidityReason.PERCEPTION_READY)
-        val entities = tracks.mapNotNull(::fromMaintained)
+        val entities = tracks.asSequence()
+            .filter(LightweightTrackState::confirmedForPublication)
+            .mapNotNull(::fromMaintained)
+            .toList()
+        val effectiveValidity = if (entities.isEmpty() && validity == PerceptionValidityReason.PERCEPTION_READY) {
+            PerceptionValidityReason.SENSOR_STREAM_ACTIVE
+        } else {
+            validity
+        }
         return publishState(
             sourceFrameId,
             sourceCaptureTimestampNs,
             publishedTimestampNs,
             depthProfileId,
-            validity,
+            effectiveValidity,
             reason,
             entities,
         )

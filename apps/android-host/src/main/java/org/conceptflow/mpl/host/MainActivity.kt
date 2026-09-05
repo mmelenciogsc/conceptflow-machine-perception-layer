@@ -395,7 +395,7 @@ open class MainActivity : AppCompatActivity() {
 
     private fun updateLiveMicrophoneControl(status: LiveMachineVisionStatus?) {
         liveMicrophoneButton.isEnabled = status?.let {
-            liveMicrophoneControlEnabled(it.phase, it.microphonePhase)
+            liveMicrophoneControlEnabled(it.phase, it.microphonePhase, it.speechRuntime.phase)
         } ?: false
     }
 

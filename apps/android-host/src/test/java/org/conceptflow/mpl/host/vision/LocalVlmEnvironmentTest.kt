@@ -44,6 +44,7 @@ class LocalVlmEnvironmentTest {
             maximumFailureBackoffNanos = 80L,
         )
 
+        assertTrue(gate.needsClassification(significantSceneChange = false))
         assertTrue(gate.tryStart(0L, significantSceneChange = false))
         assertFalse(gate.tryStart(1L, significantSceneChange = false))
         gate.complete(LocalVlmEnvironmentLabel.INDOOR, 2L)
@@ -51,6 +52,8 @@ class LocalVlmEnvironmentTest {
         assertTrue(gate.tryStart(12L, significantSceneChange = false))
         gate.complete(LocalVlmEnvironmentLabel.INDOOR, 13L)
         assertTrue(gate.isStable())
+        assertFalse(gate.needsClassification(significantSceneChange = false))
+        assertTrue(gate.needsClassification(significantSceneChange = true))
         assertFalse(gate.tryStart(1_000L, significantSceneChange = false))
         assertTrue(gate.tryStart(113L, significantSceneChange = true))
     }
@@ -124,8 +127,8 @@ class LocalVlmEnvironmentTest {
     }
 
     @Test
-    fun sceneGateIgnoresOneFrameFlashAndTriggersOnPersistentLightingChange() {
-        val gate = LocalVlmSceneChangeGate(requiredChangedFrames = 2)
+    fun sceneGateIgnoresTransientFramesAndTriggersOnPersistentLightingChange() {
+        val gate = LocalVlmSceneChangeGate(requiredChangedFrames = 4)
         val baseline = descriptor(List(256) { 0.30 })
         val bright = descriptor(List(256) { 0.72 })
         gate.markClassified(baseline)
@@ -133,11 +136,13 @@ class LocalVlmEnvironmentTest {
         assertFalse(gate.observe(bright).significantChange)
         assertTrue(gate.observe(baseline).baselineMatched)
         assertFalse(gate.observe(bright).significantChange)
+        assertFalse(gate.observe(bright).significantChange)
+        assertFalse(gate.observe(bright).significantChange)
         assertTrue(gate.observe(bright).significantChange)
     }
 
     @Test
-    fun exposureNormalizedStructureDetectsNewSceneWithoutLargeMeanShift() {
+    fun cameraMovementAtStableIlluminationDoesNotRequestReclassification() {
         val gate = LocalVlmSceneChangeGate(requiredChangedFrames = 1)
         val first = List(256) { index -> if (index % 16 < 8) 0.2 else 0.8 }
         val second = List(256) { index -> if (index / 16 < 8) 0.2 else 0.8 }
@@ -145,8 +150,36 @@ class LocalVlmEnvironmentTest {
 
         val decision = gate.observe(descriptor(second))
 
-        assertTrue(decision.significantChange)
-        assertFalse(decision.baselineMatched)
+        assertFalse(decision.significantChange)
+        assertTrue(decision.baselineMatched)
+    }
+
+    @Test
+    fun histogramChangeWithoutContrastChangeDoesNotInvalidateStableEnvironment() {
+        val gate = LocalVlmSceneChangeGate(requiredChangedFrames = 1)
+        val first = List(256) { index -> if (index % 2 == 0) 0.30 else 0.70 }
+        val second = List(256) { index -> if (index % 4 == 0) 0.15358984 else 0.61547005 }
+        val firstDescriptor = descriptor(first)
+        val secondDescriptor = descriptor(second)
+        gate.markClassified(firstDescriptor)
+
+        assertTrue(gate.compare(firstDescriptor, secondDescriptor).normalizedChangeScore < 1.0)
+        assertTrue(gate.observe(secondDescriptor).baselineMatched)
+        assertFalse(gate.observe(secondDescriptor).significantChange)
+    }
+
+    @Test
+    fun distributionAndContrastChangeCanRequestReclassificationWithoutMeanShift() {
+        val gate = LocalVlmSceneChangeGate(requiredChangedFrames = 1)
+        val uniform = descriptor(List(256) { 0.50 })
+        val highContrast = descriptor(List(256) { index -> if (index % 2 == 0) 0.20 else 0.80 })
+        gate.markClassified(uniform)
+
+        val comparison = gate.compare(uniform, highContrast)
+
+        assertTrue(comparison.materiallyDifferent)
+        assertTrue(comparison.normalizedChangeScore >= 1.0)
+        assertTrue(gate.observe(highContrast).significantChange)
     }
 
     @Test

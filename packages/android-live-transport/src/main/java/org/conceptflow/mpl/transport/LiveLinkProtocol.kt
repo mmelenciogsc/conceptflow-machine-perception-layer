@@ -33,6 +33,7 @@ import org.conceptflow.mpl.v1.SensorStreamKind
 import org.conceptflow.mpl.v1.StreamLeaseGrant
 import org.conceptflow.mpl.v1.StreamLeaseOperation
 import org.conceptflow.mpl.v1.StreamLeaseRequest
+import org.conceptflow.mpl.v1.ImageEncoding
 
 fun interface MonotonicTimeSource {
     fun nowNs(): Long
@@ -92,7 +93,7 @@ internal class LiveEnvelopeFactory(
 internal object LiveControlMessages {
     const val CLOCK_PROBES = 8
     const val PROTOCOL_MAJOR = 1
-    const val PROTOCOL_MINOR = 2
+    const val PROTOCOL_MINOR = 5
 
     fun hello(role: LiveTransportPeerRole, nonce: ByteArray): LiveLinkControl = LiveLinkControl.newBuilder()
         .setHello(
@@ -107,6 +108,7 @@ internal object LiveControlMessages {
     fun capabilities(
         role: LiveTransportPeerRole,
         supportsDiagnosticSpool: Boolean = false,
+        supportsAvcIntra: Boolean = false,
     ): LiveLinkControl {
         require(role == LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES ||
             role == LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST
@@ -121,6 +123,7 @@ internal object LiveControlMessages {
             .addSupportedStreams(SensorStreamKind.SENSOR_STREAM_KIND_MICROPHONE)
             .addSupportedStreams(SensorStreamKind.SENSOR_STREAM_KIND_TOUCH)
             .addCameraEncodings(org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_RGB8)
+            .addCameraEncodings(org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420)
             .setMaxCameraWidth(640)
             .setMaxCameraHeight(640)
             .setMaxCameraFrameBytes(2L * 1_024L * 1_024L)
@@ -132,6 +135,9 @@ internal object LiveControlMessages {
             .setSupportsClockSync(true)
             .setSupportsCameraLatestFrame(true)
             .setSupportsDiagnosticSpool(supportsDiagnosticSpool)
+        if (supportsAvcIntra) {
+            builder.addCameraEncodings(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+        }
         return LiveLinkControl.newBuilder().setCapabilities(builder).build()
     }
 
@@ -155,6 +161,9 @@ internal object LiveControlMessages {
             capabilities.cameraEncodingsList.contains(
                 org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_RGB8,
             ) &&
+            capabilities.cameraEncodingsList.contains(
+                org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+            ) &&
             capabilities.maxCameraWidth >= 640 &&
             capabilities.maxCameraHeight >= 640 &&
             capabilities.maxCameraFrameBytes >= 640L * 640L * 3L &&
@@ -172,10 +181,10 @@ internal object LiveControlMessages {
         queues: LiveOutboundQueueSnapshot,
         transport: TransportMetricsSnapshot,
         cameraGate: LiveCameraGateTelemetry = LiveCameraGateTelemetry(),
+        power: LivePowerTelemetry? = null,
     ): LiveLinkControl {
         require(sampledMonotonicNs > 0L)
-        return LiveLinkControl.newBuilder().setTelemetry(
-            LiveLinkTelemetry.newBuilder()
+        val telemetry = LiveLinkTelemetry.newBuilder()
                 .setSampledMonotonicTimestampNs(sampledMonotonicNs)
                 .setPendingCameraFrames(queues.pendingCameraFrames)
                 .setPendingImuBatches(queues.pendingImuBatches)
@@ -187,6 +196,8 @@ internal object LiveControlMessages {
                 .setTouchOverflowEvents(queues.touchOverflowEvents)
                 .setSentRealtimeMessages(transport.realtimeControl.sentMessages)
                 .setSentCameraMessages(transport.camera.sentMessages)
+                .setSentRealtimeBytes(transport.realtimeControl.sentBytes)
+                .setSentCameraBytes(transport.camera.sentBytes)
                 .setCameraFramesAnalyzed(cameraGate.framesAnalyzed)
                 .setCameraFramesEmitted(cameraGate.framesEmitted)
                 .setCameraRelaxedTierSamples(cameraGate.relaxedTierSamples)
@@ -194,8 +205,20 @@ internal object LiveControlMessages {
                 .setCameraFramesDroppedDark(cameraGate.framesDroppedDark)
                 .setCameraFramesDroppedBlurry(cameraGate.framesDroppedBlurry)
                 .setCameraFramesDroppedCadence(cameraGate.framesDroppedCadence)
-                .setCurrentCameraTargetFps(cameraGate.currentTargetFramesPerSecond),
-        ).build()
+                .setCurrentCameraTargetFps(cameraGate.currentTargetFramesPerSecond)
+        power?.takeIf(LivePowerTelemetry::hasMeasurement)?.let { sample ->
+            sample.levelPercent?.let { telemetry.batteryLevelPercent = it }
+            telemetry.batteryChargeState = sample.chargeState
+            sample.healthGood?.let { telemetry.batteryHealthGood = it }
+            sample.voltageMicrovolts?.let { telemetry.batteryVoltageMicrovolts = it }
+            sample.currentMicroamps?.let { telemetry.batteryCurrentMicroamps = it }
+            sample.averageCurrentMicroamps?.let { telemetry.batteryAverageCurrentMicroamps = it }
+            sample.chargeCounterMicroampHours?.let { telemetry.batteryChargeCounterMicroampHours = it }
+            sample.temperatureDeciCelsius?.let { telemetry.batteryTemperatureDeciCelsius = it }
+            sample.externalPowerConnected?.let { telemetry.externalPowerConnected = it }
+            sample.energyNanowattHours?.let { telemetry.batteryEnergyNanowattHours = it }
+        }
+        return LiveLinkControl.newBuilder().setTelemetry(telemetry).build()
     }
 
     fun ticketGrant(ticket: ByteArray, validForMs: Int): LiveLinkControl = LiveLinkControl.newBuilder()
@@ -206,7 +229,13 @@ internal object LiveControlMessages {
                 .setValidForMs(validForMs),
         ).build()
 
-    fun leaseRequest(binding: LiveSessionBinding): LiveLinkControl = LiveLinkControl.newBuilder()
+    fun leaseRequest(
+        binding: LiveSessionBinding,
+        cameraEncoding: ImageEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+    ): LiveLinkControl {
+        require(cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
+            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+        return LiveLinkControl.newBuilder()
         .setLeaseRequest(
             StreamLeaseRequest.newBuilder()
                 .setRequestId(LIVE_LINK_OPEN_REQUEST_ID)
@@ -221,8 +250,10 @@ internal object LiveControlMessages {
                 .setCameraRelaxedFps(3)
                 .setCameraMotionFps(5)
                 .setImuMaxBatchDelayMs(20)
-                .setImuMaxSilenceMs(1_000),
+                .setImuMaxSilenceMs(1_000)
+                .setRequestedCameraEncoding(cameraEncoding),
         ).build()
+    }
 
     fun leaseClose(binding: LiveSessionBinding): LiveLinkControl = LiveLinkControl.newBuilder()
         .setLeaseRequest(
@@ -263,7 +294,10 @@ internal object LiveControlMessages {
             control.leaseGrant.grantedDurationMs == 0 &&
             !control.leaseGrant.hasError()
 
-    fun leaseGrant(request: StreamLeaseRequest): LiveLinkControl {
+    fun leaseGrant(
+        request: StreamLeaseRequest,
+        allowAvcIntra: Boolean = false,
+    ): LiveLinkControl {
         require(request.operation == StreamLeaseOperation.STREAM_LEASE_OPERATION_OPEN &&
             !request.userRequestedMicrophone &&
             request.requestedStreamsList.toSet() == setOf(
@@ -272,6 +306,15 @@ internal object LiveControlMessages {
                 SensorStreamKind.SENSOR_STREAM_KIND_TOUCH,
             )
         ) { "live-link lease requests may contain only camera, IMU, and touch" }
+        val requestedEncoding = when (request.requestedCameraEncoding) {
+            ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ->
+                if (allowAvcIntra) ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA
+                else ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            ImageEncoding.IMAGE_ENCODING_UNSPECIFIED,
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+            -> ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            else -> throw IllegalArgumentException("unsupported camera transport encoding")
+        }
         return LiveLinkControl.newBuilder()
             .setLeaseGrant(
                 StreamLeaseGrant.newBuilder()
@@ -285,7 +328,8 @@ internal object LiveControlMessages {
                     .setCameraRelaxedFps(3)
                     .setCameraMotionFps(5)
                     .setImuMaxBatchDelayMs(20)
-                    .setImuMaxSilenceMs(1_000),
+                    .setImuMaxSilenceMs(1_000)
+                    .setGrantedCameraEncoding(requestedEncoding),
             ).build()
     }
 
@@ -560,6 +604,10 @@ internal fun StreamLeaseGrant.toNegotiatedLease(deadline: MonotonicLeaseDeadline
         cameraMotionFps = cameraMotionFps,
         imuMaximumBatchDelayMs = imuMaxBatchDelayMs,
         imuMaximumSilenceMs = imuMaxSilenceMs,
+        cameraEncoding = when (grantedCameraEncoding) {
+            ImageEncoding.IMAGE_ENCODING_UNSPECIFIED -> ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            else -> grantedCameraEncoding
+        },
     )
 
 internal fun StreamLeaseGrant.isAcceptedOpenGrant(binding: LiveSessionBinding): Boolean =
@@ -572,10 +620,14 @@ internal fun StreamLeaseGrant.isAcceptedOpenGrant(binding: LiveSessionBinding): 
             SensorStreamKind.SENSOR_STREAM_KIND_CAMERA,
             SensorStreamKind.SENSOR_STREAM_KIND_IMU,
             SensorStreamKind.SENSOR_STREAM_KIND_TOUCH,
-        )
+        ) && (grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_UNSPECIFIED ||
+            grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
+            grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
 
-/** Ten-minute sensor workload plus a bounded authenticated shutdown envelope. */
-internal const val MAXIMUM_LIVE_LEASE_MILLIS = 610_000
+/** Four-hour production epoch plus a bounded authenticated shutdown envelope. */
+// A production epoch spans normal wearable use without periodic Camera2 teardown. The ten-second
+// margin lets the glasses' independently bounded four-hour controller stop before this grant.
+internal const val MAXIMUM_LIVE_LEASE_MILLIS = 14_410_000
 const val MAXIMUM_MICROPHONE_LEASE_MILLIS = 10_000
 internal const val LIVE_LINK_OPEN_REQUEST_ID = "live-link-open"
 internal const val LIVE_LINK_MICROPHONE_REQUEST_ID = "live-link-microphone-open"

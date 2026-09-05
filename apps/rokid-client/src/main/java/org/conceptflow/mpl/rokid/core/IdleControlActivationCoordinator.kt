@@ -13,6 +13,7 @@ enum class IdleControlActivationDecision {
 enum class VisibleServiceActivation(val command: RuntimeCommand) {
     IDLE_CONTROL(RuntimeCommand.ENABLE_IDLE_CONTROL),
     SAME_BOOT_RECOVERY(RuntimeCommand.RECOVER_SAME_BOOT),
+    PERSISTED_BOOT_RECOVERY(RuntimeCommand.RECOVER_PERSISTED_BOOT),
     ;
 
     companion object {

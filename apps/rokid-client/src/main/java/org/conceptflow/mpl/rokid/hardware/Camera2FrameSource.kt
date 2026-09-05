@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import org.conceptflow.mpl.rokid.core.ElapsedRealtimeClock
 import org.conceptflow.mpl.rokid.core.CaptureGateEvent
@@ -36,7 +37,9 @@ import org.conceptflow.mpl.rokid.core.MonotonicFrameSequence
 import org.conceptflow.mpl.rokid.core.PixelDimensions
 import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
 import org.conceptflow.mpl.rokid.core.SystemWallClock
+import org.conceptflow.mpl.rokid.core.buildI420Frame
 import org.conceptflow.mpl.rokid.core.buildRgbFrame
+import org.conceptflow.mpl.rokid.core.buildAvcIntraFrame
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import java.util.UUID
 import java.util.concurrent.Executor
@@ -47,12 +50,13 @@ class Camera2FrameSource(
     relaxedFramesPerSecond: Double = 3.0,
     motionFramesPerSecond: Double = 5.0,
     private val sequence: MonotonicFrameSequence = MonotonicFrameSequence(),
+    private val outputFormat: CameraTransferPixelFormat = CameraTransferPixelFormat.RGB8,
 ) : FrameSource {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
     private val stateLock = Any()
     private val lifecycle = CameraRunLifecycle()
-    private val processor = AdaptiveYuv420Processor()
+    private val processor = AdaptiveYuv420Processor(outputFormat = outputFormat)
     private val captureCadence = AdaptivePhysicalCaptureCadence(
         relaxedFramesPerSecond = relaxedFramesPerSecond,
         motionFramesPerSecond = motionFramesPerSecond,
@@ -72,6 +76,8 @@ class Camera2FrameSource(
     private var captureRequestBuilder: CaptureRequest.Builder? = null
     private var scheduledCaptureOpportunity: Runnable? = null
     private var teardownInProgress = false
+    private var outputPipelineLogged = false
+    private var avcEncoder: HardwareAvcIntraFrameEncoder? = null
 
     override val isRunning: Boolean get() = lifecycle.isRunning
 
@@ -81,11 +87,21 @@ class Camera2FrameSource(
             return
         }
 
+        if (outputFormat == CameraTransferPixelFormat.AVC_INTRA) {
+            avcEncoder = try {
+                HardwareAvcIntraFrameEncoder(640, 640, 5)
+            } catch (_: Throwable) {
+                listener.onError("Hardware AVC camera transport is unavailable")
+                return
+            }
+        }
+
         val runId = synchronized(stateLock) {
             check(!teardownInProgress) { "Camera frame source teardown is still in progress" }
             val id = lifecycle.begin()
             processor.reset()
             capturePipeline.beginRun(id)
+            outputPipelineLogged = false
             this.listener = listener
             id
         }
@@ -164,6 +180,11 @@ class Camera2FrameSource(
             characteristics,
             PixelDimensions(size.width, size.height),
         )
+        val powerEfficientFpsRange = selectPowerEfficientAeFpsRange(
+            characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.map { it.lower..it.upper }
+                .orEmpty(),
+        )?.let { Range(it.first, it.last) }
         if (!dispatchToListener(runId) { it.onCameraCalibrationCapability(calibration.capability) }) return
         if (!lifecycle.isActive(runId)) return
         val previewSize = selectHeadlessPreviewSize(
@@ -237,6 +258,7 @@ class Camera2FrameSource(
                         readers,
                         handler,
                         calibration.captureContract,
+                        powerEfficientFpsRange,
                     ),
                     handler,
                 )
@@ -249,6 +271,7 @@ class Camera2FrameSource(
         readers: CombinedCameraReaders<ImageReader>,
         handler: Handler,
         captureContract: CameraCalibrationCaptureContract?,
+        powerEfficientFpsRange: Range<Int>?,
     ): CameraDevice.StateCallback = object : CameraDevice.StateCallback() {
         private val callbackCameraCloser = CallbackResourceCloser<CameraDevice> { it.close() }
 
@@ -266,6 +289,7 @@ class Camera2FrameSource(
                             readers,
                             handler,
                             captureContract,
+                            powerEfficientFpsRange,
                         )
                     }
                 }
@@ -340,20 +364,29 @@ class Camera2FrameSource(
         readers: CombinedCameraReaders<ImageReader>,
         handler: Handler,
         captureContract: CameraCalibrationCaptureContract?,
+        powerEfficientFpsRange: Range<Int>?,
     ) {
         val previewRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(readers.preview.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            powerEfficientFpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
         }.build()
         val scheduledCaptureRequestBuilder = buildScheduledCaptureRequest(
             camera,
             readers.scheduledCapture,
             captureContract,
+            powerEfficientFpsRange,
         )
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) {
                 if (!attachOrClose(session, { attachCaptureSession(runId, it) }, { it.close() })) return
                 if (!attachCaptureRequestBuilder(runId, scheduledCaptureRequestBuilder)) return
+                Log.i(
+                    CAMERA_LOG_TAG,
+                    "camera_stream_config sensor_fps=${powerEfficientFpsRange?.lower ?: -1}-" +
+                        "${powerEfficientFpsRange?.upper ?: -1} output=${outputFormat.name.lowercase()} " +
+                        "width=640 height=640",
+                )
                 try {
                     // Keep a low-resolution repeating target active for the complete session so
                     // the vendor HAL does not tear streaming down between scheduled captures.
@@ -417,10 +450,12 @@ class Camera2FrameSource(
         camera: CameraDevice,
         reader: ImageReader,
         captureContract: CameraCalibrationCaptureContract?,
+        powerEfficientFpsRange: Range<Int>?,
     ): CaptureRequest.Builder =
         camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(reader.surface)
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            powerEfficientFpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             if (captureContract?.requestDistortionCorrectionOff == true) {
                 set(
                     CaptureRequest.DISTORTION_CORRECTION_MODE,
@@ -692,36 +727,81 @@ class Camera2FrameSource(
         if (cadenceChanged) {
             rescheduleNextCaptureOpportunity(runId, handler)
         }
-        val output = processed.rgb8
+        val output = processed.rgb8 ?: processed.i420
         val emittedMonotonicTimestampNanos = if (output == null) {
             null
         } else {
+            if (!outputPipelineLogged) {
+                outputPipelineLogged = true
+                Log.i(
+                    CAMERA_LOG_TAG,
+                    "camera_frame_pipeline output=${outputFormat.name.lowercase()} " +
+                        "native_conversion=${
+                            processed.i420NativeConversion
+                                ?: (processed.rgbConversionBackend == RgbConversionBackend.NATIVE_INTEGER)
+                        }",
+                )
+            }
             val transform = SquareAspectFillTransform.centered(
                 processed.inputDimensions.width,
                 processed.inputDimensions.height,
                 processed.outputDimensions.width,
             )
             val frameId = sequence.nextId()
-            val frame = buildRgbFrame(
-                requestId = "camera-$frameId",
-                sessionId = sessionId,
-                streamId = "camera2-yuv-rgb8",
-                frameId = frameId,
-                timestampNanos = acquired.timestamp,
-                wallTimeMillis = SystemWallClock.nowMillis(),
-                width = processed.outputDimensions.width,
-                height = processed.outputDimensions.height,
-                bytes = output,
-                synthetic = false,
-                takeOwnership = true,
-                intrinsics = calibrationMetadata?.let {
-                    resolveCameraIntrinsicsForCapture(
-                        it,
-                        acquired.association.calibrationMetadata,
-                        processed.inputDimensions,
-                    )?.let { captured -> transformCameraIntrinsicsForSquareOutput(captured, transform) }
-                },
-            )
+            val intrinsics = calibrationMetadata?.let {
+                resolveCameraIntrinsicsForCapture(
+                    it,
+                    acquired.association.calibrationMetadata,
+                    processed.inputDimensions,
+                )?.let { captured -> transformCameraIntrinsicsForSquareOutput(captured, transform) }
+            }
+            val frame = if (processed.i420 != null && outputFormat == CameraTransferPixelFormat.AVC_INTRA) {
+                val encoded = checkNotNull(avcEncoder).encode(output, acquired.timestamp)
+                buildAvcIntraFrame(
+                    requestId = "camera-$frameId",
+                    sessionId = sessionId,
+                    streamId = "camera2-avc-annex-b-intra",
+                    frameId = frameId,
+                    timestampNanos = acquired.timestamp,
+                    wallTimeMillis = SystemWallClock.nowMillis(),
+                    width = processed.outputDimensions.width,
+                    height = processed.outputDimensions.height,
+                    bytes = encoded,
+                    synthetic = false,
+                    takeOwnership = true,
+                    intrinsics = intrinsics,
+                )
+            } else if (processed.i420 != null) {
+                buildI420Frame(
+                    requestId = "camera-$frameId",
+                    sessionId = sessionId,
+                    streamId = "camera2-yuv-i420",
+                    frameId = frameId,
+                    timestampNanos = acquired.timestamp,
+                    wallTimeMillis = SystemWallClock.nowMillis(),
+                    width = processed.outputDimensions.width,
+                    height = processed.outputDimensions.height,
+                    bytes = output,
+                    synthetic = false,
+                    takeOwnership = true,
+                    intrinsics = intrinsics,
+                )
+            } else {
+                buildRgbFrame(
+                    requestId = "camera-$frameId",
+                    sessionId = sessionId,
+                    streamId = "camera2-yuv-rgb8",
+                    frameId = frameId,
+                    timestampNanos = acquired.timestamp,
+                    wallTimeMillis = SystemWallClock.nowMillis(),
+                    width = processed.outputDimensions.width,
+                    height = processed.outputDimensions.height,
+                    bytes = output,
+                    synthetic = false,
+                    takeOwnership = true,
+                    intrinsics = intrinsics,
+                )
+            }
             if (!dispatchToListener(runId) { it.onFrame(frame) }) return
             ElapsedRealtimeClock.nowNanos()
         }
@@ -886,6 +966,7 @@ class Camera2FrameSource(
         val device = cameraDevice
         val session = captureSession
         val captureOpportunity = scheduledCaptureOpportunity
+        val encoder = avcEncoder
         cameraHandler = null
         cameraThread = null
         imageProcessingHandler = null
@@ -897,6 +978,7 @@ class Camera2FrameSource(
         captureSession = null
         captureRequestBuilder = null
         scheduledCaptureOpportunity = null
+        avcEncoder = null
         return CameraResourceCloser(
             listOf(
                 { captureOpportunity?.let { handler?.removeCallbacks(it) } },
@@ -909,6 +991,7 @@ class Camera2FrameSource(
                 { closeUnownedThread(thread) },
                 { closeUnownedThread(processingThread) },
                 { closeUnownedThread(previewThread) },
+                { encoder?.close() },
             ),
         )
     }
@@ -1546,6 +1629,16 @@ internal fun selectHeadlessPreviewSize(
             .thenBy { it.height },
     )
 }
+
+/** Selects the lowest fixed sensor cadence; variable ranges are a bounded fallback only. */
+internal fun selectPowerEfficientAeFpsRange(candidates: Collection<IntRange>): IntRange? =
+    candidates
+        .filter { it.first > 0 && it.last >= it.first }
+        .minWithOrNull(
+            compareBy<IntRange> { if (it.first == it.last) 0 else 1 }
+                .thenBy { it.last }
+                .thenBy { it.first },
+        )
 
 internal fun shouldJoinCameraThread(
     cameraThread: Thread?,

@@ -25,6 +25,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -56,9 +60,19 @@ class LocalVlmInferenceService : Service() {
     private val prewarmWaiters = ConcurrentHashMap<Long, Messenger>()
     private val prewarmJob = AtomicReference<Job?>(null)
     private val drainJob = AtomicReference<Job?>(null)
+    private val nativeExecution = AtomicReference<LocalVlmNativeExecution?>(null)
+    private val nativeAbortFuture = AtomicReference<ScheduledFuture<*>?>(null)
+    private val nativeAbortLock = Any()
+    private val nativeAbortExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "mpl-vlm-hard-abort").apply { isDaemon = true }
+    }
+    private val engineLifecycleLock = Any()
+    private val processRetirementScheduled = AtomicBoolean(false)
     private var handlerThread: HandlerThread? = null
     private var messenger: Messenger? = null
     private var engine: GenieXLocalVlmEngine? = null
+    private var engineIdleCloseJob: Job? = null
+    private var releaseEngineWhenIdle = false
     private lateinit var htpExecutionLease: HtpExecutionLease
 
     override fun onCreate() {
@@ -72,11 +86,23 @@ class LocalVlmInferenceService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = messenger?.binder
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (LocalVlmRuntimeTuning.shouldReleaseForTrimLevel(level)) {
+            releaseEngineForMemoryPressure("trim_$level")
+        }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        releaseEngineForMemoryPressure("low_memory")
+    }
+
     override fun onDestroy() {
         cancelAll("service_destroyed", notify = false)
         scope.cancel()
-        runCatching { engine?.close() }
-        engine = null
+        closeEngineNow()
+        if (nativeExecution.get() == null) nativeAbortExecutor.shutdownNow()
         handlerThread?.quitSafely()
         handlerThread = null
         messenger = null
@@ -131,7 +157,7 @@ class LocalVlmInferenceService : Service() {
         }
         val job = scope.launch(start = CoroutineStart.LAZY) {
             val response = try {
-                val runtime = engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
+                val runtime = engineForWork()
                 val warmupImage = createWarmupImage()
                 try {
                     val owner = currentCoroutineContext()[Job] ?: error("prewarm job unavailable")
@@ -146,11 +172,17 @@ class LocalVlmInferenceService : Service() {
                             (acquisition as HtpLeaseAcquisition.Refused).reason.name.lowercase(),
                         )
                     } else {
-                        val monitor = monitorQnnPriority(owner)
+                        val execution = armNativeExecution(
+                            requestId,
+                            LocalVlmNativeTask.PREWARM,
+                            warmupImage,
+                        )
+                        val monitor = monitorQnnPriority(owner, execution)
                         try {
                             acquired.handle.use { runtime.prewarm(warmupImage) }
                         } finally {
                             monitor.cancel()
+                            disarmNativeExecution(execution)
                         }
                         Log.i(LOG_TAG, "local VLM full-path prewarm complete")
                         PrewarmResponse(LocalVlmIpc.RESPONSE_PREWARMED)
@@ -165,13 +197,13 @@ class LocalVlmInferenceService : Service() {
                 PrewarmResponse(LocalVlmIpc.RESPONSE_DEFERRED, "cancelled")
             } catch (error: Throwable) {
                 Log.e(LOG_TAG, "local VLM prewarm failed: ${error.javaClass.simpleName}")
-                runCatching { engine?.close() }
-                engine = null
+                closeEngineNow()
                 PrewarmResponse(LocalVlmIpc.RESPONSE_PREWARM_FAILED)
             }
             if (workGate.finish(LocalVlmWorkLane.PREWARM, generation)) {
                 prewarmJob.set(null)
                 completePrewarm(response.type, response.reason)
+                scheduleEngineIdleClose()
             }
         }
         prewarmJob.set(job)
@@ -258,7 +290,7 @@ class LocalVlmInferenceService : Service() {
     private suspend fun process(request: InferenceRequest) {
         try {
             val image = validateImage(request)
-            val runtime = engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
+            val runtime = engineForWork()
             val startedNanos = SystemClock.elapsedRealtimeNanos()
             val owner = currentCoroutineContext()[Job] ?: error("VLM request job unavailable")
             val acquisition = acquireForRequest(request, owner)
@@ -293,7 +325,13 @@ class LocalVlmInferenceService : Service() {
             if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
                 logFocusedPhase(request, "lease_acquired")
             }
-            val monitor = monitorQnnPriority(owner)
+            val execution = armNativeExecution(
+                request.requestId,
+                request.task.toNativeTask(),
+                request.image,
+                request.deadlineNanos.takeIf { request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 },
+            )
+            val monitor = monitorQnnPriority(owner, execution)
             val result = try {
                 acquired.handle.use {
                     when (request.task) {
@@ -311,6 +349,7 @@ class LocalVlmInferenceService : Service() {
                 }
             } finally {
                 monitor.cancel()
+                disarmNativeExecution(execution)
             }
             if (activeRequest.get() !== request || !owner.isActive) return
             Log.i(
@@ -355,8 +394,7 @@ class LocalVlmInferenceService : Service() {
             throw error
         } catch (_: LocalVlmInferenceTimeout) {
             Log.i(LOG_TAG, "focused VQA timed out")
-            runCatching { engine?.close() }
-            engine = null
+            closeEngineNow()
             if (activeRequest.get() === request) {
                 logFocusedPhase(request, "terminal", "timed_out")
                 replyFailure(request, "timed_out")
@@ -365,8 +403,7 @@ class LocalVlmInferenceService : Service() {
             throw error
         } catch (error: Throwable) {
             Log.e(LOG_TAG, "local VLM execution failed: ${error.javaClass.simpleName}")
-            runCatching { engine?.close() }
-            engine = null
+            closeEngineNow()
             if (activeRequest.get() === request) {
                 if (request.task == LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1) {
                     logFocusedPhase(request, "terminal", "inference_failed")
@@ -375,6 +412,85 @@ class LocalVlmInferenceService : Service() {
             }
         } finally {
             deleteOwnedImage(request.image)
+            // Retain the initialized runtime only for a bounded interaction window. This avoids a
+            // second multi-second model load when the user asks about a just-focused object while
+            // still releasing the measured multi-gigabyte native allocation before indefinite
+            // idle can put pressure on the persistent sensor process.
+            scheduleEngineIdleClose()
+        }
+    }
+
+    private fun engineForWork(): GenieXLocalVlmEngine = synchronized(engineLifecycleLock) {
+        engineIdleCloseJob?.cancel()
+        engineIdleCloseJob = null
+        engine ?: GenieXLocalVlmEngine(applicationContext).also { engine = it }
+    }
+
+    private fun scheduleEngineIdleClose() {
+        synchronized(engineLifecycleLock) {
+            engineIdleCloseJob?.cancel()
+            val delayNanos = if (releaseEngineWhenIdle) {
+                0L
+            } else {
+                LocalVlmRuntimeTuning.ENGINE_IDLE_RETENTION_NANOS
+            }
+            engineIdleCloseJob = scope.launch {
+                delay(delayNanos / 1_000_000L)
+                val released = synchronized(engineLifecycleLock) {
+                    if (activeRequest.get() != null ||
+                        workGate.isActive(LocalVlmWorkLane.PREWARM) ||
+                        workGate.isActive(LocalVlmWorkLane.DRAIN)
+                    ) return@synchronized false
+                    runCatching { engine?.close() }
+                    engine = null
+                    releaseEngineWhenIdle = false
+                    engineIdleCloseJob = null
+                    Log.i(LOG_TAG, "local VLM idle runtime released")
+                    true
+                }
+                if (released) retireIsolatedProcess("idle_lease_expired")
+            }
+        }
+    }
+
+    private fun releaseEngineForMemoryPressure(reason: String) {
+        val released = synchronized(engineLifecycleLock) {
+            engineIdleCloseJob?.cancel()
+            engineIdleCloseJob = null
+            if (activeRequest.get() != null ||
+                workGate.isActive(LocalVlmWorkLane.PREWARM) ||
+                workGate.isActive(LocalVlmWorkLane.DRAIN)
+            ) {
+                releaseEngineWhenIdle = true
+                Log.i(LOG_TAG, "local VLM memory release deferred reason=$reason")
+                return@synchronized false
+            }
+            runCatching { engine?.close() }
+            engine = null
+            releaseEngineWhenIdle = false
+            Log.i(LOG_TAG, "local VLM runtime released reason=$reason")
+            true
+        }
+        if (released) retireIsolatedProcess(reason)
+    }
+
+    private fun retireIsolatedProcess(reason: String) {
+        if (!processRetirementScheduled.compareAndSet(false, true)) return
+        Log.i(LOG_TAG, "state=runtime_retire reason=$reason")
+        nativeAbortExecutor.schedule(
+            { android.os.Process.killProcess(android.os.Process.myPid()) },
+            PROCESS_RETIRE_LOG_FLUSH_MILLIS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun closeEngineNow() {
+        synchronized(engineLifecycleLock) {
+            engineIdleCloseJob?.cancel()
+            engineIdleCloseJob = null
+            runCatching { engine?.close() }
+            engine = null
+            releaseEngineWhenIdle = false
         }
     }
 
@@ -419,10 +535,14 @@ class LocalVlmInferenceService : Service() {
         }
     }
 
-    private fun monitorQnnPriority(owner: Job): Job = scope.launch {
+    private fun monitorQnnPriority(
+        owner: Job,
+        execution: LocalVlmNativeExecution,
+    ): Job = scope.launch {
         while (isActive) {
             delay(QNN_PRIORITY_POLL_MILLIS)
             if (htpExecutionLease.qnnPriorityRequested()) {
+                requestNativeAbort(execution.requestId, "qnn_priority")
                 owner.cancel(QnnPriorityCancellation())
                 return@launch
             }
@@ -430,6 +550,7 @@ class LocalVlmInferenceService : Service() {
     }
 
     private fun cancelAll(reason: String, notify: Boolean) {
+        requestNativeAbort(requestId = null, reason = reason)
         workGate.cancelAll()
         val active = activeRequest.getAndSet(null)
         if (active != null) {
@@ -444,9 +565,82 @@ class LocalVlmInferenceService : Service() {
     private fun cancelRequest(data: Bundle?) {
         val request = activeRequest.get() ?: return
         if (!request.matchesCancellation(data)) return
+        requestNativeAbort(request.requestId, "focused_request_cancelled")
         workGate.cancelAll()
         if (activeRequest.compareAndSet(request, null)) deleteOwnedImage(request.image)
         drainJob.getAndSet(null)?.cancel(CancellationException("focused_request_cancelled"))
+    }
+
+    private fun armNativeExecution(
+        requestId: Long,
+        task: LocalVlmNativeTask,
+        image: File,
+        deadlineNanos: Long? = null,
+    ): LocalVlmNativeExecution {
+        val token = LocalVlmNativeExecution(requestId, task, image)
+        check(nativeExecution.compareAndSet(null, token))
+        if (deadlineNanos != null) {
+            scheduleNativeAbort(
+                token,
+                LocalVlmNativeAbortPolicy.deadlineDelayNanos(
+                    deadlineNanos,
+                    SystemClock.elapsedRealtimeNanos(),
+                ),
+                "deadline",
+            )
+        }
+        return token
+    }
+
+    private fun requestNativeAbort(requestId: Long?, reason: String): Boolean {
+        val token = nativeExecution.get() ?: return false
+        if (requestId != null && token.requestId != requestId) return false
+        return scheduleNativeAbort(
+            token,
+            LocalVlmNativeAbortPolicy.COOPERATIVE_STOP_GRACE_NANOS,
+            reason,
+        )
+    }
+
+    private fun scheduleNativeAbort(
+        token: LocalVlmNativeExecution,
+        delayNanos: Long,
+        reason: String,
+    ): Boolean = synchronized(nativeAbortLock) {
+        if (nativeExecution.get() !== token) return@synchronized false
+        val replacement = runCatching {
+            nativeAbortExecutor.schedule(
+                { hardAbortNativeExecution(token, reason) },
+                delayNanos.coerceAtLeast(0L),
+                TimeUnit.NANOSECONDS,
+            )
+        }.getOrElse {
+            hardAbortNativeExecution(token, "scheduler_unavailable")
+            return@synchronized true
+        }
+        nativeAbortFuture.getAndSet(replacement)?.cancel(false)
+        true
+    }
+
+    private fun disarmNativeExecution(token: LocalVlmNativeExecution) {
+        if (!nativeExecution.compareAndSet(token, null)) return
+        synchronized(nativeAbortLock) {
+            nativeAbortFuture.getAndSet(null)?.cancel(false)
+        }
+    }
+
+    private fun hardAbortNativeExecution(token: LocalVlmNativeExecution, reason: String) {
+        if (!nativeExecution.compareAndSet(token, null)) return
+        nativeAbortFuture.set(null)
+        deleteOwnedImage(token.image)
+        Log.e(
+            LOG_TAG,
+            "state=native_hard_abort task=${token.task.logName} request=${token.requestId} reason=$reason",
+        )
+        // This service has its own Android process. Killing it is the only hard bound available
+        // when the proprietary native prefill call ignores cooperative cancellation; Android's
+        // still-active client binding reconstructs a fresh service without killing Android Node.
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun decodeRequest(message: Message): InferenceRequest? {
@@ -692,6 +886,7 @@ class LocalVlmInferenceService : Service() {
         const val VLM_LEASE_ACQUISITION_TIMEOUT_MILLIS = 25L
         const val FOCUSED_VQA_LEASE_RETRY_MILLIS = 25L
         const val QNN_PRIORITY_POLL_MILLIS = 20L
+        const val PROCESS_RETIRE_LOG_FLUSH_MILLIS = 100L
         const val MAXIMUM_FOCUSED_VQA_REQUEST_AGE_NANOS = 1_500_000_000L
         val SHA256 = Regex("[a-f0-9]{64}")
         val IMAGE_NAME = Regex("frame-[1-9][0-9]{0,18}\\.jpg")
@@ -870,8 +1065,8 @@ private class GenieXLocalVlmEngine(
                         nCtx = CONTEXT_TOKENS,
                         nThreads = WORKER_THREADS,
                         nThreadsBatch = WORKER_THREADS,
-                        nBatch = 1,
-                        nUBatch = 1,
+                        nBatch = LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS,
+                        nUBatch = LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS,
                         nSeqMax = 1,
                         nGpuLayers = -1,
                     ),
@@ -895,10 +1090,10 @@ private class GenieXLocalVlmEngine(
         const val WORKER_THREADS = 4
         const val ENVIRONMENT_MAX_OUTPUT_TOKENS = 6
         const val ENVIRONMENT_MAX_OUTPUT_CHARACTERS = 32
-        // The phone's measured HTP path exceeded the eight-second response budget when allowed to
-        // generate 48 tokens. Focused answers are intentionally concise, so cap generation at 24
-        // tokens while retaining the existing hard timeout and cooperative QNN preemption.
-        const val FOCUSED_VQA_MAX_OUTPUT_TOKENS = 24
+        // A physical Poco run still exceeded the eight-second response budget at 24 tokens.
+        // Focused answers are a terse interaction layer, so bound them to eight generated tokens;
+        // the hard timeout and cooperative QNN preemption remain authoritative.
+        const val FOCUSED_VQA_MAX_OUTPUT_TOKENS = 8
         const val DETERMINISTIC_SEED = 2_603
         const val ENVIRONMENT_INFERENCE_TIMEOUT_MILLIS = 8_000L
         const val FOCUSED_VQA_INFERENCE_TIMEOUT_MILLIS = 8_000L
@@ -910,3 +1105,20 @@ private class GenieXLocalVlmEngine(
 }
 
 private class LocalVlmInferenceTimeout : IllegalStateException("vlm_inference_timeout")
+
+private enum class LocalVlmNativeTask(val logName: String) {
+    PREWARM("prewarm"),
+    ENVIRONMENT("environment"),
+    FOCUSED_OBJECT_VQA("focused_object_vqa"),
+}
+
+private fun LocalVlmTaskKind.toNativeTask(): LocalVlmNativeTask = when (this) {
+    LocalVlmTaskKind.SCENE_ENVIRONMENT_CLASSIFICATION_V1 -> LocalVlmNativeTask.ENVIRONMENT
+    LocalVlmTaskKind.FOCUSED_OBJECT_VQA_V1 -> LocalVlmNativeTask.FOCUSED_OBJECT_VQA
+}
+
+private class LocalVlmNativeExecution(
+    val requestId: Long,
+    val task: LocalVlmNativeTask,
+    val image: File,
+)

@@ -30,6 +30,14 @@ import org.conceptflow.mpl.host.realtime.SensorTimeline
 import org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge
 import org.conceptflow.mpl.host.realtime.PerceptionBus
 import org.conceptflow.mpl.host.realtime.PerceptionValidityReason
+import org.conceptflow.mpl.host.speech.AndroidWhisperCppEngine
+import org.conceptflow.mpl.host.speech.PrivateSpeechResult
+import org.conceptflow.mpl.host.speech.PrivateSpeechResultMailbox
+import org.conceptflow.mpl.host.speech.PrivateSpeechResultSummary
+import org.conceptflow.mpl.host.speech.SpeechRuntimePhase
+import org.conceptflow.mpl.host.speech.SpeechRuntimeStatus
+import org.conceptflow.mpl.host.speech.SpeechWindowCoordinator
+import org.conceptflow.mpl.host.speech.SpeechWindowPurpose
 import org.conceptflow.mpl.host.vision.AndroidJpegDecoder
 import org.conceptflow.mpl.host.vision.CameraIntrinsics
 import org.conceptflow.mpl.host.vision.CameraIntrinsicsSource
@@ -37,6 +45,7 @@ import org.conceptflow.mpl.host.vision.CameraIntrinsicsStandardDeviation
 import org.conceptflow.mpl.host.vision.CameraLensDistortionModel
 import org.conceptflow.mpl.host.vision.EncodedJpegFrame
 import org.conceptflow.mpl.host.vision.EnvironmentDepthCoordinator
+import org.conceptflow.mpl.host.vision.EnvironmentSignal
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.AndroidLocalVlmEnvironmentClient
 import org.conceptflow.mpl.host.vision.AndroidLocalVlmFocusedVqaGateway
@@ -49,6 +58,10 @@ import org.conceptflow.mpl.host.vision.HeadCameraExtrinsicProvenance
 import org.conceptflow.mpl.host.vision.HtpLeaseAcquisition
 import org.conceptflow.mpl.host.vision.HtpLeaseTelemetry
 import org.conceptflow.mpl.host.vision.HtpLeaseWorkload
+import org.conceptflow.mpl.host.vision.I420RgbConverter
+import org.conceptflow.mpl.host.vision.HardwareAvcIntraFrameDecoder
+import org.conceptflow.mpl.host.vision.AvcDecodeFaultGate
+import org.conceptflow.mpl.host.vision.InjectedAvcDecodeFailure
 import org.conceptflow.mpl.host.vision.HtpExecutionLease
 import org.conceptflow.mpl.host.vision.LiveMetricCalibrationState
 import org.conceptflow.mpl.host.vision.LiveMetricFusionReason
@@ -73,9 +86,11 @@ import org.conceptflow.mpl.host.vision.QnnLiveFrameExecutor
 import org.conceptflow.mpl.host.vision.QnnLiveFrameResult
 import org.conceptflow.mpl.host.vision.QnnRuntimeBundle
 import org.conceptflow.mpl.host.vision.RawRgbFrame
+import org.conceptflow.mpl.host.vision.RawI420Frame
 import org.conceptflow.mpl.host.vision.SemanticDepthCadenceTier
 import org.conceptflow.mpl.host.vision.SemanticDepthRefreshReason
 import org.conceptflow.mpl.host.vision.TrackEstimateValidity
+import org.conceptflow.mpl.host.vision.TimestampedDepthProfileDecision
 import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.host.vision.VerifiedHeadCameraExtrinsic
 import org.conceptflow.mpl.transport.LiveLinkDisconnectReason
@@ -92,6 +107,7 @@ import org.conceptflow.mpl.transport.LiveSensorDelivery
 import org.conceptflow.mpl.transport.MicrophoneRequestDispatch
 import org.conceptflow.mpl.transport.PocoLiveLinkObserver
 import org.conceptflow.mpl.transport.PocoLiveLinkServer
+import org.conceptflow.mpl.transport.CameraTransportFallbackDispatch
 import org.conceptflow.mpl.transport.AndroidPrivateLanDiscoveryEndpointResolver
 import org.conceptflow.mpl.transport.AndroidWifiDirectEndpointResolver
 import org.conceptflow.mpl.transport.PrivateLanDiscoveryRole
@@ -104,6 +120,7 @@ import org.conceptflow.mpl.v1.FramePayload
 import org.conceptflow.mpl.v1.ImageEncoding
 import org.conceptflow.mpl.v1.LiveLinkTelemetry
 import org.conceptflow.mpl.v1.RokidNodeCommandOperation
+import org.conceptflow.mpl.v1.BatteryChargeState
 
 internal fun LocalVlmFocusedObjectFailure.toFocusRejection(): FocusedVqaRejection = when (this) {
     LocalVlmFocusedObjectFailure.BUSY -> FocusedVqaRejection.BUSY
@@ -249,9 +266,16 @@ enum class LiveRokidNodeCommandPhase { IDLE, REQUESTED, ACCEPTED, REJECTED }
 internal fun liveMicrophoneControlEnabled(
     phase: LiveMachineVisionPhase,
     microphonePhase: LiveMicrophonePhase,
+    speechPhase: SpeechRuntimePhase = SpeechRuntimePhase.STOPPED,
 ): Boolean = phase == LiveMachineVisionPhase.STREAMING &&
     microphonePhase != LiveMicrophonePhase.REQUESTING &&
-    microphonePhase != LiveMicrophonePhase.ACTIVE
+    microphonePhase != LiveMicrophonePhase.ACTIVE &&
+    speechPhase != SpeechRuntimePhase.PREWARMING &&
+    speechPhase != SpeechRuntimePhase.CAPTURING &&
+    !speechAnalysisPriorityActive(speechPhase)
+
+internal fun speechAnalysisPriorityActive(phase: SpeechRuntimePhase?): Boolean =
+    phase == SpeechRuntimePhase.ANALYZING || phase == SpeechRuntimePhase.TRANSCRIBING
 
 internal fun accessibleLiveMachineVisionPhase(phase: LiveMachineVisionPhase): String = when (phase) {
     LiveMachineVisionPhase.IDLE -> "Stopped"
@@ -369,6 +393,8 @@ data class LivePeerPressure(
     val touchOverflowEvents: Long,
     val sentRealtimeMessages: Long,
     val sentCameraMessages: Long,
+    val sentRealtimeBytes: Long,
+    val sentCameraBytes: Long,
     val cameraFramesAnalyzed: Long,
     val cameraFramesEmitted: Long,
     val cameraRelaxedTierSamples: Long,
@@ -379,11 +405,38 @@ data class LivePeerPressure(
     val currentCameraTargetFramesPerSecond: Int,
 )
 
+/** Session aggregate of optional, content-free Rokid battery gauge samples. */
+data class LivePeerPower(
+    val samplesReceived: Long,
+    val initialLevelPercent: Int?,
+    val latestLevelPercent: Int?,
+    val minimumLevelPercent: Int?,
+    val latestChargeState: BatteryChargeState,
+    val initialChargeCounterMicroampHours: Long?,
+    val latestChargeCounterMicroampHours: Long?,
+    val latestVoltageMicrovolts: Long?,
+    val latestCurrentMicroamps: Long?,
+    val latestAverageCurrentMicroamps: Long?,
+    val latestTemperatureDeciCelsius: Int?,
+    val maximumTemperatureDeciCelsius: Int?,
+    val latestExternalPowerConnected: Boolean?,
+) {
+    val chargeCounterDeltaMicroampHours: Long?
+        get() = initialChargeCounterMicroampHours?.let { initial ->
+            latestChargeCounterMicroampHours?.minus(initial)
+        }
+}
+
 data class LiveMachineVisionStatus(
     val phase: LiveMachineVisionPhase,
     val selectedProfile: String,
     val framesReceived: Long,
     val cameraFramesRejectedStale: Long,
+    val avcFramesDecoded: Long,
+    val avcDecodeFailures: Long,
+    val avcTransportFallbacks: Long,
+    val currentCameraEncoding: ImageEncoding,
+    val avcTransportDecodeMs: LatencyPercentiles,
     val framesDroppedBeforeInference: Long,
     val imuBatchesReceived: Long,
     val imuSamplesReceived: Long,
@@ -397,8 +450,11 @@ data class LiveMachineVisionStatus(
     val ambientProfilePrior: AmbientEnvironmentPrior,
     val ambientNoiseFloorDbFs: Float?,
     val ambientRecommendedGain: Float?,
+    val speechRuntime: SpeechRuntimeStatus,
+    val privateSpeechResult: PrivateSpeechResultSummary,
     val touchEventsReceived: Long,
     val peerPressure: LivePeerPressure?,
+    val peerPower: LivePeerPower?,
     val nodeCommandPhase: LiveRokidNodeCommandPhase,
     val lastNodeCommandOperation: RokidNodeCommandOperation?,
     val lastNodeCommandFromGlassesGesture: Boolean,
@@ -446,6 +502,21 @@ data class LiveMachineVisionStatus(
         append("; perception unavailable: ").append(perceptionUnavailableFrames)
         append("; results rejected stale: ").append(perceptionResultsRejectedStale)
         append("; replaced: ").append(framesDroppedBeforeInference).append(". ")
+        append("Current camera transport: ")
+            .append(
+                if (currentCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA) {
+                    "AVC intra"
+                } else {
+                    "I420"
+                },
+            ).append(". ")
+        if (avcFramesDecoded > 0L || avcDecodeFailures > 0L) {
+            append("AVC transport: decoded ").append(avcFramesDecoded)
+            append("; failures ").append(avcDecodeFailures)
+            append("; fallbacks ").append(avcTransportFallbacks)
+            avcTransportDecodeMs.p95?.let { append("; decode p95 milliseconds ").append(format(it)) }
+            append(". ")
+        }
         append("Detected instances: current ").append(currentDetectedInstances)
         append("; total ").append(totalDetectedInstances).append(". ")
         append("Finite outputs: last YOLO ").append(lastFiniteYoloValues)
@@ -467,6 +538,18 @@ data class LiveMachineVisionStatus(
         ambientNoiseFloorDbFs?.let { append("; relative noise floor dBFS: ").append("%.1f".format(it)) }
         ambientRecommendedGain?.let { append("; calibration gain: ").append("%.2f".format(it)) }
         append(". ")
+        append("On-device speech: ").append(speechRuntime.phase.name.lowercase())
+        append("; speech detected: ").append(speechRuntime.speechDetected)
+        append("; transcript characters: ").append(speechRuntime.transcriptCharacterCount)
+        append("; analysis milliseconds: ")
+            .append(java.lang.String.format(java.util.Locale.ROOT, "%.1f", speechRuntime.analysisElapsedNanos / 1e6))
+        append("; accepted audio blocks: ").append(speechRuntime.acceptedBlocks)
+        append("; rejected audio blocks: ").append(speechRuntime.rejectedBlocks)
+        append("; playback-suppressed blocks: ").append(speechRuntime.suppressedBlocks).append(". ")
+        append("Private speech result pending: ").append(privateSpeechResult.pending)
+        append("; speech detected: ").append(privateSpeechResult.speechDetected)
+        append("; transcript characters: ").append(privateSpeechResult.transcriptCharacterCount)
+        append("; transcription timed out: ").append(privateSpeechResult.transcriptionTimedOut).append(". ")
         append("Touch events received: ").append(touchEventsReceived).append(". ")
         peerPressure?.let {
             append("Rokid queue telemetry: samples ").append(it.samplesReceived)
@@ -480,6 +563,8 @@ data class LiveMachineVisionStatus(
             append(", touch overflow ").append(it.touchOverflowEvents)
             append("; sent realtime messages ").append(it.sentRealtimeMessages)
             append(", camera messages ").append(it.sentCameraMessages)
+            append("; sent realtime bytes ").append(it.sentRealtimeBytes)
+            append(", camera bytes ").append(it.sentCameraBytes)
             append("; camera gate analyzed ").append(it.cameraFramesAnalyzed)
             append(", emitted ").append(it.cameraFramesEmitted)
             append(", relaxed tier ").append(it.cameraRelaxedTierSamples)
@@ -488,6 +573,24 @@ data class LiveMachineVisionStatus(
             append(", blurry ").append(it.cameraFramesDroppedBlurry)
             append(", cadence ").append(it.cameraFramesDroppedCadence)
             append(", target FPS ").append(it.currentCameraTargetFramesPerSecond).append(". ")
+        }
+        peerPower?.let {
+            append("Rokid power telemetry: samples ").append(it.samplesReceived)
+            it.initialLevelPercent?.let { value -> append("; initial battery ").append(value).append(" percent") }
+            it.latestLevelPercent?.let { value -> append("; latest battery ").append(value).append(" percent") }
+            it.minimumLevelPercent?.let { value -> append("; minimum battery ").append(value).append(" percent") }
+            if (it.latestChargeState != BatteryChargeState.BATTERY_CHARGE_STATE_UNSPECIFIED) {
+                append("; state ").append(it.latestChargeState.name.removePrefix("BATTERY_CHARGE_STATE_").lowercase())
+            }
+            it.latestVoltageMicrovolts?.let { value -> append("; voltage microvolts ").append(value) }
+            it.latestCurrentMicroamps?.let { value -> append("; current microamps ").append(value) }
+            it.latestAverageCurrentMicroamps?.let { value -> append("; average current microamps ").append(value) }
+            it.latestTemperatureDeciCelsius?.let { value -> append("; temperature deci Celsius ").append(value) }
+            it.chargeCounterDeltaMicroampHours?.let { value ->
+                append("; charge-counter change microamp hours ").append(value)
+            }
+            it.latestExternalPowerConnected?.let { value -> append("; external power ").append(value) }
+            append(". ")
         }
         append("Rokid Node command: ").append(nodeCommandPhase.name.lowercase())
         lastNodeCommandOperation?.let {
@@ -592,6 +695,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     private var selectedProfile = selectedProfile
     private var framesReceived = 0L
     private var cameraFramesRejectedStale = 0L
+    private var avcFramesDecoded = 0L
+    private var avcDecodeFailures = 0L
+    private var avcTransportFallbacks = 0L
+    private var currentCameraEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420
+    private val avcTransportDecodeNanos = ArrayList<Long>()
     private var framesDropped = 0L
     private var imuBatches = 0L
     private var imuSamples = 0L
@@ -605,8 +713,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     private var ambientProfilePrior = AmbientEnvironmentPrior.UNKNOWN
     private var ambientNoiseFloorDbFs: Float? = null
     private var ambientRecommendedGain: Float? = null
+    private var speechRuntime = SpeechRuntimeStatus(SpeechRuntimePhase.STOPPED)
+    private var privateSpeechResult = PrivateSpeechResultSummary()
     private var touchEvents = 0L
     private var peerPressure: LivePeerPressure? = null
+    private var peerPower: LivePeerPower? = null
     private var nodeCommandPhase = LiveRokidNodeCommandPhase.IDLE
     private var lastNodeCommandOperation: RokidNodeCommandOperation? = null
     private var lastNodeCommandFromGlassesGesture = false
@@ -655,6 +766,17 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         }
     }
     @Synchronized fun cameraReplaced() { framesDropped = Math.addExact(framesDropped, 1) }
+    @Synchronized
+    fun avcDecoded(elapsedNanos: Long) {
+        require(elapsedNanos >= 0L)
+        avcFramesDecoded = Math.addExact(avcFramesDecoded, 1L)
+        appendBounded(avcTransportDecodeNanos, elapsedNanos)
+    }
+    @Synchronized
+    fun avcDecodeFailed(fallbackInitiated: Boolean = false) {
+        avcDecodeFailures = Math.addExact(avcDecodeFailures, 1L)
+        if (fallbackInitiated) avcTransportFallbacks = Math.addExact(avcTransportFallbacks, 1L)
+    }
     @Synchronized fun inferenceStarted() { attempts = Math.addExact(attempts, 1) }
     @Synchronized fun environmentPending() { environmentPending = Math.addExact(environmentPending, 1) }
     @Synchronized
@@ -669,7 +791,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         lastPerceptionDiagnostic = "PERCEPTION_RESULT_STALE"
     }
     @Synchronized
-    fun sessionReady() {
+    fun sessionReady(cameraEncoding: ImageEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420) {
+        require(
+            cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
+                cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
+        )
         val diagnostic = lastLinkDiagnostic
         if (!sessionIsReady && !lastDiagnosticOccurredDuringSession &&
             diagnostic != null && diagnostic in TRANSIENT_PRE_SESSION_DIAGNOSTICS
@@ -678,6 +804,7 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         }
         closeEvidence = LiveLinkCloseEvidence()
         sessionIsReady = true
+        currentCameraEncoding = cameraEncoding
     }
 
     @Synchronized
@@ -744,6 +871,16 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         ambientRecommendedGain = recommendedGain
     }
 
+    @Synchronized
+    fun speechRuntime(value: SpeechRuntimeStatus) {
+        speechRuntime = value
+    }
+
+    @Synchronized
+    fun privateSpeechResult(value: PrivateSpeechResultSummary) {
+        privateSpeechResult = value
+    }
+
     @Synchronized fun touchReceived(count: Int = 1) {
         require(count > 0)
         touchEvents = Math.addExact(touchEvents, count.toLong())
@@ -753,25 +890,68 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     fun peerTelemetry(value: LiveLinkTelemetry) {
         val samples = Math.addExact(peerPressure?.samplesReceived ?: 0L, 1L)
         peerPressure = LivePeerPressure(
-            samples,
-            value.pendingCameraFrames,
-            value.pendingImuBatches,
-            value.pendingAudioBlocks,
-            value.pendingTouchEvents,
-            value.droppedCameraFrames,
-            value.droppedImuBatches,
-            value.droppedAudioBlocks,
-            value.touchOverflowEvents,
-            value.sentRealtimeMessages,
-            value.sentCameraMessages,
-            value.cameraFramesAnalyzed,
-            value.cameraFramesEmitted,
-            value.cameraRelaxedTierSamples,
-            value.cameraMotionTierSamples,
-            value.cameraFramesDroppedDark,
-            value.cameraFramesDroppedBlurry,
-            value.cameraFramesDroppedCadence,
-            value.currentCameraTargetFps,
+            samplesReceived = samples,
+            pendingCameraFrames = value.pendingCameraFrames,
+            pendingImuBatches = value.pendingImuBatches,
+            pendingAudioBlocks = value.pendingAudioBlocks,
+            pendingTouchEvents = value.pendingTouchEvents,
+            droppedCameraFrames = value.droppedCameraFrames,
+            droppedImuBatches = value.droppedImuBatches,
+            droppedAudioBlocks = value.droppedAudioBlocks,
+            touchOverflowEvents = value.touchOverflowEvents,
+            sentRealtimeMessages = value.sentRealtimeMessages,
+            sentCameraMessages = value.sentCameraMessages,
+            sentRealtimeBytes = value.sentRealtimeBytes,
+            sentCameraBytes = value.sentCameraBytes,
+            cameraFramesAnalyzed = value.cameraFramesAnalyzed,
+            cameraFramesEmitted = value.cameraFramesEmitted,
+            cameraRelaxedTierSamples = value.cameraRelaxedTierSamples,
+            cameraMotionTierSamples = value.cameraMotionTierSamples,
+            cameraFramesDroppedDark = value.cameraFramesDroppedDark,
+            cameraFramesDroppedBlurry = value.cameraFramesDroppedBlurry,
+            cameraFramesDroppedCadence = value.cameraFramesDroppedCadence,
+            currentCameraTargetFramesPerSecond = value.currentCameraTargetFps,
+        )
+        updatePeerPower(value)
+    }
+
+    private fun updatePeerPower(value: LiveLinkTelemetry) {
+        val hasPower = value.hasBatteryLevelPercent() ||
+            value.batteryChargeState != BatteryChargeState.BATTERY_CHARGE_STATE_UNSPECIFIED ||
+            value.hasBatteryHealthGood() || value.hasBatteryVoltageMicrovolts() ||
+            value.hasBatteryCurrentMicroamps() || value.hasBatteryAverageCurrentMicroamps() ||
+            value.hasBatteryChargeCounterMicroampHours() || value.hasBatteryTemperatureDeciCelsius() ||
+            value.hasExternalPowerConnected() || value.hasBatteryEnergyNanowattHours()
+        if (!hasPower) return
+        val previous = peerPower
+        val level = value.takeIf { it.hasBatteryLevelPercent() }?.batteryLevelPercent
+        val chargeCounter = value.takeIf { it.hasBatteryChargeCounterMicroampHours() }
+            ?.batteryChargeCounterMicroampHours
+        val temperature = value.takeIf { it.hasBatteryTemperatureDeciCelsius() }
+            ?.batteryTemperatureDeciCelsius
+        peerPower = LivePeerPower(
+            samplesReceived = Math.addExact(previous?.samplesReceived ?: 0L, 1L),
+            initialLevelPercent = previous?.initialLevelPercent ?: level,
+            latestLevelPercent = level ?: previous?.latestLevelPercent,
+            minimumLevelPercent = listOfNotNull(previous?.minimumLevelPercent, level).minOrNull(),
+            latestChargeState = value.batteryChargeState.takeUnless {
+                it == BatteryChargeState.BATTERY_CHARGE_STATE_UNSPECIFIED
+            } ?: previous?.latestChargeState ?: BatteryChargeState.BATTERY_CHARGE_STATE_UNSPECIFIED,
+            initialChargeCounterMicroampHours = previous?.initialChargeCounterMicroampHours ?: chargeCounter,
+            latestChargeCounterMicroampHours = chargeCounter ?: previous?.latestChargeCounterMicroampHours,
+            latestVoltageMicrovolts = value.takeIf { it.hasBatteryVoltageMicrovolts() }
+                ?.batteryVoltageMicrovolts ?: previous?.latestVoltageMicrovolts,
+            latestCurrentMicroamps = value.takeIf { it.hasBatteryCurrentMicroamps() }
+                ?.batteryCurrentMicroamps ?: previous?.latestCurrentMicroamps,
+            latestAverageCurrentMicroamps = value.takeIf { it.hasBatteryAverageCurrentMicroamps() }
+                ?.batteryAverageCurrentMicroamps ?: previous?.latestAverageCurrentMicroamps,
+            latestTemperatureDeciCelsius = temperature ?: previous?.latestTemperatureDeciCelsius,
+            maximumTemperatureDeciCelsius = listOfNotNull(
+                previous?.maximumTemperatureDeciCelsius,
+                temperature,
+            ).maxOrNull(),
+            latestExternalPowerConnected = value.takeIf { it.hasExternalPowerConnected() }
+                ?.externalPowerConnected ?: previous?.latestExternalPowerConnected,
         )
     }
 
@@ -857,6 +1037,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         selectedProfile,
         framesReceived,
         cameraFramesRejectedStale,
+        avcFramesDecoded,
+        avcDecodeFailures,
+        avcTransportFallbacks,
+        currentCameraEncoding,
+        percentiles(avcTransportDecodeNanos),
         framesDropped,
         imuBatches,
         imuSamples,
@@ -870,8 +1055,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         ambientProfilePrior,
         ambientNoiseFloorDbFs,
         ambientRecommendedGain,
+        speechRuntime,
+        privateSpeechResult,
         touchEvents,
         peerPressure,
+        peerPower,
         nodeCommandPhase,
         lastNodeCommandOperation,
         lastNodeCommandFromGlassesGesture,
@@ -960,7 +1148,12 @@ class LiveMachineVisionController(
     private val terminalPublication = LiveTerminalPublicationGate()
     private var reconnectPolicy = LiveReconnectPolicy()
     private val sessionDeadlineGate = LiveSessionDeadlineGate()
-    private val metricFusion = LiveMetricTemporalFusion(calibrationProvider, headCameraExtrinsic)
+    private val metricFusion = LiveMetricTemporalFusion(
+        calibrationProvider,
+        headCameraExtrinsic,
+        minimumSemanticConfidence =
+            org.conceptflow.mpl.host.vision.YoloSemanticConfidencePolicy.PROPOSAL_CONFIDENCE,
+    )
     private val trackMaintainer = LightweightTrackMaintainer(headFromCamera = headCameraExtrinsic)
     private val modelAdmission = LiveHtpFrameAdmissionGate()
     private val vlmHtpAdmission = LiveVlmHtpAdmissionGate()
@@ -974,6 +1167,9 @@ class LiveMachineVisionController(
     private val focusedVqaRouter = ReplaceableFocusedVqaGateway()
     private val focusedVqaFrames = BoundedFocusedVqaFrameStore(ElapsedHostClock::nowNanos)
     private val spatialFocus = SpatialFocusManager(vqaGateway = focusedVqaRouter)
+    private val privateSpeechResults = PrivateSpeechResultMailbox(clockNanos = ElapsedHostClock::nowNanos)
+    private val avcDecoder = HardwareAvcIntraFrameDecoder()
+    private val avcDecodeFaultGate = AvcDecodeFaultGate()
     private var executor: ScheduledExecutorService? = null
     private var startupExecutor: ExecutorService? = null
     private var startupFuture: Future<*>? = null
@@ -981,6 +1177,7 @@ class LiveMachineVisionController(
     private var qnn: QnnLiveFrameExecutor? = null
     private var environmentVlm: AndroidLocalVlmEnvironmentClient? = null
     private var focusedVqaGateway: AndroidLocalVlmFocusedVqaGateway? = null
+    private var speechRuntime: SpeechWindowCoordinator? = null
     @Volatile private var cameraIngress: GlassesStreamIngress? = null
     @Volatile private var imuIngress: GlassesStreamIngress? = null
     @Volatile private var microphoneIngress: GlassesStreamIngress? = null
@@ -991,10 +1188,13 @@ class LiveMachineVisionController(
     private var currentCameraFrameId = 0L
     private var currentCameraCaptureNs = 0L
     private var currentCameraUncertaintyNs = 0L
-    private var currentIngressGeneration = 0L
+    private var currentCameraEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420
+    private var avcDecoderLogged = false
+    @Volatile private var currentIngressGeneration = 0L
     private var microphoneWindowGeneration = 0L
     private var ambientProfileRequested = false
     private var ambientProfilePrior = AmbientEnvironmentPrior.UNKNOWN
+    private var pendingSpeechWindowPurpose: SpeechWindowPurpose? = null
     private var scheduledDwellGeneration = 0L
     private var scheduledFocusedVqaCorrelation: FocusedVqaCorrelation? = null
     private var lastPublishedNs = 0L
@@ -1009,12 +1209,14 @@ class LiveMachineVisionController(
         terminalPublication.reset()
         sessionDeadlineGate.reset()
         metricFusion.reset()
+        avcDecodeFaultGate.clear()
         trackMaintainer.reset()
         modelAdmission.reset()
         vlmHtpAdmission.reset()
         latestDepthProfileId = ""
         ambientSoundProfiler.reset()
         ambientClassificationProfileGate.reset()
+        privateSpeechResults.clear()
         ambientProfileRequested = false
         ambientProfilePrior = when (spec.environmentMode) {
             EnvironmentSelectionMode.FORCE_INDOOR -> AmbientEnvironmentPrior.INDOOR
@@ -1037,6 +1239,19 @@ class LiveMachineVisionController(
             status = it
             publish(force = true)
         }
+        val speech = SpeechWindowCoordinator(
+            AndroidWhisperCppEngine(context),
+            onStatus = { runtimeStatus ->
+                status?.speechRuntime(runtimeStatus)
+                publish(force = true)
+                if (runtimeStatus.phase == SpeechRuntimePhase.READY) {
+                    executor?.execute(::resumePendingAmbientProfile)
+                }
+            },
+            onPrivateResult = ::handlePrivateSpeechResult,
+        )
+        speechRuntime = speech
+        speech.prewarm()
         maximumFrames = spec.maximumFrames
         try {
             val scheduled = Executors.newScheduledThreadPool(2) { runnable ->
@@ -1172,9 +1387,36 @@ class LiveMachineVisionController(
     @Synchronized fun snapshot(): LiveMachineVisionStatus? = status?.snapshot()
     fun updateGnss(sample: GnssQualitySample): Boolean = environmentCoordinator.updateGnss(sample)
 
-    fun requestMicrophone(): MicrophoneRequestDispatch {
-        val dispatch = server?.requestMicrophone() ?: MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
+    /** Releases the one RAM-only user-query result to its future VQA/command consumer. */
+    @Synchronized
+    fun consumePrivateSpeechResult(): PrivateSpeechResult? {
+        val result = privateSpeechResults.consume()
+        status?.privateSpeechResult(privateSpeechResults.summary())
+        publish(force = true)
+        return result
+    }
+
+    fun requestMicrophone(): MicrophoneRequestDispatch = requestSpeechWindow(SpeechWindowPurpose.USER_QUERY)
+
+    @Synchronized
+    internal fun injectNextAvcDecodeFailure(): Boolean =
+        active.get() && currentCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA &&
+            avcDecodeFaultGate.arm()
+
+    @Synchronized
+    private fun requestSpeechWindow(purpose: SpeechWindowPurpose): MicrophoneRequestDispatch {
+        if (speechWindowBusy()) {
+            return MicrophoneRequestDispatch.ALREADY_PENDING_OR_ACTIVE
+        }
+        if (purpose == SpeechWindowPurpose.USER_QUERY) {
+            privateSpeechResults.clear()
+            status?.privateSpeechResult(privateSpeechResults.summary())
+        }
+        pendingSpeechWindowPurpose = purpose
+        val dispatch = server?.requestMicrophone(MICROPHONE_ANALYSIS_WINDOW_MILLIS)
+            ?: MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
         if (dispatch != MicrophoneRequestDispatch.REQUESTED) {
+            pendingSpeechWindowPurpose = null
             status?.microphoneState(LiveMicrophonePhase.REJECTED)
             publish(force = true)
         }
@@ -1203,8 +1445,15 @@ class LiveMachineVisionController(
         if (!ambientProfileRequested || ambientSoundProfiler.isActive()) {
             return MicrophoneRequestDispatch.ALREADY_PENDING_OR_ACTIVE
         }
+        if (speechWindowBusy()) return MicrophoneRequestDispatch.ALREADY_PENDING_OR_ACTIVE
         val now = ElapsedHostClock.nowNanos()
-        ambientSoundProfiler.begin(currentIngressGeneration, ambientProfilePrior, now)
+        ambientSoundProfiler.begin(
+            currentIngressGeneration,
+            ambientProfilePrior,
+            now,
+            leadingSuppressionNanos = MICROPHONE_CONSENT_CUE_GUARD_NANOS,
+        )
+        pendingSpeechWindowPurpose = SpeechWindowPurpose.AMBIENT_AND_VAD
         val dispatch = server?.requestMicrophone(AMBIENT_PROFILE_WINDOW_MILLIS)
             ?: MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
         if (dispatch == MicrophoneRequestDispatch.REQUESTED) {
@@ -1212,11 +1461,27 @@ class LiveMachineVisionController(
             status?.ambientProfile(AmbientProfilePhase.SAMPLING, ambientProfilePrior)
         } else {
             ambientProfileRequested = false
+            pendingSpeechWindowPurpose = null
             ambientSoundProfiler.reset()
             status?.ambientProfile(AmbientProfilePhase.FAILED, ambientProfilePrior)
         }
         publish(force = true)
         return dispatch
+    }
+
+    @Synchronized
+    private fun resumePendingAmbientProfile() {
+        if (!active.get() || currentIngressGeneration <= 0L || !ambientProfileRequested) return
+        startAmbientProfileWindow()
+    }
+
+    private fun speechWindowBusy(): Boolean = when (speechRuntime?.snapshot()?.phase) {
+        SpeechRuntimePhase.PREWARMING,
+        SpeechRuntimePhase.CAPTURING,
+        SpeechRuntimePhase.ANALYZING,
+        SpeechRuntimePhase.TRANSCRIBING,
+        -> true
+        else -> false
     }
 
     /** Keeps VLM-result deduplication, prior selection, and mic dispatch in one critical section. */
@@ -1250,7 +1515,16 @@ class LiveMachineVisionController(
                 z = it.z.toDouble(),
             )
         }
-        return publishFocusTransition(spatialFocus.command(command, nowNanos, head).state)
+        val transition = spatialFocus.command(command, nowNanos, head)
+        if ((command == SpatialFocusCommand.NEXT || command == SpatialFocusCommand.PREVIOUS) &&
+            transition.state.mode == org.conceptflow.mpl.host.focus.SpatialFocusMode.BROWSING
+        ) {
+            environmentVlm?.prepareFocusedObjectVqa()
+        }
+        if (transition.effect is org.conceptflow.mpl.host.focus.SpatialFocusEffect.RequestVqa) {
+            requestSpeechWindow(SpeechWindowPurpose.USER_QUERY)
+        }
+        return publishFocusTransition(transition.state)
     }
 
     fun playRokidBrandSequence(): RokidNodeCommandDispatch {
@@ -1258,6 +1532,9 @@ class LiveMachineVisionController(
             RokidNodeCommandOperation.ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE,
         ) ?: RokidNodeCommandDispatch.NO_AUTHENTICATED_SESSION
         if (dispatch == RokidNodeCommandDispatch.REQUESTED) {
+            speechRuntime?.suppressKnownPlayback(
+                ElapsedHostClock.nowNanos() + ROKID_BRAND_PLAYBACK_SUPPRESSION_NANOS,
+            )
             status?.nodeCommandRequested(
                 RokidNodeCommandOperation.ROKID_NODE_COMMAND_OPERATION_PLAY_BRAND_SEQUENCE,
                 fromGlassesGesture = false,
@@ -1361,6 +1638,15 @@ class LiveMachineVisionController(
                 microphoneIngress = binding?.let {
                     GlassesStreamIngress(it.sessionId, it.leaseId, true, ElapsedHostClock)
                 }
+                val speech = speechRuntime
+                val speechWindowStarted = speech?.begin(
+                    pendingSpeechWindowPurpose ?: SpeechWindowPurpose.AMBIENT_AND_VAD,
+                    currentIngressGeneration,
+                    ElapsedHostClock.nowNanos(),
+                ) == true
+                if (speechWindowStarted) {
+                    speech.suppressLeadingAudio(MICROPHONE_CONSENT_CUE_GUARD_NANOS)
+                }
                 status?.microphoneState(LiveMicrophonePhase.ACTIVE)
                 executor?.schedule(
                     { completeMicrophoneWindow(generation) },
@@ -1372,6 +1658,12 @@ class LiveMachineVisionController(
             LiveMicrophoneLeaseState.COMPLETE,
             -> {
                 completeAmbientProfileWindow()
+                if (state == LiveMicrophoneLeaseState.COMPLETE) {
+                    speechRuntime?.finish()
+                } else {
+                    speechRuntime?.cancelWindow()
+                }
+                pendingSpeechWindowPurpose = null
                 microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
                 microphoneIngress = null
                 status?.microphoneState(
@@ -1392,6 +1684,8 @@ class LiveMachineVisionController(
         microphoneIngress = null
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
         completeAmbientProfileWindow()
+        speechRuntime?.finish()
+        pendingSpeechWindowPurpose = null
         status?.microphoneState(LiveMicrophonePhase.COMPLETE)
         publish(force = true)
     }
@@ -1410,7 +1704,7 @@ class LiveMachineVisionController(
                 LiveSessionArrival.RECONNECT -> Unit
             }
         }
-        status?.sessionReady()
+        status?.sessionReady(session.lease.cameraEncoding)
         focusedVqaGateway?.reset()
         environmentVlm?.cancelOutstanding()
         metricFusion.reset()
@@ -1430,6 +1724,8 @@ class LiveMachineVisionController(
             spatialFocus.reset(currentIngressGeneration, sessionNow, perceptionBus.stats().latestRevision),
         )
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
+        speechRuntime?.cancelWindow()
+        pendingSpeechWindowPurpose = null
         ambientSoundProfiler.reset()
         ambientClassificationProfileGate.reset()
         ambientProfilePrior = when (environmentCoordinator.mode()) {
@@ -1439,6 +1735,9 @@ class LiveMachineVisionController(
         }
         ambientProfileRequested = true
         currentSessionBinding = session.binding
+        currentCameraEncoding = session.lease.cameraEncoding
+        avcDecoder.reset()
+        avcDecoderLogged = false
         status?.microphoneState(LiveMicrophonePhase.IDLE)
         cameraIngress = GlassesStreamIngress(
             session.binding.sessionId, session.binding.leaseId, false, ElapsedHostClock,
@@ -1472,6 +1771,9 @@ class LiveMachineVisionController(
         imuIngress = null
         microphoneIngress = null
         currentSessionBinding = null
+        currentCameraEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420
+        avcDecoder.reset()
+        avcDecoderLogged = false
         ambientSoundProfiler.reset()
         ambientClassificationProfileGate.reset()
         ambientProfileRequested = false
@@ -1494,7 +1796,11 @@ class LiveMachineVisionController(
         publish(force = true)
     }
 
-    @Synchronized
+    /**
+     * Runs on the realtime-lane reader. The ingress, timeline, fusion, tracker, bus, status and
+     * publication components provide their own synchronization; taking the controller monitor
+     * here would let high-rate IMU work starve the independent camera-lane reader.
+     */
     private fun acceptImu(delivery: LiveSensorDelivery) {
         if (!active.get()) return
         val ingress = imuIngress ?: return
@@ -1544,7 +1850,11 @@ class LiveMachineVisionController(
         }
     }
 
-    @Synchronized
+    /**
+     * Runs on the camera-lane reader and deliberately does not share the controller monitor with
+     * IMU fusion. Session transitions close/join both transport readers before replacing ingress
+     * ownership, while the referenced ingress and downstream components are independently safe.
+     */
     private fun acceptCamera(delivery: LiveSensorDelivery) {
         if (!active.get()) return
         val ingress = cameraIngress ?: return
@@ -1559,7 +1869,42 @@ class LiveMachineVisionController(
             currentCameraUncertaintyNs = normalized.uncertaintyNs
         }
         if (disposition != StreamIngressDisposition.CAMERA_READY) return
-        val frame = ingress.takeLatestCamera() ?: return
+        val wireFrame = ingress.takeLatestCamera() ?: return
+        if (wireFrame.image.encoding != currentCameraEncoding) {
+            status?.perceptionUnavailable("CAMERA_ENCODING_MISMATCH", frameSkipped = true)
+            clearCameraCorrelation()
+            publish()
+            return
+        }
+        val frame = if (wireFrame.image.encoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA) {
+            val decodeStartedNs = ElapsedHostClock.nowNanos()
+            runCatching {
+                if (avcDecodeFaultGate.consume()) throw InjectedAvcDecodeFailure()
+                avcDecoder.decode(wireFrame)
+            }.getOrElse { error ->
+                val fallback = server?.requestCameraTransportFallbackToI420()
+                val fallbackInitiated = fallback ==
+                    CameraTransportFallbackDispatch.DEMOTED_RECONNECT_REQUIRED
+                Log.e(
+                    TAG,
+                    "state=avc_camera_decode_failed exception=${error.javaClass.simpleName} " +
+                        "fallback=${fallback?.name?.lowercase() ?: "server_unavailable"}",
+                )
+                status?.perceptionUnavailable("AVC_DECODE_FAILED", frameSkipped = true)
+                status?.avcDecodeFailed(fallbackInitiated)
+                clearCameraCorrelation()
+                publish()
+                return
+            }.also {
+                status?.avcDecoded((ElapsedHostClock.nowNanos() - decodeStartedNs).coerceAtLeast(0L))
+                if (!avcDecoderLogged) {
+                    avcDecoderLogged = true
+                    Log.i(TAG, "state=avc_camera_decoder_ready codec=${avcDecoder.codecName}")
+                }
+            }
+        } else {
+            wireFrame
+        }
         val hasCorrelation = currentCameraFrameId == frame.frameId
         val captureNs = if (hasCorrelation) currentCameraCaptureNs else frame.captureMonotonicTimestampNs
         val uncertaintyNs = if (hasCorrelation) currentCameraUncertaintyNs else 0L
@@ -1585,6 +1930,16 @@ class LiveMachineVisionController(
         )
         val now = ElapsedHostClock.nowNanos()
         val maintainedTracks = trackMaintainer.snapshot(now)
+        if (speechAnalysisPriorityActive(speechRuntime?.snapshot()?.phase)) {
+            publishMaintainedState(
+                visionFrame,
+                now,
+                maintainedTracks,
+                "bounded_prediction_no_visual_correction_speech_analysis_priority",
+            )
+            publish()
+            return
+        }
         if (qnn == null) {
             status?.perceptionUnavailable("QNN_RUNTIME_NOT_READY", frameSkipped = true)
             publishMaintainedState(
@@ -1661,8 +2016,20 @@ class LiveMachineVisionController(
         delivery.normalizedMicrophoneCapture?.let { normalized ->
             ambientSoundProfiler.accept(chunk, normalized.hostMonotonicNs)
         }
-        status?.microphoneReceived(chunk.audioData.size(), sensorTimeline.acceptAudio(delivery))
+        val admitted = sensorTimeline.acceptAudio(delivery)
+        val drained = sensorTimeline.drainAudio()
+        speechRuntime?.accept(drained)
+        status?.microphoneReceived(chunk.audioData.size(), admitted)
         publish()
+    }
+
+    /** Transcript content is ephemeral user data and never enters logs or aggregate status. */
+    @Synchronized
+    private fun handlePrivateSpeechResult(result: PrivateSpeechResult) {
+        if (result.sessionGeneration != currentIngressGeneration) return
+        privateSpeechResults.offer(result)
+        status?.privateSpeechResult(privateSpeechResults.summary())
+        publish(force = true)
     }
 
     @Synchronized
@@ -1730,6 +2097,17 @@ class LiveMachineVisionController(
 
     private fun processFrame(pending: PendingLiveFrame) {
         if (!active.get() || !sessionGeneration.isCurrent(pending.generation)) return
+        if (speechAnalysisPriorityActive(speechRuntime?.snapshot()?.phase)) {
+            val now = ElapsedHostClock.nowNanos()
+            publishMaintainedState(
+                pending.visionFrame,
+                now,
+                trackMaintainer.snapshot(now),
+                "bounded_prediction_no_visual_correction_speech_analysis_priority",
+            )
+            publish()
+            return
+        }
         val activeQnn = qnn
         if (activeQnn == null) {
             status?.perceptionUnavailable("QNN_RUNTIME_NOT_READY", frameSkipped = true)
@@ -1781,6 +2159,10 @@ class LiveMachineVisionController(
                             requireNotNull(prepared.raw), visionFrame, pending.generation,
                             prepared.selectDepthProfile,
                         )
+                        ImageEncoding.IMAGE_ENCODING_YUV420_I420 -> activeQnn.process(
+                            requireNotNull(prepared.i420), visionFrame, pending.generation,
+                            prepared.selectDepthProfile,
+                        )
                         else -> throw IllegalArgumentException("unsupported live camera encoding")
                     }
                 },
@@ -1804,11 +2186,12 @@ class LiveMachineVisionController(
             dispatch as PreparedHtpDispatchOutcome.Completed
             val prepared = dispatch.prepared
             val result = dispatch.result
+            applyEnvironmentRouteObservation(prepared.environmentRouteObservation.getAndSet(null))
             if (active.get() && sessionGeneration.isCurrent(pending.generation) &&
                 prepared.automaticEnvironment && pending.opportunisticVlmAllowed
             ) {
                 prepared.encoded?.let { environmentVlm?.offer(it) }
-                prepared.raw?.let { environmentVlm?.offer(it) }
+                prepared.environmentRaw?.let { environmentVlm?.offer(it) }
             }
             if (result == null) {
                 status?.environmentPending()
@@ -1899,39 +2282,85 @@ class LiveMachineVisionController(
                 metadata.image.rowStrideBytes, bytes,
             )
         } else null
+        val i420 = if (metadata.image.encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420) {
+            RawI420Frame(
+                metadata.frameId, pending.normalizedCaptureNs,
+                metadata.image.width, metadata.image.height,
+                metadata.image.rowStrideBytes, bytes,
+            )
+        } else null
         val automaticEnvironment = environmentCoordinator.mode() == EnvironmentSelectionMode.AUTOMATIC
+        val environmentRaw = raw ?: if (i420 != null && automaticEnvironment && pending.opportunisticVlmAllowed) {
+            val rgb = I420RgbConverter.convert(i420)
+            RawRgbFrame(
+                i420.frameId,
+                i420.captureMonotonicTimestampNanos,
+                i420.width,
+                i420.height,
+                i420.width * 3,
+                rgb.pixels,
+            )
+        } else null
         if (automaticEnvironment && pending.opportunisticVlmAllowed) {
             encoded?.let { environmentVlm?.observe(it) }
-            raw?.let { environmentVlm?.observe(it) }
+            environmentRaw?.let { environmentVlm?.observe(it) }
         }
         val vlmEnvironmentSignal = if (automaticEnvironment && pending.opportunisticVlmAllowed) {
             environmentVlm?.latestFor(visionFrame)
         } else null
+        val classificationFrameId = if (vlmEnvironmentSignal == null) {
+            null
+        } else {
+            environmentVlm?.latestClassificationFrameId()
+        }
         if (vlmEnvironmentSignal != null) automaticEnvironmentVlmBootstrapPending = false
+        val environmentRouteObservation = AtomicReference<EnvironmentRouteObservation?>(null)
         val selector: (List<org.conceptflow.mpl.host.vision.SceneSemanticDetection>) ->
             org.conceptflow.mpl.host.vision.MachineVisionModelProfile? = { detections ->
             val decision = environmentCoordinator.routeFrame(
                 visionFrame, detections, vlmEnvironmentSignal,
                 ElapsedHostClock.nowNanos(), bothProfilesAvailable = true,
             )
-            // latestFor() deliberately correlates carried evidence to the current vision frame.
-            // Ambient profiling, however, is one-shot per actual VLM classification result.
-            considerAmbientProfileForClassification(
-                vlmEnvironmentSignal,
-                if (vlmEnvironmentSignal == null) null else environmentVlm?.latestClassificationFrameId(),
+            // QnnLiveFrameExecutor serializes model and tracker state while invoking this selector.
+            // Do not call back into the synchronized controller here: reconnect/reset takes the
+            // controller lock before waiting for QNN and the inverse order would deadlock. Apply
+            // controller-owned side effects immediately after process() releases its QNN lock.
+            environmentRouteObservation.set(
+                EnvironmentRouteObservation(
+                    decision = decision,
+                    signal = vlmEnvironmentSignal,
+                    classificationFrameId = classificationFrameId,
+                ),
             )
-            val diagnostic = "reason=${decision.reason} profile=${decision.selectedProfile?.id ?: "none"}"
-            if (diagnostic != lastEnvironmentDecisionDiagnostic) {
-                lastEnvironmentDecisionDiagnostic = diagnostic
-                Log.i(
-                    TAG,
-                    "state=environment_route $diagnostic confidence=${decision.confidence} " +
-                        "vlmEvidence=${vlmEnvironmentSignal != null}",
-                )
-            }
             decision.selectedProfile
         }
-        return PreparedLiveQnnFrame(encoded, raw, automaticEnvironment, selector)
+        return PreparedLiveQnnFrame(
+            encoded,
+            raw,
+            i420,
+            environmentRaw,
+            automaticEnvironment,
+            selector,
+            environmentRouteObservation,
+        )
+    }
+
+    @Synchronized
+    private fun applyEnvironmentRouteObservation(observation: EnvironmentRouteObservation?) {
+        if (observation == null || !active.get()) return
+        // latestFor() deliberately correlates carried evidence to the current vision frame.
+        // Ambient profiling, however, is one-shot per actual VLM classification result.
+        considerAmbientProfileForClassification(observation.signal, observation.classificationFrameId)
+        val decision = observation.decision
+        val diagnostic = "reason=${decision.reason} profile=${decision.selectedProfile?.id ?: "none"}"
+        if (diagnostic != lastEnvironmentDecisionDiagnostic) {
+            lastEnvironmentDecisionDiagnostic = diagnostic
+            Log.i(
+                TAG,
+                "state=environment_route $diagnostic confidence=${decision.confidence} " +
+                    "vlmEvidence=${observation.signal != null}",
+            )
+        }
     }
 
     private fun logHtpLeaseTelemetry(event: HtpLeaseTelemetry) {
@@ -2121,6 +2550,7 @@ class LiveMachineVisionController(
         val now = ElapsedHostClock.nowNanos()
         if (!force && lastPublishedNs != 0L && now - lastPublishedNs < STATUS_UPDATE_INTERVAL_NS) return
         lastPublishedNs = now
+        status?.privateSpeechResult(privateSpeechResults.summary())
         status?.snapshot()?.let(onStatus)
     }
 
@@ -2134,20 +2564,22 @@ class LiveMachineVisionController(
 
     @Synchronized
     private fun closeResources() {
+        Log.i(TAG, "state=resource_close stage=begin")
         startupGate.cancel()
         pendingFrame.set(null)
         startupFuture?.cancel(true)
         startupFuture = null
-        runCatching { server?.closeAsync {} }
+        closeResourceStage("transport") { server?.closeAsync {} }
         focusedVqaGateway?.let { gateway ->
-            runCatching { gateway.close() }
+            closeResourceStage("focused_vqa_gateway") { gateway.close() }
             focusedVqaRouter.clear(gateway)
         }
         environmentVlm?.cancelOutstanding()
         focusedVqaFrames.reset()
-        qnn?.resetTracking()
-        runCatching { qnn?.close() }
-        runCatching { environmentVlm?.close() }
+        closeResourceStage("qnn_tracking") { qnn?.resetTracking() }
+        closeResourceStage("qnn_runtime") { qnn?.close() }
+        closeResourceStage("local_vlm_client") { environmentVlm?.close() }
+        closeResourceStage("avc_decoder") { avcDecoder.close() }
         server = null
         qnn = null
         environmentVlm = null
@@ -2158,8 +2590,11 @@ class LiveMachineVisionController(
         microphoneWindowGeneration = Math.addExact(microphoneWindowGeneration, 1L)
         ambientSoundProfiler.reset()
         ambientClassificationProfileGate.reset()
+        privateSpeechResults.clear()
         ambientProfileRequested = false
+        pendingSpeechWindowPurpose = null
         currentSessionBinding = null
+        currentCameraEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420
         metricFusion.reset()
         trackMaintainer.reset()
         modelAdmission.reset()
@@ -2167,6 +2602,8 @@ class LiveMachineVisionController(
         latestDepthProfileId = ""
         automaticEnvironmentVlmBootstrapPending = false
         sensorTimeline.reset()
+        closeResourceStage("speech_runtime") { speechRuntime?.close() }
+        speechRuntime = null
         val stoppedNow = ElapsedHostClock.nowNanos()
         perceptionBus.invalidate(PerceptionValidityReason.STOPPED, stoppedNow)
         publishFocusTransition(spatialFocus.reset(0L, stoppedNow, perceptionBus.stats().latestRevision))
@@ -2176,6 +2613,27 @@ class LiveMachineVisionController(
         executor = null
         startupExecutor?.shutdownNow()
         startupExecutor = null
+        Log.i(TAG, "state=resource_close stage=complete")
+    }
+
+    private fun closeResourceStage(stage: String, action: () -> Unit) {
+        val startedNanos = ElapsedHostClock.nowNanos()
+        Log.i(TAG, "state=resource_close stage=$stage phase=begin")
+        runCatching(action)
+            .onSuccess {
+                Log.i(
+                    TAG,
+                    "state=resource_close stage=$stage phase=complete " +
+                        "elapsedMs=${(ElapsedHostClock.nowNanos() - startedNanos) / 1_000_000L}",
+                )
+            }
+            .onFailure { error ->
+                Log.e(
+                    TAG,
+                    "state=resource_close stage=$stage phase=failed " +
+                        "exception=${error.javaClass.simpleName}",
+                )
+            }
     }
 
     @Synchronized override fun close() = finish(LiveMachineVisionPhase.STOPPED)
@@ -2194,16 +2652,28 @@ class LiveMachineVisionController(
     private data class PreparedLiveQnnFrame(
         val encoded: EncodedJpegFrame?,
         val raw: RawRgbFrame?,
+        val i420: RawI420Frame?,
+        val environmentRaw: RawRgbFrame?,
         val automaticEnvironment: Boolean,
         val selectDepthProfile: (List<org.conceptflow.mpl.host.vision.SceneSemanticDetection>) ->
             org.conceptflow.mpl.host.vision.MachineVisionModelProfile?,
+        val environmentRouteObservation: AtomicReference<EnvironmentRouteObservation?>,
+    )
+
+    private data class EnvironmentRouteObservation(
+        val decision: TimestampedDepthProfileDecision,
+        val signal: EnvironmentSignal?,
+        val classificationFrameId: Long?,
     )
 
     private companion object {
         const val TAG = "ConceptFlowLiveVision"
         const val STATUS_UPDATE_INTERVAL_NS = 1_000_000_000L
         const val QNN_HTP_LEASE_ACQUISITION_TIMEOUT_MILLIS = 250L
-        const val AMBIENT_PROFILE_WINDOW_MILLIS = 3_000
+        const val AMBIENT_PROFILE_WINDOW_MILLIS = 10_000
+        const val MICROPHONE_ANALYSIS_WINDOW_MILLIS = 10_000
+        const val MICROPHONE_CONSENT_CUE_GUARD_NANOS = 700_000_000L
+        const val ROKID_BRAND_PLAYBACK_SUPPRESSION_NANOS = 25_000_000_000L
         const val AMBIENT_CLASSIFICATION_PROBABILITY = 0.80
         val ACCEPTED_CAMERA_DISPOSITIONS = setOf(
             StreamIngressDisposition.CAMERA_PARTIAL,

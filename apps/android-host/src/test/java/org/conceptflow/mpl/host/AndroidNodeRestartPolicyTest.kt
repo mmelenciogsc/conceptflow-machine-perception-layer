@@ -9,6 +9,11 @@ import org.junit.Test
 
 class AndroidNodeRestartPolicyTest {
     @Test
+    fun `guardian recovery delay is bounded and does not poll continuously`() {
+        assertEquals(1_000L, AndroidNodeGuardianRecoveryPolicy.REBIND_DELAY_MILLIS)
+    }
+
+    @Test
     fun `restores an explicitly enabled automatic node`() {
         val restored = AndroidNodeRestartPolicy.restore(
             enabled = true,

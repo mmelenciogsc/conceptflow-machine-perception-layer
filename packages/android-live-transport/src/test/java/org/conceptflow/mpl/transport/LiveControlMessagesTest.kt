@@ -2,6 +2,8 @@
 package org.conceptflow.mpl.transport
 
 import org.conceptflow.mpl.v1.ErrorCode
+import org.conceptflow.mpl.v1.BatteryChargeState
+import org.conceptflow.mpl.v1.ImageEncoding
 import org.conceptflow.mpl.v1.LiveLinkControl
 import org.conceptflow.mpl.v1.LiveTransportPeerRole
 import org.conceptflow.mpl.v1.MicrophoneControlOperation
@@ -33,6 +35,13 @@ class LiveControlMessagesTest {
         assertEquals(LiveControlMessages.PROTOCOL_MINOR, accepted.protocolVersion.minor)
         assertEquals(640, accepted.maxCameraWidth)
         assertEquals(640, accepted.maxCameraHeight)
+        assertEquals(
+            setOf(
+                ImageEncoding.IMAGE_ENCODING_RGB8,
+                ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+            ),
+            accepted.cameraEncodingsList.toSet(),
+        )
         assertEquals(64, accepted.maxTouchEventsBuffered)
         assertTrue(accepted.supportsClockSync)
         assertTrue(accepted.supportsCameraLatestFrame)
@@ -49,6 +58,12 @@ class LiveControlMessagesTest {
                 LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST,
             )
         }
+
+        val avc = LiveControlMessages.capabilities(
+            LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
+            supportsAvcIntra = true,
+        ).capabilities
+        assertTrue(avc.cameraEncodingsList.contains(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA))
     }
 
     @Test
@@ -77,6 +92,8 @@ class LiveControlMessagesTest {
         assertEquals(8L, telemetry.touchOverflowEvents)
         assertEquals(1L, telemetry.sentRealtimeMessages)
         assertEquals(1L, telemetry.sentCameraMessages)
+        assertEquals(10L, telemetry.sentRealtimeBytes)
+        assertEquals(20L, telemetry.sentCameraBytes)
         assertEquals(7L, telemetry.cameraFramesAnalyzed)
         assertEquals(4L, telemetry.cameraFramesEmitted)
         assertEquals(3L, telemetry.cameraRelaxedTierSamples)
@@ -85,6 +102,37 @@ class LiveControlMessagesTest {
         assertEquals(1L, telemetry.cameraFramesDroppedBlurry)
         assertEquals(1L, telemetry.cameraFramesDroppedCadence)
         assertEquals(5, telemetry.currentCameraTargetFps)
+        assertFalse(telemetry.hasBatteryLevelPercent())
+    }
+
+    @Test
+    fun `telemetry preserves optional power units without inventing unavailable readings`() {
+        val telemetry = LiveControlMessages.telemetry(
+            sampledMonotonicNs = 9_000L,
+            queues = LiveOutboundQueueSnapshot(0, 0, 0, 0, 0, 0, 0, 0),
+            transport = SanitizedTransportMetrics().snapshot(),
+            power = LivePowerTelemetry(
+                levelPercent = 88,
+                chargeState = BatteryChargeState.BATTERY_CHARGE_STATE_CHARGING,
+                healthGood = true,
+                voltageMicrovolts = 4_450_000L,
+                currentMicroamps = 193_000L,
+                chargeCounterMicroampHours = 611_000L,
+                temperatureDeciCelsius = 330,
+                externalPowerConnected = true,
+            ),
+        ).telemetry
+
+        assertTrue(telemetry.hasBatteryLevelPercent())
+        assertEquals(88, telemetry.batteryLevelPercent)
+        assertEquals(BatteryChargeState.BATTERY_CHARGE_STATE_CHARGING, telemetry.batteryChargeState)
+        assertEquals(4_450_000L, telemetry.batteryVoltageMicrovolts)
+        assertEquals(193_000L, telemetry.batteryCurrentMicroamps)
+        assertEquals(611_000L, telemetry.batteryChargeCounterMicroampHours)
+        assertEquals(330, telemetry.batteryTemperatureDeciCelsius)
+        assertTrue(telemetry.externalPowerConnected)
+        assertFalse(telemetry.hasBatteryAverageCurrentMicroamps())
+        assertFalse(telemetry.hasBatteryEnergyNanowattHours())
     }
 
     @Test
@@ -103,10 +151,30 @@ class LiveControlMessagesTest {
         assertFalse(grant.grantedStreamsList.contains(SensorStreamKind.SENSOR_STREAM_KIND_MICROPHONE))
         assertEquals(MAXIMUM_LIVE_LEASE_MILLIS, request.requestedDurationMs)
         assertEquals(MAXIMUM_LIVE_LEASE_MILLIS, grant.grantedDurationMs)
+        assertEquals(14_410_000, MAXIMUM_LIVE_LEASE_MILLIS)
+        assertEquals(ImageEncoding.IMAGE_ENCODING_YUV420_I420, request.requestedCameraEncoding)
+        assertEquals(ImageEncoding.IMAGE_ENCODING_YUV420_I420, grant.grantedCameraEncoding)
     }
 
     @Test
-    fun `lease grant cannot exceed the exact ten minute cap`() {
+    fun `AVC intra is selected only when both ends opt in`() {
+        val request = LiveControlMessages.leaseRequest(
+            binding,
+            ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
+        ).leaseRequest
+        val fallback = LiveControlMessages.leaseGrant(request, allowAvcIntra = false).leaseGrant
+        val accepted = LiveControlMessages.leaseGrant(request, allowAvcIntra = true).leaseGrant
+
+        assertEquals(ImageEncoding.IMAGE_ENCODING_YUV420_I420, fallback.grantedCameraEncoding)
+        assertEquals(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA, accepted.grantedCameraEncoding)
+        assertEquals(
+            ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
+            accepted.toNegotiatedLease(MonotonicLeaseDeadline.fromDurationMillis(1L, 1_000)).cameraEncoding,
+        )
+    }
+
+    @Test
+    fun `lease grant cannot exceed the exact bounded production epoch`() {
         val oversized = LiveControlMessages.leaseRequest(binding).leaseRequest.toBuilder()
             .setRequestedDurationMs(MAXIMUM_LIVE_LEASE_MILLIS + 1)
             .build()

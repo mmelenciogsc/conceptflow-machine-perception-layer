@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+readonly PACKAGE="org.conceptflow.mpl.androidhost"
+readonly MODEL_NAME="ggml-small.en-q5_1.bin"
+readonly VAD_NAME="ggml-silero-v6.2.0.bin"
+readonly MODEL_BYTES="190098681"
+readonly VAD_BYTES="885098"
+readonly MODEL_SHA256="bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30"
+readonly VAD_SHA256="2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 --serial SERIAL --model FILE --vad-model FILE" \
+        "Provisions pinned quantized small.en and Silero VAD into Android Node private storage." \
+        "This script never downloads artifacts and never copies them into the repository."
+}
+
+serial=""
+model=""
+vad_model=""
+while (($#)); do
+    case "$1" in
+        --serial) serial="${2:-}"; shift 2 ;;
+        --model) model="${2:-}"; shift 2 ;;
+        --vad-model) vad_model="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+[[ -n "$serial" && -n "$model" && -n "$vad_model" ]] || { usage >&2; exit 2; }
+command -v adb >/dev/null || { printf 'adb is required.\n' >&2; exit 1; }
+command -v sha256sum >/dev/null || { printf 'sha256sum is required.\n' >&2; exit 1; }
+[[ "$(adb -s "$serial" get-state 2>/dev/null || true)" == "device" ]] || {
+    printf 'Selected Android device is not authorized and online.\n' >&2
+    exit 1
+}
+[[ "$(adb -s "$serial" shell getprop ro.product.cpu.abilist | tr -d '\r')" == *arm64-v8a* ]] || {
+    printf 'Selected Android device does not advertise arm64-v8a.\n' >&2
+    exit 1
+}
+adb -s "$serial" shell pm path "$PACKAGE" >/dev/null 2>&1 || {
+    printf 'Install the debuggable Whisper-enabled Android Node APK first.\n' >&2
+    exit 1
+}
+adb -s "$serial" shell run-as "$PACKAGE" mkdir -p files/speech || {
+    printf 'run-as failed; this helper requires a debuggable app build.\n' >&2
+    exit 1
+}
+adb -s "$serial" shell run-as "$PACKAGE" chmod 700 files/speech
+
+validate_local() {
+    local path="$1"
+    local expected_bytes="$2"
+    local expected_digest="$3"
+    [[ -f "$path" ]] || { printf 'Missing artifact: %s\n' "$path" >&2; exit 1; }
+    [[ "$(stat -c '%s' -- "$path")" == "$expected_bytes" ]] || {
+        printf 'Artifact size does not match the pinned release.\n' >&2
+        exit 1
+    }
+    [[ "$(head -c 4 -- "$path" | od -An -tx1 | tr -d ' \n')" == "6c6d6767" ]] || {
+        printf 'Artifact does not have GGML magic.\n' >&2
+        exit 1
+    }
+    local digest
+    digest="$(sha256sum -- "$path")"
+    digest="${digest%% *}"
+    [[ "$digest" == "$expected_digest" ]] || {
+        printf 'Artifact digest does not match the pinned release.\n' >&2
+        exit 1
+    }
+}
+
+provision() {
+    local source_path="$1"
+    local target_name="$2"
+    local expected_digest="$3"
+    local temporary="files/speech/$target_name.tmp"
+    local destination="files/speech/$target_name"
+    adb -s "$serial" shell run-as "$PACKAGE" rm -f "$temporary"
+    if ! adb -s "$serial" exec-in run-as "$PACKAGE" sh -c \
+        "umask 077; cat > '$temporary'" < "$source_path"; then
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "$temporary" || true
+        printf 'Artifact transfer was interrupted; the previous installed artifact was preserved.\n' >&2
+        exit 1
+    fi
+    local installed_digest
+    installed_digest="$(adb -s "$serial" shell run-as "$PACKAGE" sha256sum "$temporary")"
+    installed_digest="${installed_digest%% *}"
+    installed_digest="${installed_digest//$'\r'/}"
+    if [[ "$installed_digest" != "$expected_digest" ]]; then
+        adb -s "$serial" shell run-as "$PACKAGE" rm -f "$temporary" || true
+        printf 'Post-transfer checksum mismatch.\n' >&2
+        exit 1
+    fi
+    adb -s "$serial" shell run-as "$PACKAGE" mv "$temporary" "$destination"
+    adb -s "$serial" shell run-as "$PACKAGE" chmod 600 "$destination"
+}
+
+validate_local "$model" "$MODEL_BYTES" "$MODEL_SHA256"
+validate_local "$vad_model" "$VAD_BYTES" "$VAD_SHA256"
+provision "$model" "$MODEL_NAME" "$MODEL_SHA256"
+provision "$vad_model" "$VAD_NAME" "$VAD_SHA256"
+printf 'Pinned Whisper small.en Q5_1 and Silero VAD artifacts passed local and on-device verification.\n'
+printf 'Restart Android Node to prewarm the speech runtime.\n'

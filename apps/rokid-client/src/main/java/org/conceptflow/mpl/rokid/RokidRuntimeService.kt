@@ -42,11 +42,13 @@ import org.conceptflow.mpl.rokid.core.IdleControlArmDecision
 import org.conceptflow.mpl.rokid.core.IdleControlLifecycle
 import org.conceptflow.mpl.rokid.core.IdleLifecycleTransition
 import org.conceptflow.mpl.rokid.core.IdleControlPolicy
+import org.conceptflow.mpl.rokid.core.IdleControlRecoveryAuthorization
 import org.conceptflow.mpl.rokid.core.IdleControlRestoreReason
 import org.conceptflow.mpl.rokid.core.LiveLinkCaptureController
 import org.conceptflow.mpl.rokid.core.LiveLinkCaptureSnapshot
 import org.conceptflow.mpl.rokid.core.LiveLinkCaptureStopReason
 import org.conceptflow.mpl.rokid.core.LiveMicrophoneCaptureState
+import org.conceptflow.mpl.rokid.core.OperationalEarconGenerator
 import org.conceptflow.mpl.rokid.core.PcmAudioChunk
 import org.conceptflow.mpl.rokid.core.PhysicalTraceInputGate
 import org.conceptflow.mpl.rokid.core.ProcessStartupAnnouncementGate
@@ -59,6 +61,9 @@ import org.conceptflow.mpl.rokid.core.RendezvousRetryDecision
 import org.conceptflow.mpl.rokid.core.RendezvousRetryPolicy
 import org.conceptflow.mpl.rokid.core.RendezvousTerminalDecision
 import org.conceptflow.mpl.rokid.core.RenderDisposition
+import org.conceptflow.mpl.rokid.core.RokidBatteryState
+import org.conceptflow.mpl.rokid.core.RokidCapturePowerDecision
+import org.conceptflow.mpl.rokid.core.RokidCapturePowerPolicy
 import org.conceptflow.mpl.rokid.core.RokidRendezvousPolicy
 import org.conceptflow.mpl.rokid.core.RokidLocalControlCommand
 import org.conceptflow.mpl.rokid.core.RokidMicrophoneIntentHandler
@@ -76,10 +81,15 @@ import org.conceptflow.mpl.rokid.core.TraceCallback
 import org.conceptflow.mpl.rokid.hardware.AudioRecordInputSource
 import org.conceptflow.mpl.rokid.hardware.BoundedRendezvousWakeLease
 import org.conceptflow.mpl.rokid.hardware.Camera2FrameSource
+import org.conceptflow.mpl.rokid.hardware.CameraTransferPixelFormat
 import org.conceptflow.mpl.rokid.hardware.PlatformHapticOutput
+import org.conceptflow.mpl.rokid.hardware.PlatformBatteryStateSource
+import org.conceptflow.mpl.rokid.hardware.HardwareVideoCodecBenchmark
+import org.conceptflow.mpl.rokid.hardware.WifiRadioPolicy
 import org.conceptflow.mpl.rokid.hardware.PlatformStereoAudioOutput
 import org.conceptflow.mpl.rokid.hardware.RokidBrandedAudio
 import org.conceptflow.mpl.rokid.hardware.SensorManagerPoseSource
+import org.conceptflow.mpl.rokid.hardware.YodaOsWifiRecoveryLease
 import org.conceptflow.mpl.transport.LiveLinkEndpointRole
 import org.conceptflow.mpl.transport.LiveLinkNetworkTopology
 import org.conceptflow.mpl.transport.LIVE_LINK_DIAGNOSTIC_SCHEMA_VERSION
@@ -117,7 +127,11 @@ class RokidRuntimeService : Service() {
     private var physicalTrace: PhysicalTraceRun? = null
     private var liveLinkRun: LiveLinkServiceRun? = null
     private val cueIds = AtomicLong(0L)
+    private val codecBenchmarkRunning = AtomicBoolean(false)
     private var liveMicrophoneCueActive = false
+    private var microphoneCueGeneration = 0L
+    private var microphoneStartCueMonotonicNs: Long? = null
+    private var pendingMicrophoneStopCue: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val binder = RuntimeBinder()
     private lateinit var idleModeStore: IdleControlModeStore
@@ -132,6 +146,9 @@ class RokidRuntimeService : Service() {
     private val rendezvousGeneration = RendezvousGeneration()
     private val rendezvousBackoff = RendezvousBackoff()
     private lateinit var rendezvousWakeLease: BoundedRendezvousWakeLease
+    private lateinit var yodaOsWifiRecoveryLease: YodaOsWifiRecoveryLease
+    private lateinit var batteryStateSource: PlatformBatteryStateSource
+    private val capturePowerPolicy = RokidCapturePowerPolicy()
     private lateinit var brandedAudio: RokidBrandedAudio
     private lateinit var brandedAudioStateStore: BrandedAudioStateStore
     private lateinit var inputCommandGateStore: RokidInputCommandGateStore
@@ -166,12 +183,40 @@ class RokidRuntimeService : Service() {
         dispatch == MicrophoneGestureDispatch.QUEUED
     }
     private var rendezvousRetry: Runnable? = null
+    private val capturePowerMonitor = object : Runnable {
+        override fun run() {
+            val run = liveLinkRun ?: return
+            val state = batteryStateSource.snapshot()
+            when (capturePowerPolicy.whileActive(state)) {
+                RokidCapturePowerDecision.ALLOW -> mainHandler.postDelayed(
+                    this,
+                    RokidCapturePowerPolicy.ACTIVE_SAMPLE_INTERVAL_MILLIS,
+                )
+                RokidCapturePowerDecision.STOP_ACTIVE_LOW_BATTERY,
+                RokidCapturePowerDecision.REJECT_UNHEALTHY_BATTERY,
+                -> {
+                    Log.w(
+                        TAG,
+                        "state=capture_power_guard result=disarm_active ${state.diagnosticFields()}",
+                    )
+                    if (run.managedStandby) {
+                        disableIdleControl(onTerminal = {})
+                    } else {
+                        stopLiveLink(LiveLinkCaptureStopReason.USER_REQUESTED)
+                    }
+                }
+                RokidCapturePowerDecision.REJECT_START_LOW_BATTERY -> Unit
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         cancelLegacyRendezvousAlarm()
         idleModeStore = IdleControlModeStore(this)
         rendezvousWakeLease = BoundedRendezvousWakeLease(this)
+        yodaOsWifiRecoveryLease = YodaOsWifiRecoveryLease(this)
+        batteryStateSource = PlatformBatteryStateSource(this)
         audioOutput = PlatformStereoAudioOutput()
         renderer = InspectableCueRenderer(
             clock = ElapsedRealtimeClock,
@@ -244,6 +289,7 @@ class RokidRuntimeService : Service() {
                     startId,
                 )
             ACTION_RECOVER_SAME_BOOT -> resumeExplicitSameBootArm(startId)
+            ACTION_RECOVER_PERSISTED_BOOT -> resumePersistedBootArm(startId)
             null -> restoreIdleControl(IdleControlRestoreReason.STICKY_RESTART, startId)
             else -> {
                 Log.w(TAG, "state=idle_control_start_rejected reason=unknown_internal_action")
@@ -254,10 +300,16 @@ class RokidRuntimeService : Service() {
     }
 
     override fun onDestroy() {
+        pendingMicrophoneStopCue?.let(mainHandler::removeCallbacks)
+        pendingMicrophoneStopCue = null
+        microphoneStartCueMonotonicNs = null
+        microphoneCueGeneration += 1L
         RokidTouchEventHub.clear(touchEventSink)
         RokidSystemTouchEventHub.clear(systemTouchEventSink)
         rendezvousGeneration.invalidate()
         cancelRendezvousRetry()
+        mainHandler.removeCallbacks(capturePowerMonitor)
+        if (::yodaOsWifiRecoveryLease.isInitialized) yodaOsWifiRecoveryLease.close()
         if (::rendezvousWakeLease.isInitialized) rendezvousWakeLease.close()
         stopLiveLink(LiveLinkCaptureStopReason.SERVICE_DESTROYED)
         abandonPhysicalTrace()
@@ -536,7 +588,7 @@ class RokidRuntimeService : Service() {
         onTerminal: () -> Unit,
         managedStandby: Boolean = false,
         runDurationMillis: Long = if (managedStandby) {
-            LiveLinkCaptureController.SOAK_RUN_DURATION_MILLIS
+            LiveLinkCaptureController.PERSISTENT_RUN_DURATION_MILLIS
         } else {
             LiveLinkCaptureController.DEFAULT_RUN_DURATION_MILLIS
         },
@@ -546,6 +598,7 @@ class RokidRuntimeService : Service() {
             mainHandler.post(onTerminal)
             return false
         }
+        if (managedStandby) yodaOsWifiRecoveryLease.ensureAvailable()
         if (liveLinkRun != null) {
             Log.i(TAG, "state=live_link_rendezvous result=already_active")
             mainHandler.post(onTerminal)
@@ -584,6 +637,7 @@ class RokidRuntimeService : Service() {
                         LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED ->
                             AndroidWifiDirectEndpointResolver(this, WifiDirectNodeRole.ROKID_CLIENT)
                     },
+                    powerTelemetryProvider = batteryStateSource::telemetrySnapshot,
                 )
             } else {
                 RokidLiveLinkClient.fromConfig(
@@ -602,6 +656,7 @@ class RokidRuntimeService : Service() {
                         LiveLinkNetworkTopology.WIFI_DIRECT_REQUIRED ->
                             AndroidWifiDirectEndpointResolver(this, WifiDirectNodeRole.ROKID_CLIENT)
                     },
+                    powerTelemetryProvider = batteryStateSource::telemetrySnapshot,
                 )
             }
             DefaultRokidLiveTransport(client)
@@ -625,6 +680,15 @@ class RokidRuntimeService : Service() {
                     relaxedFramesPerSecond = lease.cameraRelaxedFps.toDouble(),
                     motionFramesPerSecond = lease.cameraMotionFps.toDouble(),
                     sequence = sequence,
+                    outputFormat = if (spool == null) {
+                        when (lease.cameraEncoding) {
+                            org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ->
+                                CameraTransferPixelFormat.AVC_INTRA
+                            else -> CameraTransferPixelFormat.I420
+                        }
+                    } else {
+                        CameraTransferPixelFormat.RGB8
+                    },
                 )
             },
             poseSourceFactory = { SensorManagerPoseSource(this) },
@@ -655,7 +719,7 @@ class RokidRuntimeService : Service() {
                 }
             },
             dispatch = { operation -> mainHandler.post(operation) },
-            onStatus = { snapshot ->
+            onStatus = status@{ snapshot ->
                 logLiveLinkStatus(snapshot)
                 if (liveLinkRun === run) {
                     if (run.authenticatedToneGate.observe(snapshot.sessionsReady)) {
@@ -663,7 +727,21 @@ class RokidRuntimeService : Service() {
                     }
                     if (run.preAuthenticationDeadline.observe(snapshot.sessionsReady)) {
                         mainHandler.removeCallbacks(run.rendezvousDeadline)
-                        rendezvousWakeLease.release()
+                        val retained = rendezvousWakeLease.acquire(
+                            runDurationMillis,
+                            WifiRadioPolicy.PLATFORM_DEFAULT,
+                        )
+                        Log.i(
+                            TAG,
+                            "state=stream_resource_lease cpu=${rendezvousWakeLease.cpuHeld()} " +
+                                "wifi=${rendezvousWakeLease.wifiHeld()} bounded=true " +
+                                "wifi_policy=platform_default duration_ms=$runDurationMillis retained=$retained",
+                        )
+                        if (!retained) {
+                            Log.e(TAG, "state=live_link_rejected reason=stream_wake_lease_unavailable")
+                            controller.stop(LiveLinkCaptureStopReason.SOURCE_FAILURE)
+                            return@status
+                        }
                     }
                     updateLiveLinkPolling(run, snapshot)
                     if (snapshot.state == org.conceptflow.mpl.rokid.core.LiveLinkCaptureState.STOPPED) {
@@ -679,6 +757,7 @@ class RokidRuntimeService : Service() {
                         snapshot.state == org.conceptflow.mpl.rokid.core.LiveLinkCaptureState.STREAMING &&
                         snapshot.producerStarts > 0L
                     ) {
+                        rendezvousWakeLease.applyRadioPolicy(WifiRadioPolicy.PLATFORM_DEFAULT)
                         val active = foregroundLifecycle.onLiveProducersStarted()
                         if (active.showCameraActiveForeground) {
                             showForeground(ForegroundNotificationMode.CAMERA_ACTIVE)
@@ -686,6 +765,7 @@ class RokidRuntimeService : Service() {
                     } else if (snapshot.state == org.conceptflow.mpl.rokid.core.LiveLinkCaptureState.CONNECTING &&
                         snapshot.producerStarts > 0L
                     ) {
+                        rendezvousWakeLease.applyRadioPolicy(WifiRadioPolicy.HIGH_PERFORMANCE)
                         val reconnecting = foregroundLifecycle.onLiveReconnecting()
                         if (reconnecting.showIdleForeground) {
                             showForeground(ForegroundNotificationMode.CAMERA_STANDBY)
@@ -739,6 +819,11 @@ class RokidRuntimeService : Service() {
         val started = controller.start() && liveLinkRun === run
         if (!started) rendezvousWakeLease.release()
         if (started) {
+            mainHandler.removeCallbacks(capturePowerMonitor)
+            mainHandler.postDelayed(
+                capturePowerMonitor,
+                RokidCapturePowerPolicy.ACTIVE_SAMPLE_INTERVAL_MILLIS,
+            )
             if (managedStandby) {
                 mainHandler.postDelayed(
                     run.rendezvousDeadline,
@@ -829,6 +914,23 @@ class RokidRuntimeService : Service() {
         source: String,
         suppressActivationBranding: Boolean = false,
     ): Int {
+        val powerState = batteryStateSource.snapshot()
+        val powerDecision = capturePowerPolicy.beforeStart(powerState)
+        if (powerDecision != RokidCapturePowerDecision.ALLOW) {
+            idleModeStore.setEnabled(false)
+            visibleArmEligible = false
+            yodaOsWifiRecoveryLease.close()
+            rendezvousWakeLease.release()
+            if (idleForeground) stopForeground(STOP_FOREGROUND_REMOVE)
+            idleForeground = false
+            Log.w(
+                TAG,
+                "state=capture_power_guard result=reject_arm decision=${powerDecision.name.lowercase()} " +
+                    powerState.diagnosticFields(),
+            )
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         when (
             IdleControlPolicy.armDecision(
                 hasActiveLiveLink = liveLinkRun != null,
@@ -840,6 +942,7 @@ class RokidRuntimeService : Service() {
         ) {
             IdleControlArmDecision.ARM -> Unit
             IdleControlArmDecision.ALREADY_ARMED -> {
+                yodaOsWifiRecoveryLease.ensureAvailable()
                 Log.i(TAG, "state=idle_control_enable result=already_armed")
                 return START_STICKY
             }
@@ -855,15 +958,18 @@ class RokidRuntimeService : Service() {
             return START_NOT_STICKY
         }
         visibleArmEligible = true
+        yodaOsWifiRecoveryLease.acquire()
         val transition = foregroundLifecycle.onIdleEnabled()
         if (transition.showIdleForeground && !showForeground(ForegroundNotificationMode.CAMERA_STANDBY)) {
             visibleArmEligible = false
+            yodaOsWifiRecoveryLease.close()
             idleModeStore.setEnabled(false)
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
         if (!startLiveLinkTest(onTerminal = {}, managedStandby = true)) {
             visibleArmEligible = false
+            yodaOsWifiRecoveryLease.close()
             idleModeStore.setEnabled(false)
             if (idleForeground) stopForeground(STOP_FOREGROUND_REMOVE)
             idleForeground = false
@@ -896,6 +1002,40 @@ class RokidRuntimeService : Service() {
             suppressActivationBranding = true,
         )
         Log.i(TAG, "state=same_boot_recovery result=started sensors=authenticated_session_only")
+        return result
+    }
+
+    private fun resumePersistedBootArm(startId: Int): Int {
+        val currentBootCount = currentBootCount()
+        val authorization = IdleControlPolicy.recoveryAuthorization(
+            enabled = idleModeStore.isEnabled(),
+            armedBootCount = idleModeStore.armedBootCount(),
+            currentBootCount = currentBootCount,
+        )
+        if (authorization != IdleControlRecoveryAuthorization.PERSISTED_NEW_BOOT) {
+            Log.w(
+                TAG,
+                "state=persisted_boot_recovery result=rejected reason=not_authorized",
+            )
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        if (!idleModeStore.setEnabled(true, currentBootCount)) {
+            Log.e(TAG, "state=persisted_boot_recovery result=rejected reason=persistence_failed")
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        visibleArmEligible = true
+        val result = enableIdleControl(
+            startId = startId,
+            deferActivationBranding = false,
+            source = "persisted_boot_recovery",
+            suppressActivationBranding = true,
+        )
+        Log.i(
+            TAG,
+            "state=persisted_boot_recovery result=started sensors=authenticated_session_only",
+        )
         return result
     }
 
@@ -1025,6 +1165,21 @@ class RokidRuntimeService : Service() {
     }
 
     private fun restoreIdleControl(reason: IdleControlRestoreReason, startId: Int): Int {
+        if (IdleControlPolicy.isArmed(
+                startedIdleEstablished = startedIdleEstablished,
+                foregroundEstablished = idleForeground,
+                persistedEnabled = idleModeStore.isEnabled(),
+                visibleArmEligible = visibleArmEligible,
+                serviceStopping = pendingServiceShutdown != null,
+            )
+        ) {
+            Log.i(
+                TAG,
+                "state=idle_control_restore_ignored source=${reason.name.lowercase()} " +
+                    "reason=active_visible_arm",
+            )
+            return START_STICKY
+        }
         visibleArmEligible = false
         val decision = IdleControlPolicy.restore(idleModeStore.isEnabled(), reason)
         if (!decision.keepIdleService) {
@@ -1161,6 +1316,8 @@ class RokidRuntimeService : Service() {
         visibleArmEligible = false
         rendezvousGeneration.invalidate()
         cancelRendezvousRetry()
+        mainHandler.removeCallbacks(capturePowerMonitor)
+        yodaOsWifiRecoveryLease.close()
         rendezvousWakeLease.release()
         val liveCaptureActive = liveLinkRun != null
         val transition = foregroundLifecycle.disable(persistenceSucceeded, liveCaptureActive)
@@ -1242,6 +1399,7 @@ class RokidRuntimeService : Service() {
         mainHandler.removeCallbacks(run.deadline)
         mainHandler.removeCallbacks(run.rendezvousDeadline)
         run.preAuthenticationDeadline.cancel()
+        mainHandler.removeCallbacks(capturePowerMonitor)
         rendezvousWakeLease.release()
         Log.i(
             TAG,
@@ -1258,7 +1416,10 @@ class RokidRuntimeService : Service() {
         } else {
             RendezvousTerminalDecision.STOP
         }
-        if (snapshot.sessionsReady > 0L) rendezvousBackoff.resetAfterAuthenticatedSession()
+        // Authentication alone is insufficient evidence of a healthy epoch: Camera2 may still
+        // fail while the previous HAL client is draining. Only a producer-started session resets
+        // the backoff, otherwise repeated HAL-open failures escalate from 15 to 60 seconds.
+        if (snapshot.producerStarts > 0L) rendezvousBackoff.resetAfterAuthenticatedSession()
         if (decision == RendezvousTerminalDecision.FAIL_CLOSED) visibleArmEligible = false
         val terminalTransition = foregroundLifecycle.onLiveTerminal(idleModeStore.isEnabled())
         applyTerminalTransition(terminalTransition)
@@ -1281,6 +1442,7 @@ class RokidRuntimeService : Service() {
         ) {
             return
         }
+        if (!managedCapturePowerAvailable("rotation")) return
         if (startLiveLinkTest(onTerminal = {}, managedStandby = true)) {
             Log.i(TAG, "state=live_link_rotation result=immediate_rendezvous_started")
         } else if (rendezvousGeneration.isCurrent(completedGeneration)) {
@@ -1310,6 +1472,7 @@ class RokidRuntimeService : Service() {
                 RendezvousRetryDecision.REJECT ->
                     Log.w(TAG, "state=live_link_retry_rejected reason=stale_or_ineligible")
                 RendezvousRetryDecision.START_EPOCH -> {
+                    if (!managedCapturePowerAvailable("retry")) return@Runnable
                     if (!startLiveLinkTest(onTerminal = {}, managedStandby = true) &&
                         rendezvousGeneration.isCurrent(completedGeneration) &&
                         idleModeStore.isEnabled() && visibleArmEligible &&
@@ -1334,6 +1497,19 @@ class RokidRuntimeService : Service() {
         val retry = rendezvousRetry ?: return
         mainHandler.removeCallbacks(retry)
         rendezvousRetry = null
+    }
+
+    private fun managedCapturePowerAvailable(source: String): Boolean {
+        val state = batteryStateSource.snapshot()
+        val decision = capturePowerPolicy.beforeStart(state)
+        if (decision == RokidCapturePowerDecision.ALLOW) return true
+        Log.w(
+            TAG,
+            "state=capture_power_guard result=disarm_before_$source " +
+                "decision=${decision.name.lowercase()} ${state.diagnosticFields()}",
+        )
+        disableIdleControl(onTerminal = {})
+        return false
     }
 
     private fun cancelLegacyRendezvousAlarm() {
@@ -1423,6 +1599,40 @@ class RokidRuntimeService : Service() {
     }
 
     private fun playMicrophoneConfirmation(active: Boolean) {
+        val nowNs = ElapsedRealtimeClock.nowNanos()
+        microphoneCueGeneration = Math.addExact(microphoneCueGeneration, 1L)
+        val generation = microphoneCueGeneration
+        pendingMicrophoneStopCue?.let(mainHandler::removeCallbacks)
+        pendingMicrophoneStopCue = null
+        if (active) {
+            microphoneStartCueMonotonicNs = nowNs
+            emitMicrophoneConfirmation(active = true)
+            return
+        }
+        val delayMillis = OperationalEarconGenerator.stopCueDelayMillis(
+            microphoneStartCueMonotonicNs,
+            nowNs,
+        )
+        val playback = Runnable {
+            if (generation != microphoneCueGeneration) return@Runnable
+            pendingMicrophoneStopCue = null
+            microphoneStartCueMonotonicNs = null
+            emitMicrophoneConfirmation(active = false)
+        }
+        if (delayMillis == 0L) {
+            playback.run()
+        } else {
+            pendingMicrophoneStopCue = playback
+            mainHandler.postDelayed(playback, delayMillis)
+            Log.i(
+                TAG,
+                "state=microphone_consent_cue phase=stop disposition=scheduled " +
+                    "delay_ms=$delayMillis",
+            )
+        }
+    }
+
+    private fun emitMicrophoneConfirmation(active: Boolean) {
         val id = cueIds.incrementAndGet()
         val cue = PerceptionCue.newBuilder()
             .setCueId("microphone-control-$id")
@@ -1435,12 +1645,24 @@ class RokidRuntimeService : Service() {
             .setDirection(Direction.DIRECTION_AHEAD)
             .setEarcon(
                 Earcon.newBuilder()
-                    .setEarconId("microphone-control")
-                    .setGain(0.4f)
-                    .setPitch(if (active) 1.1f else 0.9f),
+                    .setEarconId(
+                        if (active) {
+                            OperationalEarconGenerator.MICROPHONE_START_ID
+                        } else {
+                            OperationalEarconGenerator.MICROPHONE_STOP_ID
+                        },
+                    )
+                    .setGain(OperationalEarconGenerator.MAX_LINEAR_GAIN.toFloat())
+                    .setPitch(1.0f),
             )
             .build()
-        transport.deliver(CueEnvelope("local-session", "microphone-control", cue))
+        val result = transport.deliver(CueEnvelope("local-session", "microphone-control", cue))
+        Log.i(
+            TAG,
+            "state=microphone_consent_cue phase=${if (active) "start" else "stop"} " +
+                "disposition=${result?.disposition?.name?.lowercase() ?: "unavailable"} " +
+                "audio_played=${result?.audioPlayed == true}",
+        )
     }
 
     private fun liveLinkAggregate(snapshot: LiveLinkCaptureSnapshot): String =
@@ -1937,6 +2159,7 @@ class RokidRuntimeService : Service() {
                     if (!stopLiveLink(LiveLinkCaptureStopReason.USER_REQUESTED)) mainHandler.post(onTerminal)
                 }
                 RuntimeCommand.START_PHYSICAL_TRACE -> startPhysicalTrace(onTerminal)
+                RuntimeCommand.BENCHMARK_VIDEO_CODECS -> benchmarkVideoCodecs(onTerminal)
                 RuntimeCommand.PLAY_LEFT_CUE -> playCue(Direction.DIRECTION_LEFT, onTerminal)
                 RuntimeCommand.PLAY_RIGHT_CUE -> playCue(Direction.DIRECTION_RIGHT, onTerminal)
                 RuntimeCommand.PLAY_FULL_BRAND_TEST -> {
@@ -1970,6 +2193,7 @@ class RokidRuntimeService : Service() {
                 }
                 RuntimeCommand.ENABLE_IDLE_CONTROL -> mainHandler.post(onTerminal)
                 RuntimeCommand.RECOVER_SAME_BOOT -> mainHandler.post(onTerminal)
+                RuntimeCommand.RECOVER_PERSISTED_BOOT -> mainHandler.post(onTerminal)
                 RuntimeCommand.DISABLE_IDLE_CONTROL -> disableIdleControl(onTerminal)
                 RuntimeCommand.STOP -> disableIdleControl(onTerminal)
             }
@@ -1997,11 +2221,45 @@ class RokidRuntimeService : Service() {
         }
     }
 
+    private fun benchmarkVideoCodecs(onTerminal: () -> Unit) {
+        if (!codecBenchmarkRunning.compareAndSet(false, true)) {
+            Log.w(TAG, "state=video_codec_benchmark result=rejected reason=already_running")
+            mainHandler.post(onTerminal)
+            return
+        }
+        Thread({
+            try {
+                HardwareVideoCodecBenchmark().runAll().forEach { result ->
+                    Log.i(
+                        TAG,
+                        "state=video_codec_benchmark media_type=${result.mediaType} " +
+                            "codec=${result.codecName ?: "none"} hardware=${result.hardwareAccelerated} " +
+                            "layout=${result.inputLayout?.name?.lowercase() ?: "none"} " +
+                            "input_frames=${result.inputFrames} output_frames=${result.outputFrames} " +
+                            "encoded_bytes=${result.encodedBytes} key_frames=${result.keyFrames} " +
+                            "elapsed_ns=${result.elapsedNanos} " +
+                            "latency_p50_ns=${result.encodeLatencyP50Nanos ?: -1L} " +
+                            "latency_p95_ns=${result.encodeLatencyP95Nanos ?: -1L} " +
+                            "result=${if (result.succeeded) "pass" else "fail"} " +
+                            "reason=${result.failure ?: "none"}",
+                    )
+                }
+            } finally {
+                codecBenchmarkRunning.set(false)
+                mainHandler.post(onTerminal)
+            }
+        }, "mpl-codec-benchmark").start()
+    }
+
     private fun safeReason(message: String): String = message
         .lowercase()
         .replace(Regex("[^a-z0-9]+"), "_")
         .trim('_')
         .take(MAX_REASON_LENGTH)
+
+    private fun RokidBatteryState.diagnosticFields(): String =
+        "level_percent=${levelPercent ?: -1} status=${status.name.lowercase()} " +
+            "health_good=${healthGood?.toString() ?: "unknown"}"
 
     private fun org.conceptflow.mpl.rokid.core.ImuSample.hasNonZeroSignal(): Boolean =
         pose.rotation.x != 0.0 || pose.rotation.y != 0.0 || pose.rotation.z != 0.0 ||
@@ -2046,6 +2304,8 @@ class RokidRuntimeService : Service() {
             "org.conceptflow.mpl.rokid.internal.RENDEZVOUS_RETRY"
         const val ACTION_RECOVER_SAME_BOOT =
             "org.conceptflow.mpl.rokid.internal.RECOVER_SAME_BOOT"
+        const val ACTION_RECOVER_PERSISTED_BOOT =
+            "org.conceptflow.mpl.rokid.internal.RECOVER_PERSISTED_BOOT"
         const val ACTION_RESTORE_PROOF = "org.conceptflow.mpl.rokid.internal.RESTORE_PROOF"
         const val EXTRA_INTERNAL_RESTORE_PROOF = "org.conceptflow.mpl.rokid.extra.INTERNAL_RESTORE_PROOF"
         const val EXTRA_GESTURE_OBSERVED_MONOTONIC_NS =

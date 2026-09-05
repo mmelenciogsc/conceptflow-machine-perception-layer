@@ -50,6 +50,14 @@ class PreprocessingRoutingTest {
                 encoding = ImageEncoding.IMAGE_ENCODING_GRAY8,
                 mediaType = "application/x-conceptflow-gray8",
             ),
+            testFrame(
+                bytes = ByteArray(6),
+                width = 2,
+                height = 2,
+                rowStrideBytes = 2,
+                encoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+                mediaType = "application/x-conceptflow-i420",
+            ),
             testFrame(bytes = ONE_PIXEL_JPEG),
             testFrame(bytes = ONE_PIXEL_PNG, encoding = ImageEncoding.IMAGE_ENCODING_PNG, mediaType = "image/png"),
         )

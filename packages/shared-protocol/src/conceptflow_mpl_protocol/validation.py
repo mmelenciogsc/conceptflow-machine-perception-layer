@@ -124,8 +124,15 @@ def validate_descriptor() -> None:
     lease_grant = descriptor.message_types_by_name["StreamLeaseGrant"]
     if lease_request.fields_by_name["originating_microphone_intent_id"].number != 12:
         raise AssertionError("StreamLeaseRequest gesture correlation field differs")
+    if lease_request.fields_by_name["requested_camera_encoding"].number != 13:
+        raise AssertionError("StreamLeaseRequest camera encoding field differs")
     if lease_grant.fields_by_name["originating_microphone_intent_id"].number != 11:
         raise AssertionError("StreamLeaseGrant gesture correlation field differs")
+    if lease_grant.fields_by_name["granted_camera_encoding"].number != 12:
+        raise AssertionError("StreamLeaseGrant camera encoding field differs")
+    encoding = descriptor.enum_types_by_name["ImageEncoding"]
+    if encoding.values_by_name["IMAGE_ENCODING_AVC_ANNEX_B_INTRA"].number != 7:
+        raise AssertionError("AVC-intra image encoding differs")
     live_envelope = descriptor.message_types_by_name["LiveLinkEnvelope"]
     if tuple(field.name for field in live_envelope.fields) != (
         "session_id",

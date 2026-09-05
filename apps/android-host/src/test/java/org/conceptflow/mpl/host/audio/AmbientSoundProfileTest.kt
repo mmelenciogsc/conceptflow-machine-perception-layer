@@ -59,6 +59,23 @@ class AmbientSoundProfileTest {
     }
 
     @Test
+    fun `leading consent cue is omitted from ambient statistics`() {
+        val profiler = AmbientSoundProfiler(minimumProfileNanos = 250_000_000L)
+        profiler.begin(
+            2L,
+            AmbientEnvironmentPrior.INDOOR,
+            1_000_000_000L,
+            leadingSuppressionNanos = 700_000_000L,
+        )
+
+        assertTrue(profiler.accept(tone(1L), 1_100_000_000L))
+        assertTrue(profiler.accept(tone(2L), 1_800_000_000L))
+        val profile = requireNotNull(profiler.complete(2_100_000_000L))
+
+        assertEquals(1_600L, profile.sampleCount)
+    }
+
+    @Test
     fun `outdoor and masking priors raise but cap calibration level`() {
         val quietIndoor = AmbientCalibrationPolicy.tune(AmbientEnvironmentPrior.INDOOR, -75f, 0f)
         val loudOutdoor = AmbientCalibrationPolicy.tune(AmbientEnvironmentPrior.OUTDOOR, -18f, 1f)

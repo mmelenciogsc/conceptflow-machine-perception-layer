@@ -9,18 +9,26 @@ import org.junit.Test
 
 class RokidRendezvousPolicyTest {
     @Test
-    fun failuresUseCooldownAndNormalSessionRotationIsImmediate() {
+    fun transientFailuresAndNormalSessionRotationUseCooldown() {
         assertEquals(
             RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,
             decision(LiveLinkCaptureStopReason.RETRY_LIMIT_REACHED, LiveLinkDisconnectReason.NETWORK),
         )
         assertEquals(
-            RendezvousTerminalDecision.RETRY_IMMEDIATELY,
+            RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,
             decision(LiveLinkCaptureStopReason.REMOTE_COMPLETED, null),
         )
         assertEquals(
-            RendezvousTerminalDecision.RETRY_IMMEDIATELY,
+            RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,
             decision(LiveLinkCaptureStopReason.TIME_LIMIT_REACHED, null),
+        )
+        assertEquals(
+            RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,
+            decision(LiveLinkCaptureStopReason.LEASE_EXPIRED, null),
+        )
+        assertEquals(
+            RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,
+            decision(LiveLinkCaptureStopReason.SOURCE_FAILURE, null),
         )
         assertEquals(
             RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN,

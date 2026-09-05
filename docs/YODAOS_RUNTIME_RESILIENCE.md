@@ -91,7 +91,17 @@ in this repository.
   transparent, non-focusable, and non-touchable but remains visible while the
   same idle-control generation is armed. On this non-display target that keeps
   the ordinary app UID camera-eligible without intercepting the right-arm
-  input surface. It exits when idle control is disarmed.
+  input surface. The broker also holds `FLAG_KEEP_SCREEN_ON`; physical testing
+  showed that a foreground service alone did not prevent YodaOS from making the
+  UID camera-ineligible. It exits, and releases that flag, when idle control is
+  disarmed.
+- YodaOS rejects the ordinary third-party `BOOT_COMPLETED` receiver. Persisted
+  reboot recovery therefore depends on the explicitly enabled, system-bound
+  Rokid input AccessibilityService. After user-storage unlock, that service
+  re-enters the same visible broker and can restore the runtime and bounded
+  Wi-Fi recovery. Installation and operator procedures must verify that the
+  observer remains configured and bound; silently enabling an accessibility
+  service without user authorization is not an acceptable production policy.
 
 ## Platform boundary
 
@@ -112,6 +122,42 @@ Wi-Fi silently. Therefore:
 - Keep restart/reconnect behavior correct even after memory improvements;
   memory optimization cannot make process lifetime unconditional.
 
+## Power-bounded recovery update — 2026-09-05
+
+The recovery observer no longer treats reconnection as more important than the
+battery boundary. Rokid Node samples the sticky platform battery state before
+arming and every five seconds during an active epoch. A known level below 50
+percent rejects a start. A known level at or below 25 percent, or an unhealthy
+battery state, disarms the runtime, clears persisted arming, releases camera and
+radio resources, and therefore prevents the observer from recreating the same
+high-draw epoch after a low-battery reboot. Charging status does not override
+the numerical threshold.
+
+The Camera2 session now requests the target's lowest fixed AE range (`[15,15]`)
+for both the keepalive preview and scheduled capture. Rendezvous and reconnect
+briefly use `WIFI_MODE_FULL_HIGH_PERF`; after authentication the Wi-Fi lock is
+released and steady-state streaming returns to Android's platform-default radio
+policy while the bounded CPU wake lease remains active. Production post-gate
+transfer is self-contained 640×640 planar I420,
+614,400 bytes per admitted frame, rather than 1,228,800-byte packed RGB8. These
+changes do not modify camera, IMU, microphone, or touch gating and do not turn
+sensor callbacks into network writers.
+
+On the connected target, Camera2 request inspection showed `[15,15]` on both
+requests. A 45-second sample delivered 143 camera frames and 2,966 selected IMU
+samples with no new camera drop or interruption. A subsequent I420/QNN sample
+reconstructed 275 frames and completed 17 correlated inference cycles; camera,
+IMU, audio, and touch queue-drop counters remained zero. Host-side I420 decode
+p95 was 17.9 ms in that sample. A reversible development battery override at 24
+percent caused the active runtime to disarm within the five-second monitoring
+interval and cleared persisted idle arming; the override was reset immediately.
+This proves the guard transition, not real battery endurance. A later charged,
+approximately 358-second untethered interval retained boot count 150, reported
+zero link interruption or modality queue loss, advanced 1,315 camera frames and
+27,710 IMU samples, and moved the platform battery gauge from 100 to 85 percent.
+The result is useful comparative evidence but remains one uncalibrated run and
+does not establish operating time.
+
 ## Physical validation on 2026-08-27
 
 The build installed on both attached nodes completed these tests:
@@ -131,6 +177,7 @@ The build installed on both attached nodes completed these tests:
 | Recovered delivery | Android Node advanced from 133 to 201 reconstructed frames and from 2,146 to 3,237 received IMU samples after recovery; its interruption counter advanced once with `NETWORK_IO` |
 | Camera-eligibility guard | after the foreground reconfirmation and transparent broker change, one observed session remained connected for more than 135 seconds while delivering 509 camera frames and 10,551 IMU samples with zero link interruptions |
 | Extended attached run sampled 2026-08-28 | both node processes and the runtime service remained active after 4,489 reconstructed camera frames and 83,923 received IMU samples; one recorded `SOCKET_TIMEOUT` recovered automatically, current queues were empty, and inference had completed 1,412 of 1,420 attempts |
+| Cable-powered reboot sampled 2026-09-05 | the enabled system-bound observer survived reboot, rebound after user-storage unlock, restored Wi-Fi and the foreground runtime, and returned to authenticated streaming without an ADB launch; a following 20-second sample delivered 69 camera frames, 41 inference results, and 852 IMU samples |
 
 The 10-minute soak preceded the final direct-`ByteString` framing optimization;
 the final no-copy framing path received the focused 30-second physical run.

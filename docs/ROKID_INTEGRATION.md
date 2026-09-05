@@ -149,9 +149,20 @@ low-latency lock keep only that deadline and handshake progressing. Both use a
 182-second hard timeout, providing a two-second release margin around the
 three-minute ceiling, and are released earlier on authentication, terminal,
 failed start, disable, or service destruction. The Wi-Fi lock can keep an
-already-enabled, associated radio responsive; Android does not permit this
-ordinary target-SDK-36 app to turn a disabled Wi-Fi radio on silently. No lock
-is held during cooldown. The maximum jittered steady cooldown is 66 seconds;
+already-enabled, associated radio responsive but cannot enable it. On the
+exact non-display YodaOS-Sprite product family, Rokid Node now also uses the
+physically verified system-assist `open_wifi_p2p` command as a bounded radio
+recovery pulse while, and only while, the node is explicitly armed. Attempts
+occur after 0, 1, 3, and 8 seconds and then stop. Radio enablement schedules
+idempotent public `WifiP2pManager.removeGroup` checks after 4 and 8 seconds.
+Only an empty, locally owned group may be removed; a peer-owned group or group
+with clients is retained. The vendor `close_wifi_p2p` command is deliberately
+not used because a longer physical observation proved that it also turns the
+Wi-Fi radio off on this firmware. The recovery command contains no network
+identifier, address, credential, or sensor content. Unsupported products fail
+closed, and disabling the node unregisters the observer and attempts bounded
+cleanup of any pulse. No lock is held during cooldown. The maximum jittered
+steady cooldown is 66 seconds;
 the pre-authentication ceiling remains separately bounded while the
 foreground-service process is runnable. Android or vendor freezing can defer a
 process-local callback;
@@ -170,8 +181,10 @@ Within that explicitly armed boot, a YodaOS low-memory process eviction is
 recovered through the same short-lived nonvisual Activity broker used for the
 initial foreground-service authorization. The boot-count capability is checked
 before both the broker launch and runtime resume, and branding is not replayed.
-A graceful 10-minute lease rotation begins its next rendezvous immediately;
-failure backoff is not applied to normal rotation.
+The persistent armed-node epoch is bounded to four hours. Its terminal path,
+including ordinary expiry and source-open failure, returns to sensor-off
+standby and the existing bounded 15/30/60-second recovery cadence. The separate
+diagnostic soak remains ten minutes.
 
 The observed API 32 YodaOS build also applied
 `RUN_IN_BACKGROUND=ignore` and `RUN_ANY_IN_BACKGROUND=ignore` to the directly
@@ -213,9 +226,9 @@ foreground-service type immediately before either sensor factory is called. It
 publishes camera-active only after both producers start. A disconnect demotes
 the notification to sensor-off standby before reconnect; the next authenticated
 session repeats the starting-to-active transition. An ordinary debug run starts
-one non-extendable 30-second active deadline. The explicitly selected soak and
-armed-node paths use a bounded 10-minute deadline; reconnects cannot reset
-either deadline.
+one non-extendable 30-second active deadline. The explicitly selected diagnostic
+soak uses a bounded 10-minute deadline; the persistent armed-node path uses a
+bounded four-hour deadline. Reconnects cannot reset the active epoch deadline.
 Only after the controller reports its bounded transport terminal does the
 service return to the sensor-off standby notification.
 Disable and the generic `stop` command both clear the persisted enable choice,
@@ -271,8 +284,9 @@ session; Bluetooth/BLE wake or discovery is not implemented or claimed.
 
 The implemented hardware boundaries are:
 
-- `Camera2FrameSource`: bounded latest-only YUV capture, post-gate RGB8 conversion,
-  and monotonic frame IDs;
+- `Camera2FrameSource`: bounded latest-only YUV capture, post-gate packed-I420
+  conversion for production (RGB8 for explicit legacy diagnostics), and
+  monotonic frame IDs;
 - `SensorManagerPoseSource`: unbatched nominal 100 Hz game-rotation snapshots,
   each carrying the latest three-axis gyroscope and gravity-compensated linear
   acceleration values plus their source timestamps and sensor accuracy;
@@ -322,21 +336,34 @@ The protected gate still evaluates a 90×90 thumbnail for this square source,
 but now samples Y directly and expands the declared BT.601 limited range; it
 does not read chroma. Its thresholds, state, and 3/5 FPS motion response remain
 unchanged. Only after admission, a packaged arm64 integer JNI converter reads
-the borrowed direct planes and converts YUV to YOLOE's 640×640 RGB8 input with
-the byte-exact fixed-point 80/81 scale and no crop. The Kotlin converter remains
-the deterministic fallback/reference. Cross-language production-size golden
-tests and Kotlin per-byte tests pin the bilinear RGB layout and BT.601
-limited-range result, including padded row strides and pixel-stride-two chroma.
-Stream diagnostics expose `camera_native_rgb_conversions` alongside total RGB
-conversions so fallback use is visible. The general aspect-fill geometry
-remains center-crop capable and never stretches or letterboxes the image. See
+the borrowed direct planes and produces tightly packed 640×640 planar I420 with
+the deterministic fixed-point 80/81 scale and no crop. Android Node validates
+the 614,400-byte layout and converts it to RGB on the Poco before current model
+preprocessing. Kotlin remains the deterministic fallback/reference. RGB8
+conversion remains available only to the explicit legacy diagnostic spool.
+Cross-language production-size golden tests and Kotlin byte-layout tests cover
+padded row strides and pixel-stride-two chroma. One privacy-safe startup log
+states the selected output format and whether native conversion was used, so a
+physical run cannot silently credit the fallback. The general aspect-fill
+geometry remains center-crop capable and never stretches or letterboxes the
+image. See
 [Rokid pull spool](ROKID_PULL_SPOOL.md).
 
-The live protocol continues to describe the post-gate 640×640 RGB8 payload; it
-has no source-acquisition tier field. Consequently it cannot yet request a
-future exclusive high-resolution capture. The existing 1920×1080 bounds remain
-available to legacy diagnostics/future policy, but they do not alter the
-continuous 648×648 source and no on-demand 1920 path is added by this change.
+Live protocol 1.5 describes packed RGB8 compatibility, planar I420, and an
+explicit feature-flagged AVC Annex-B all-intra wire format. Production defaults
+to the self-contained 640×640 I420 payload. When both peers opt in, the glasses
+hardware-encode the exact same admitted post-gate I420 frame and require every
+wire access unit to contain SPS, PPS, and IDR; the Poco hardware-decodes back to
+I420 before the existing sensor timeline and QNN pipeline. It has no
+source-acquisition tier field and therefore cannot request a future exclusive
+high-resolution capture. The existing 1920×1080 bounds remain available to
+legacy diagnostics/future policy, but they do not alter the continuous 648×648
+source and no on-demand 1920 path is added by this change.
+
+If Poco rejects AVC after a decoder failure, the existing client accepts the
+next authenticated I420 lease and feeds the unchanged post-gate I420 buffer
+directly to transport. No camera, microphone, IMU, or touch gate is restarted
+or reinterpreted to implement this codec fallback.
 
 The gate analyzes a bounded luma thumbnail (maximum 160×90):
 
@@ -985,7 +1012,7 @@ The zero translation is not accepted as camera-to-head translation: under
 remains unavailable, and this path does not claim full 6-DoF point anchoring,
 an anatomical eye/gaze calibration, or numeric factory alignment uncertainty.
 Empirical checkerboard or ChArUco calibration of the exact acquired 648×648 YUV
-and published 640×640 RGB8 geometry is still required before marking intrinsics
+and published 640×640 I420 geometry is still required before marking intrinsics
 `CALIBRATED` or claiming calibrated spatial/angular accuracy. See
 [Rokid camera-to-head extrinsic](ROKID_CAMERA_HEAD_EXTRINSIC.md)
 and [Research evidence](RESEARCH_EVIDENCE.md).

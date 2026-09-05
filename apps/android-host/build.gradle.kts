@@ -10,10 +10,21 @@ val qnnSdkRoot = providers.gradleProperty("qnnSdkRoot")
 val requireQnn = providers.gradleProperty("requireQnn")
     .map(String::toBooleanStrict)
     .orElse(false)
+val whisperCppRoot = providers.gradleProperty("whisperCppRoot")
+    .orElse(providers.environmentVariable("WHISPER_CPP_ROOT"))
+    .orNull
+val requireWhisper = providers.gradleProperty("requireWhisper")
+    .map(String::toBooleanStrict)
+    .orElse(false)
 
 if (requireQnn.get() && qnnSdkRoot == null) {
     error("-PrequireQnn=true requires -PqnnSdkRoot=DIR or QNN_SDK_ROOT=DIR")
 }
+if (requireWhisper.get() && whisperCppRoot == null) {
+    error("-PrequireWhisper=true requires -PwhisperCppRoot=DIR or WHISPER_CPP_ROOT=DIR")
+}
+
+val nativeBuildEnabled = qnnSdkRoot != null || whisperCppRoot != null
 
 android {
     namespace = "org.conceptflow.mpl.host"
@@ -26,11 +37,12 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        if (qnnSdkRoot != null) {
+        if (nativeBuildEnabled) {
             ndk { abiFilters += "arm64-v8a" }
             externalNativeBuild {
                 cmake {
-                    arguments += "-DQNN_SDK_ROOT=$qnnSdkRoot"
+                    qnnSdkRoot?.let { arguments += "-DQNN_SDK_ROOT=$it" }
+                    whisperCppRoot?.let { arguments += "-DWHISPER_CPP_ROOT=$it" }
                 }
             }
         }
@@ -53,7 +65,7 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    if (qnnSdkRoot != null) {
+    if (nativeBuildEnabled) {
         externalNativeBuild {
             cmake {
                 path = file("src/main/cpp/CMakeLists.txt")

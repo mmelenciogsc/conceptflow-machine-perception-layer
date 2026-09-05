@@ -111,6 +111,26 @@ class FocusedVqaFrameStoreTest {
     }
 
     @Test
+    fun `provider aspect preserves large explicit VQA input within the measured prefill budget`() {
+        val now = 700L
+        val store = BoundedFocusedVqaFrameStore({ now })
+        store.beginSession(1L)
+        val image = RgbImage(1_920, 1_080, ByteArray(1_920 * 1_080 * 3) { 24 })
+        assertTrue(store.offer(1L, visionFrame(17L, now, 1_920, 1_080), image))
+        val encodedShape = AtomicReference<Pair<Int, Int>>()
+        val provider = StoredFocusedVqaFrameProvider(
+            store,
+            FocusedVqaJpegEncoder { selected ->
+                encodedShape.set(selected.width to selected.height)
+                byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte())
+            },
+        )
+
+        assertNotNull(provider.prepare(focusRequest(17L, now)))
+        assertEquals(224 to 126, encodedShape.get())
+    }
+
+    @Test
     fun `gateway is asynchronous bounded and delivers an exactly correlated answer`() {
         val providerStarted = CountDownLatch(1)
         val releaseProvider = CountDownLatch(1)

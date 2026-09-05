@@ -180,6 +180,24 @@ bool TransformIsValid(const SquareAspectFillTransform& transform) {
         transform.crop_top <= transform.scaled_height - transform.output_size;
 }
 
+void ResamplePlane(
+    const PlaneView& plane,
+    const AxisPlan& x,
+    const AxisPlan& y,
+    std::uint8_t* output) {
+    RowCache rows(static_cast<int>(x.lower.size()));
+    std::size_t offset = 0;
+    for (std::size_t output_y = 0; output_y < y.lower.size(); ++output_y) {
+        rows.Prepare(plane, x, y.lower[output_y], y.upper[output_y]);
+        const int* lower = rows.lower_values();
+        const int* upper = rows.upper_values();
+        for (std::size_t output_x = 0; output_x < x.lower.size(); ++output_x) {
+            output[offset++] = static_cast<std::uint8_t>(
+                InterpolateRows(lower[output_x], upper[output_x], y.upper_weight[output_y]));
+        }
+    }
+}
+
 }  // namespace
 
 bool ConvertYuv420ToRgb8(
@@ -250,6 +268,57 @@ bool ConvertYuv420ToRgb8(
             output[offset++] = static_cast<std::uint8_t>(packed & 0xffU);
         }
     }
+    return true;
+}
+
+bool ConvertYuv420ToI420(
+    const PlaneView& y,
+    const PlaneView& u,
+    const PlaneView& v,
+    const SquareAspectFillTransform& transform,
+    std::uint8_t* output,
+    std::size_t output_capacity) {
+    if (!TransformIsValid(transform) || !PlaneIsValid(y) || !PlaneIsValid(u) ||
+        !PlaneIsValid(v) || output == nullptr || y.width != transform.source_width ||
+        y.height != transform.source_height || u.width != (y.width + 1) / 2 ||
+        v.width != u.width || u.height != (y.height + 1) / 2 || v.height != u.height ||
+        transform.output_size % 2 != 0 || transform.scaled_width % 2 != 0 ||
+        transform.scaled_height % 2 != 0 || transform.crop_left % 2 != 0 ||
+        transform.crop_top % 2 != 0) {
+        return false;
+    }
+    const auto output_size = static_cast<std::size_t>(transform.output_size);
+    if (output_size > std::numeric_limits<std::size_t>::max() / output_size) return false;
+    const auto luma_bytes = output_size * output_size;
+    if (luma_bytes > std::numeric_limits<std::size_t>::max() - luma_bytes / 2U) return false;
+    const auto expected_bytes = luma_bytes + luma_bytes / 2U;
+    if (output_capacity < expected_bytes) return false;
+
+    const AxisPlan luma_x = CreateAxisPlan(
+        transform.output_size,
+        transform.scaled_width,
+        transform.crop_left,
+        y.width);
+    const AxisPlan luma_y = CreateAxisPlan(
+        transform.output_size,
+        transform.scaled_height,
+        transform.crop_top,
+        y.height);
+    const int chroma_output_size = transform.output_size / 2;
+    const AxisPlan chroma_x = CreateAxisPlan(
+        chroma_output_size,
+        transform.scaled_width / 2,
+        transform.crop_left / 2,
+        u.width);
+    const AxisPlan chroma_y = CreateAxisPlan(
+        chroma_output_size,
+        transform.scaled_height / 2,
+        transform.crop_top / 2,
+        u.height);
+    const auto chroma_bytes = luma_bytes / 4U;
+    ResamplePlane(y, luma_x, luma_y, output);
+    ResamplePlane(u, chroma_x, chroma_y, output + luma_bytes);
+    ResamplePlane(v, chroma_x, chroma_y, output + luma_bytes + chroma_bytes);
     return true;
 }
 

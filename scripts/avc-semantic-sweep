@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/avc-semantic-sweep --fixture IMAGE --rokid-serial SERIAL --android-serial SERIAL
+
+Converts one consented or public-safe still image to the exact packed 640x640
+I420 camera contract, then runs the hardware codec and real-QNN fidelity gate
+at 1.5, 3, 6, 9, and 12 Mbit/s. The source and raw fixture are never copied
+into the repository and all device-side temporary files are erased per run.
+EOF
+}
+
+fixture=""
+rokid_serial=""
+android_serial=""
+while (($#)); do
+    case "$1" in
+        --fixture) fixture="${2:-}"; shift 2 ;;
+        --rokid-serial) rokid_serial="${2:-}"; shift 2 ;;
+        --android-serial) android_serial="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'error: unsupported argument; use --help\n' >&2; exit 2 ;;
+    esac
+done
+
+[[ -n "$fixture" && -n "$rokid_serial" && -n "$android_serial" ]] || {
+    usage >&2
+    exit 2
+}
+[[ "$fixture" != *$'\n'* && "$rokid_serial" != *$'\n'* && "$android_serial" != *$'\n'* ]] || {
+    printf 'error: malformed argument\n' >&2
+    exit 2
+}
+[[ -f "$fixture" && -s "$fixture" ]] || {
+    printf 'error: fixture is not a nonempty regular file\n' >&2
+    exit 2
+}
+command -v ffmpeg >/dev/null || {
+    printf 'error: ffmpeg is required to produce the exact I420 fixture\n' >&2
+    exit 1
+}
+
+temporary_directory="$(mktemp -d)"
+cleanup() {
+    rm -f -- "$temporary_directory/fixture.i420"
+    rmdir -- "$temporary_directory" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+raw_fixture="$temporary_directory/fixture.i420"
+ffmpeg -nostdin -hide_banner -loglevel error -y -i "$fixture" \
+    -vf 'scale=640:640:force_original_aspect_ratio=increase:flags=lanczos,crop=640:640,format=yuv420p' \
+    -frames:v 1 -f rawvideo "$raw_fixture"
+[[ "$(stat -c %s "$raw_fixture")" == "614400" ]] || {
+    printf 'error: ffmpeg did not produce the exact packed 640x640 I420 contract\n' >&2
+    exit 1
+}
+
+printf 'fixture_sha256=%s fixture_bytes=614400\n' "$(sha256sum "$raw_fixture" | cut -d' ' -f1)"
+qualified=()
+for bit_rate in 1500000 3000000 6000000 9000000 12000000; do
+    set +e
+    result="$(./scripts/avc-fidelity-probe \
+        --rokid-serial "$rokid_serial" \
+        --android-serial "$android_serial" \
+        --fixture-i420 "$raw_fixture" \
+        --bit-rate "$bit_rate" 2>&1)"
+    result_code=$?
+    set -e
+    printf 'bitrate=%s result_code=%s\n%s\n' "$bit_rate" "$result_code" "$result"
+    case "$result" in
+        *codec_fidelity_passed*) qualified+=("$bit_rate") ;;
+        *codec_fidelity_rejected*) ;;
+        *) printf 'error: fidelity probe failed before a gate decision\n' >&2; exit 1 ;;
+    esac
+done
+
+if ((${#qualified[@]} == 0)); then
+    printf 'qualification=none\n'
+    exit 1
+fi
+printf 'qualification=passed first_qualified_bitrate=%s all_qualified=%s\n' \
+    "${qualified[0]}" "$(IFS=,; printf '%s' "${qualified[*]}")"

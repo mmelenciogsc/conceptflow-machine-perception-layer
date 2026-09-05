@@ -30,6 +30,16 @@ import org.junit.Test
 
 class LiveLinkCaptureControllerTest {
     @Test
+    fun persistentEpochOutlivesTheTenMinuteDiagnosticSoak() {
+        assertEquals(600_000L, LiveLinkCaptureController.SOAK_RUN_DURATION_MILLIS)
+        assertEquals(14_400_000L, LiveLinkCaptureController.PERSISTENT_RUN_DURATION_MILLIS)
+        assertTrue(
+            LiveLinkCaptureController.PERSISTENT_RUN_DURATION_MILLIS >
+                LiveLinkCaptureController.SOAK_RUN_DURATION_MILLIS,
+        )
+    }
+
+    @Test
     fun `camera gate telemetry observes existing decisions without changing frame publication`() {
         val fixture = Fixture()
         fixture.controller.start()

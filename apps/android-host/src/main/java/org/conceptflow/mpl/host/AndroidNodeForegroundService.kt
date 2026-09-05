@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
+import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -21,6 +22,7 @@ import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.vision.EnvironmentSelectionMode
 import org.conceptflow.mpl.host.vision.GnssQualitySample
 import org.conceptflow.mpl.transport.AndroidWifiDirectGroupRecovery
+import org.conceptflow.mpl.transport.MicrophoneRequestDispatch
 import org.conceptflow.mpl.transport.WifiDirectRecoveryBand
 import org.conceptflow.mpl.transport.WifiDirectRecoveryMode
 import org.conceptflow.mpl.transport.WifiDirectGroupRecoveryOutcome
@@ -102,6 +104,7 @@ object AndroidNodeWifiDirectRecoveryState {
 
 /** Persistent, explicitly started owner of the Android Node listener and QNN sessions. */
 class AndroidNodeForegroundService : Service() {
+    private val guardianBinder = Binder()
     private var controller: LiveMachineVisionController? = null
     private var wifiDirectRecovery: AndroidWifiDirectGroupRecovery? = null
     private lateinit var desiredStateStore: AndroidNodeDesiredStateStore
@@ -123,6 +126,7 @@ class AndroidNodeForegroundService : Service() {
             }
             startForegroundServiceState(getString(R.string.android_node_starting))
             startNode(desiredState.environmentMode)
+            AndroidNodeGuardianService.start(this)
             Log.i(TAG, "state=android_node_service restore=started")
             return START_STICKY
         }
@@ -134,18 +138,35 @@ class AndroidNodeForegroundService : Service() {
                 }
                 startForegroundServiceState(getString(R.string.android_node_starting))
                 startNode(environmentMode)
+                AndroidNodeGuardianService.start(this)
                 START_STICKY
+            }
+            ACTION_RESTORE -> {
+                val desiredState = desiredStateStore.read()
+                if (!desiredState.enabled) {
+                    AndroidNodeGuardianService.stop(this)
+                    stopSelfResult(startId)
+                    START_NOT_STICKY
+                } else {
+                    startForegroundServiceState(getString(R.string.android_node_starting))
+                    startNode(desiredState.environmentMode)
+                    AndroidNodeGuardianService.start(this)
+                    Log.i(TAG, "state=android_node_service guardian_restore=started")
+                    START_STICKY
+                }
             }
             ACTION_STOP -> {
                 if (!desiredStateStore.disable()) {
                     Log.e(TAG, "state=android_node_service persistence=failed operation=disable")
                 }
+                AndroidNodeGuardianService.stop(this)
                 stopNode()
                 START_NOT_STICKY
             }
             ACTION_REQUEST_MICROPHONE -> {
                 restoreControllerIfDesired()
-                controller?.requestMicrophone()
+                val dispatch = requestMicrophoneNowInternal()
+                Log.i(TAG, "state=microphone_request dispatch=${dispatch.name.lowercase()}")
                 restartDisposition()
             }
             ACTION_REQUEST_AMBIENT_PROFILE -> {
@@ -179,7 +200,7 @@ class AndroidNodeForegroundService : Service() {
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder = guardianBinder
 
     override fun onDestroy() {
         val recovery = wifiDirectRecovery
@@ -233,6 +254,9 @@ class AndroidNodeForegroundService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
+
+    private fun requestMicrophoneNowInternal(): MicrophoneRequestDispatch =
+        controller?.requestMicrophone() ?: MicrophoneRequestDispatch.NO_AUTHENTICATED_SESSION
 
     @Synchronized
     private fun recoverWifiDirectGroup(
@@ -312,6 +336,7 @@ class AndroidNodeForegroundService : Service() {
         if (!desiredState.enabled) return
         startForegroundServiceState(getString(R.string.android_node_starting))
         startNode(desiredState.environmentMode)
+        AndroidNodeGuardianService.start(this)
     }
 
     private fun updateNotification(summary: String) {
@@ -391,6 +416,7 @@ class AndroidNodeForegroundService : Service() {
         private const val NOTIFICATION_ID = 2301
         private const val MAX_NOTIFICATION_SUMMARY_CHARACTERS = 512
         private const val ACTION_START = "org.conceptflow.mpl.host.action.START_ANDROID_NODE"
+        private const val ACTION_RESTORE = "org.conceptflow.mpl.host.action.RESTORE_ANDROID_NODE"
         private const val ACTION_STOP = "org.conceptflow.mpl.host.action.STOP_ANDROID_NODE"
         private const val ACTION_REQUEST_MICROPHONE =
             "org.conceptflow.mpl.host.action.REQUEST_ROKID_MICROPHONE"
@@ -427,6 +453,13 @@ class AndroidNodeForegroundService : Service() {
         fun stop(context: Context) {
             context.startService(
                 Intent(context, AndroidNodeForegroundService::class.java).setAction(ACTION_STOP),
+            )
+        }
+
+        internal fun restoreFromGuardian(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AndroidNodeForegroundService::class.java).setAction(ACTION_RESTORE),
             )
         }
 
@@ -485,6 +518,10 @@ class AndroidNodeForegroundService : Service() {
             }
             return state
         }
+
+        /** Debug-provider hook; no release component exposes it outside this process. */
+        internal fun injectNextAvcDecodeFailureNow(): Boolean =
+            instance?.controller?.injectNextAvcDecodeFailure() == true
 
         fun offerGnss(sample: GnssQualitySample): Boolean =
             instance?.controller?.updateGnss(sample) ?: false

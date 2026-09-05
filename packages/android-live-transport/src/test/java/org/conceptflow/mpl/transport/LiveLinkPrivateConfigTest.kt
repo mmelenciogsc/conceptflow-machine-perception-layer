@@ -29,6 +29,15 @@ class LiveLinkPrivateConfigTest {
     }
 
     @Test
+    fun `camera transport is explicit and strict`() {
+        assertEquals(LiveCameraTransport.I420, LiveCameraTransport.parse("i420"))
+        assertEquals(LiveCameraTransport.AVC_INTRA, LiveCameraTransport.parse("avc_intra"))
+        assertThrows(IllegalArgumentException::class.java) {
+            LiveCameraTransport.parse("avc")
+        }
+    }
+
+    @Test
     fun `accepts only private or link-local numeric addresses without DNS`() {
         assertEquals("10.4.3.2", LiveLinkPrivateConfig.parsePrivateIpLiteral("10.4.3.2").hostAddress)
         assertEquals("172.31.9.8", LiveLinkPrivateConfig.parsePrivateIpLiteral("172.31.9.8").hostAddress)

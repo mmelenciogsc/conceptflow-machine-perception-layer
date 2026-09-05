@@ -101,6 +101,61 @@ class VisionTensorProcessingTest {
     }
 
     @Test
+    fun yoloDefaultThresholdAdmitsProposalBandButRejectsBelowProposal() {
+        val rows = FloatArray(300 * 38)
+        listOf(0.50f, 0.44f).forEachIndexed { row, score ->
+            val offset = row * 38
+            rows[offset] = 160f
+            rows[offset + 1] = 160f
+            rows[offset + 2] = 480f
+            rows[offset + 3] = 480f
+            rows[offset + 4] = score
+            rows[offset + 5] = row.toFloat()
+            rows[offset + 6] = 8f
+        }
+        val prototypes = FloatArray(160 * 160 * 32)
+        for (pixel in 0 until 160 * 160) prototypes[pixel * 32] = 1f
+
+        val detections = YoloFixedVocabularyPostprocessor.process(
+            float32(rows),
+            float32(prototypes),
+            LetterboxTransform(1_280, 720, 640, 640, 640, 360, 0, 140),
+        )
+
+        assertEquals(1, detections.size)
+        assertEquals(0.50, detections.single().confidence, 0.0001)
+    }
+
+    @Test
+    fun yoloMaskExpansionAppliesMaximumObjectsInDescendingScoreOrder() {
+        val rows = FloatArray(300 * 38)
+        repeat(12) { row ->
+            val offset = row * 38
+            rows[offset] = 100f
+            rows[offset + 1] = 100f
+            rows[offset + 2] = 200f
+            rows[offset + 3] = 200f
+            rows[offset + 4] = 0.60f + row * 0.01f
+            rows[offset + 5] = row.toFloat()
+            rows[offset + 6] = 8f
+        }
+        val prototypes = FloatArray(160 * 160 * 32)
+        for (pixel in 0 until 160 * 160) prototypes[pixel * 32] = 1f
+
+        val detections = YoloFixedVocabularyPostprocessor.process(
+            float32(rows),
+            float32(prototypes),
+            LetterboxTransform(640, 640, 640, 640, 640, 640, 0, 0),
+            maximumObjects = 3,
+        )
+
+        assertEquals(3, detections.size)
+        assertEquals(0.71, detections[0].confidence, 0.0001)
+        assertEquals(0.70, detections[1].confidence, 0.0001)
+        assertEquals(0.69, detections[2].confidence, 0.0001)
+    }
+
+    @Test
     fun trackerIsBoundedAndDepthSamplingUsesTheSameMaskIdentity() {
         val geometry = InstanceMaskGeometry(392, 392, 0, 0, 392, 392)
         val mask = PrototypeMask(

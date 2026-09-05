@@ -53,7 +53,7 @@ object RokidRendezvousPolicy {
             LiveLinkCaptureStopReason.TIME_LIMIT_REACHED,
             LiveLinkCaptureStopReason.LEASE_EXPIRED,
             LiveLinkCaptureStopReason.REMOTE_COMPLETED,
-            -> RendezvousTerminalDecision.RETRY_IMMEDIATELY
+            LiveLinkCaptureStopReason.SOURCE_FAILURE,
             LiveLinkCaptureStopReason.RENDEZVOUS_TIMEOUT ->
                 RendezvousTerminalDecision.RETRY_AFTER_COOLDOWN
             LiveLinkCaptureStopReason.RETRY_LIMIT_REACHED -> when (disconnectReason) {

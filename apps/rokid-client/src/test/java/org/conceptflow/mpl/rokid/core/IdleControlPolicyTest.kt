@@ -8,6 +8,30 @@ import org.junit.Test
 
 class IdleControlPolicyTest {
     @Test
+    fun persistedRecoveryDistinguishesSameBootFromKnownNewBoot() {
+        assertEquals(
+            IdleControlRecoveryAuthorization.SAME_BOOT,
+            IdleControlPolicy.recoveryAuthorization(true, 84, 84),
+        )
+        assertEquals(
+            IdleControlRecoveryAuthorization.PERSISTED_NEW_BOOT,
+            IdleControlPolicy.recoveryAuthorization(true, 84, 85),
+        )
+        assertEquals(
+            IdleControlRecoveryAuthorization.NOT_AUTHORIZED,
+            IdleControlPolicy.recoveryAuthorization(false, 84, 85),
+        )
+        assertEquals(
+            IdleControlRecoveryAuthorization.NOT_AUTHORIZED,
+            IdleControlPolicy.recoveryAuthorization(true, null, 85),
+        )
+        assertEquals(
+            IdleControlRecoveryAuthorization.NOT_AUTHORIZED,
+            IdleControlPolicy.recoveryAuthorization(true, 84, null),
+        )
+    }
+
+    @Test
     fun sameBootRecoveryRequiresAnExplicitArmFromTheCurrentBoot() {
         assertTrue(IdleControlPolicy.mayResumeSameBoot(true, 84, 84))
         assertFalse(IdleControlPolicy.mayResumeSameBoot(false, 84, 84))

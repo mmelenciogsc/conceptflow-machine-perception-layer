@@ -209,6 +209,23 @@ claim.
 
 ## Local evidence
 
+- On 2026-09-01, upstream whisper.cpp at commit
+  `eacbd8234c6654cdbf2c377f72b2106875479bdc` exposed a maintained Android
+  example, ARMv8.2 FP16 build support, and the native Silero VAD API. Official
+  converted `small.en-q5_1` and `silero-v6.2.0` artifacts were downloaded only
+  into temporary private workspace storage and their exact sizes and SHA-256
+  values were pinned in the provisioning policy. The Android Node APK linked
+  whisper.cpp statically into its project-named JNI library, avoiding a second
+  packaged GGML/OpenMP runtime alongside GenieX.
+  The Hugging Face APIs for
+  [`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) at
+  revision `5359861c739e955e79d9a303bcbc70fb988958b1` and
+  [`ggml-org/whisper-vad`](https://huggingface.co/ggml-org/whisper-vad) at
+  revision `9ffd54a1e1ee413ddf265af9913beaf518d1639b` both reported MIT on the
+  same date. OpenAI's upstream Whisper repository also published an MIT
+  license. These observations are recorded for the exact checked revisions;
+  redistribution still retains the applicable notices.
+
 - Unity 6000.3.22f1 compiled and ran EditMode and PlayMode tests in batch mode.
 - FMOD Studio 2.03.14 executed the authoring validator and built Desktop/Mobile
   banks from procedural tones. This proves project structure, not localization.

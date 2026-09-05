@@ -29,6 +29,7 @@ class RokidLiveLinkClient(
     private val queues: LiveOutboundQueues = LiveOutboundQueues(),
     private val spoolProvider: RokidSpoolProvider = EmptyRokidSpoolProvider,
     private val endpointResolver: LiveLinkEndpointResolver = StaticLiveLinkEndpointResolver(config.address),
+    private val powerTelemetryProvider: () -> LivePowerTelemetry? = { null },
 ) : Closeable {
     private val running = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
@@ -173,10 +174,12 @@ class RokidLiveLinkClient(
             var shutdownContext: ClientShutdownContext? = null
             var activeLeaseDeadline: MonotonicLeaseDeadline? = null
             var notified = false
+            var connectionPhase = "endpoint_resolution"
             try {
                 queues.reset()
                 val endpointAddress = endpointResolver.awaitAddress(ENDPOINT_RESOLUTION_TIMEOUT_MS)
                 val binding = bindingFactory()
+                connectionPhase = "realtime_connect"
                 val realtime = attempt.own(
                     openClientLane(
                         tls,
@@ -188,8 +191,10 @@ class RokidLiveLinkClient(
                     ),
                 )
                 state.reconnectWithoutTicketAuthority(binding, clock.nowNs())
+                connectionPhase = "realtime_handshake"
                 val handshake = establishRealtime(realtime, state, binding)
                 activeLeaseDeadline = handshake.leaseDeadline
+                connectionPhase = "camera_connect"
                 val camera = attempt.own(
                     openClientLane(
                         tls,
@@ -200,7 +205,9 @@ class RokidLiveLinkClient(
                         onConnectedSocket = { attempt.own(it) },
                     ),
                 )
+                connectionPhase = "camera_handshake"
                 establishCamera(camera, state, binding, handshake.ticket)
+                connectionPhase = "streaming"
                 metricAccounting.established()
                 realtime.socket.soTimeout = config.socketReadTimeoutMs.coerceAtMost(IO_POLL_TIMEOUT_MS)
                 camera.socket.soTimeout = config.socketReadTimeoutMs.coerceAtMost(IO_POLL_TIMEOUT_MS)
@@ -266,6 +273,7 @@ class RokidLiveLinkClient(
                 val effective = termination.resolve(root, activeLeaseDeadline, clock.nowNs())
                 if (!draining.get()) {
                     if (effective !is RemoteSessionCompletedException) {
+                        logFailureOrigin(effective, connectionPhase)
                         metricAccounting.failure(effective)
                         observer.onDiagnostic(classifyDiagnostic(effective))
                     }
@@ -301,6 +309,19 @@ class RokidLiveLinkClient(
         }
     }
 
+    /** Logs fixed diagnostics only; exception messages may contain private endpoint material. */
+    private fun logFailureOrigin(error: Throwable, phase: String) {
+        val diagnostic = classifyDiagnostic(error)
+        val root = generateSequence(error) { it.cause }.take(8).last()
+        val origin = root.stackTrace.firstOrNull { it.className.startsWith("org.conceptflow.mpl") }
+        Log.e(
+            DIAGNOSTIC_TAG,
+            "state=client_transport_failure phase=$phase diagnostic=${diagnostic.name.lowercase()} " +
+                "exception=${root.javaClass.simpleName} " +
+                "origin=${origin?.className ?: "unknown"}:${origin?.lineNumber ?: -1}",
+        )
+    }
+
     private fun establishRealtime(
         lane: AuthenticatedTlsLane,
         state: LiveConnectionState,
@@ -325,6 +346,7 @@ class RokidLiveLinkClient(
                 LiveControlMessages.capabilities(
                     LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
                     supportsDiagnosticSpool = spoolProvider !== EmptyRokidSpoolProvider,
+                    supportsAvcIntra = config.cameraTransport == LiveCameraTransport.AVC_INTRA,
                 ),
             ),
             metrics,
@@ -348,7 +370,14 @@ class RokidLiveLinkClient(
             lane,
             output.control(
                 LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
-                LiveControlMessages.leaseRequest(binding),
+                LiveControlMessages.leaseRequest(
+                    binding,
+                    if (config.cameraTransport == LiveCameraTransport.AVC_INTRA) {
+                        org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA
+                    } else {
+                        org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420
+                    },
+                ),
             ),
             metrics,
         )
@@ -611,6 +640,7 @@ class RokidLiveLinkClient(
                                 queues.snapshot(),
                                 metrics.snapshot(),
                                 cameraGateTelemetry.get(),
+                                runCatching(powerTelemetryProvider).getOrNull(),
                             ),
                         ),
                         metrics,
@@ -806,12 +836,14 @@ class RokidLiveLinkClient(
             config: LiveLinkPrivateConfig,
             spoolProvider: RokidSpoolProvider = EmptyRokidSpoolProvider,
             endpointResolver: LiveLinkEndpointResolver = StaticLiveLinkEndpointResolver(config.address),
+            powerTelemetryProvider: () -> LivePowerTelemetry? = { null },
         ): RokidLiveLinkClient =
             RokidLiveLinkClient(
                 config,
                 buildPinnedTls(config),
                 spoolProvider = spoolProvider,
                 endpointResolver = endpointResolver,
+                powerTelemetryProvider = powerTelemetryProvider,
             )
     }
 }

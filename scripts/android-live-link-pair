@@ -17,6 +17,7 @@ usage() {
     printf '%s\n' \
         "Usage: $0 --rokid-serial SERIAL --poco-serial SERIAL [--poco-address PRIVATE_IP] [OPTIONS]" \
         "Options: --network-topology private-lan|private-lan-discovery|wifi-direct-required" \
+        "         --camera-transport i420|avc-intra (default: i420)" \
         "         --realtime-port PORT --camera-port PORT (defaults: 39431 and 39432)" \
         "Creates non-exportable identities on both devices and pins only their public certificates." \
         "Writes role-specific configuration into each debuggable app's private no-backup directory." \
@@ -34,6 +35,7 @@ poco_address=""
 network_topology="private_lan"
 realtime_port=39431
 camera_port=39432
+camera_transport="i420"
 while (($#)); do
     case "$1" in
         --rokid-serial) rokid_serial="${2:-}"; shift 2 ;;
@@ -50,6 +52,14 @@ while (($#)); do
             ;;
         --realtime-port) realtime_port="${2:-}"; shift 2 ;;
         --camera-port) camera_port="${2:-}"; shift 2 ;;
+        --camera-transport)
+            case "${2:-}" in
+                i420) camera_transport="i420" ;;
+                avc-intra) camera_transport="avc_intra" ;;
+                *) fail "camera transport must be i420 or avc-intra" ;;
+            esac
+            shift 2
+            ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unsupported argument; use --help" ;;
     esac
@@ -189,6 +199,7 @@ write_config() {
         printf 'socket_read_timeout_ms=4000\n'
         printf 'camera_ticket_lifetime_ms=10000\n'
         printf 'network_topology=%s\n' "$network_topology"
+        printf 'camera_transport=%s\n' "$camera_transport"
     } >"$output"
     chmod 600 "$output"
 }

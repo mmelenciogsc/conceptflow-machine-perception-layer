@@ -145,6 +145,101 @@ internal object FocusedVqaTiming {
         nowNanos - leaseStartedNanos < LEASE_RETRY_BUDGET_NANOS
 }
 
+/**
+ * Bounds the interval between cancellation of any native VLM task and forced teardown of the
+ * dedicated `:local_vlm` process. GenieX cancellation is cooperative and may not return while a
+ * native image-prefill call is in progress, so coroutine cancellation alone is not a hard HTP
+ * occupancy bound.
+ */
+internal object LocalVlmNativeAbortPolicy {
+    const val COOPERATIVE_STOP_GRACE_NANOS = 250_000_000L
+
+    fun deadlineDelayNanos(deadlineNanos: Long, nowNanos: Long): Long {
+        require(deadlineNanos >= 0L && nowNanos >= 0L)
+        val abortAt = if (Long.MAX_VALUE - deadlineNanos < COOPERATIVE_STOP_GRACE_NANOS) {
+            Long.MAX_VALUE
+        } else {
+            deadlineNanos + COOPERATIVE_STOP_GRACE_NANOS
+        }
+        return if (abortAt <= nowNanos) 0L else abortAt - nowNanos
+    }
+}
+
+/** Measured on-device starting point; physical profiling remains the authority for adjustment. */
+internal object LocalVlmRuntimeTuning {
+    const val PREFILL_BATCH_TOKENS = 32
+    // A physical Poco run measured the isolated VLM at 2.7 GB PSS immediately before HyperOS
+    // killed both it and the foreground sensor process for LOW_MEMORY. Keep the runtime warm long
+    // enough for bootstrap and one deliberate focus/VQA interaction, but never for the four-hour
+    // sensor epoch. Stable scenes do not rewarm after this lease expires; a material scene change
+    // or explicit focus interaction does.
+    const val ENGINE_IDLE_RETENTION_NANOS = 120_000_000_000L
+    const val CLIENT_READY_WINDOW_NANOS = 105_000_000_000L
+    const val PROCESS_RESTART_PREWARM_BACKOFF_NANOS = 2_000_000_000L
+    const val MEMORY_PRESSURE_TRIM_THRESHOLD = 10
+
+    fun readyUntilNanos(nowNanos: Long): Long = Math.addExact(nowNanos, CLIENT_READY_WINDOW_NANOS)
+
+    fun restartBackoffUntilNanos(currentNanos: Long, nowNanos: Long): Long = maxOf(
+        currentNanos,
+        Math.addExact(nowNanos, PROCESS_RESTART_PREWARM_BACKOFF_NANOS),
+    )
+
+    fun shouldReleaseForTrimLevel(level: Int): Boolean = level >= MEMORY_PRESSURE_TRIM_THRESHOLD
+}
+
+/**
+ * Keeps an explicit focus prewarm visible to the main-process HTP scheduler while the isolated
+ * VLM process retries a contended lease. A one-shot Binder request can otherwise be refused before
+ * the next camera frame observes it, allowing continuous QNN work to starve every retry.
+ *
+ * The intent is deliberately bounded. It reserves an opportunity for prewarm, not permanent VLM
+ * priority, and therefore cannot suppress fresh geometry work indefinitely.
+ */
+internal class FocusedVlmPrewarmIntent(
+    private val maximumWindowNanos: Long = 8_000_000_000L,
+) {
+    private var startedNanos = -1L
+    private var validUntilNanos = 0L
+
+    init {
+        require(maximumWindowNanos in 1_000_000L..30_000_000_000L)
+    }
+
+    @Synchronized
+    fun request(nowNanos: Long): LocalVlmHtpWorkState {
+        require(nowNanos >= 0L)
+        if (!isActiveLocked(nowNanos)) {
+            startedNanos = nowNanos
+            validUntilNanos = if (Long.MAX_VALUE - nowNanos < maximumWindowNanos) {
+                Long.MAX_VALUE
+            } else {
+                nowNanos + maximumWindowNanos
+            }
+        }
+        return LocalVlmHtpWorkState(LocalVlmHtpWorkKind.PREWARM, startedNanos)
+    }
+
+    @Synchronized
+    fun workState(nowNanos: Long): LocalVlmHtpWorkState? {
+        require(nowNanos >= 0L)
+        if (!isActiveLocked(nowNanos)) return null
+        return LocalVlmHtpWorkState(LocalVlmHtpWorkKind.PREWARM, startedNanos)
+    }
+
+    @Synchronized
+    fun clear() {
+        startedNanos = -1L
+        validUntilNanos = 0L
+    }
+
+    private fun isActiveLocked(nowNanos: Long): Boolean {
+        if (startedNanos >= 0L && nowNanos < validUntilNanos) return true
+        clear()
+        return false
+    }
+}
+
 data class LocalVlmFocusedObjectAnswer(
     val correlation: LocalVlmFocusedObjectCorrelation,
     val completedMonotonicTimestampNanos: Long,
@@ -394,6 +489,11 @@ class LocalVlmCadenceGate(
         return true
     }
 
+    /** Whether future classifier work is needed, without reserving an in-flight request. */
+    @Synchronized
+    fun needsClassification(significantSceneChange: Boolean): Boolean =
+        confirmedLabel == null || sceneChangePending || significantSceneChange
+
     @Synchronized
     fun complete(label: LocalVlmEnvironmentLabel, nowNanos: Long): LocalVlmEnvironmentLabel? {
         require(inFlight && nowNanos >= 0L)
@@ -522,15 +622,17 @@ data class LocalVlmSceneComparison(
 )
 
 /**
- * Low-cost, exposure-aware gate over sparse luma samples. Global mean/histogram changes detect
- * illumination transitions while exposure-normalized tile structure catches a new physical scene.
- * Two consecutive changed frames reject flashes and camera auto-exposure transients.
+ * Low-cost illumination gate over sparse luma samples. Ordinary camera translation and object
+ * motion must not repeatedly invoke the VLM: they can change tile structure and histogram shape
+ * while the indoor/outdoor state remains stable. A change is therefore material only when the
+ * global mean changes strongly, or when both the luma histogram and contrast spread change. Four
+ * consecutive changed frames reject flashes, auto-exposure transients, and brief occlusion.
  */
 class LocalVlmSceneChangeGate(
-    private val requiredChangedFrames: Int = 2,
+    private val requiredChangedFrames: Int = 4,
     private val meanLumaThreshold: Double = 0.14,
     private val histogramDistanceThreshold: Double = 0.28,
-    private val normalizedStructureThreshold: Double = 0.24,
+    private val lumaSpreadThreshold: Double = 0.10,
 ) {
     private var baseline: LocalVlmSceneDescriptor? = null
     private var changedFrames = 0
@@ -539,7 +641,7 @@ class LocalVlmSceneChangeGate(
         require(requiredChangedFrames in 1..10)
         require(meanLumaThreshold in 0.01..1.0)
         require(histogramDistanceThreshold in 0.01..1.0)
-        require(normalizedStructureThreshold in 0.01..1.0)
+        require(lumaSpreadThreshold in 0.01..1.0)
     }
 
     @Synchronized
@@ -560,8 +662,8 @@ class LocalVlmSceneChangeGate(
 
     /**
      * Compares any two descriptors with the same thresholds used by the stable-scene gate. This is
-     * also used to reject a VLM response when the live scene moved materially after its source
-     * image was admitted.
+     * also used to reject a VLM response when the illumination state changed materially after its
+     * source image was admitted.
      */
     fun compare(
         reference: LocalVlmSceneDescriptor,
@@ -572,17 +674,17 @@ class LocalVlmSceneChangeGate(
         val meanDelta = abs(current.meanLuma - reference.meanLuma)
         val histogramDistance = reference.lumaHistogram.zip(current.lumaHistogram)
             .sumOf { (first, second) -> abs(first - second) } / 2.0
-        val structuralDistance = reference.normalizedLumaTiles.zip(current.normalizedLumaTiles)
-            .sumOf { (first, second) -> abs(first - second) } /
-            reference.normalizedLumaTiles.size.toDouble() / NORMALIZED_STRUCTURE_RANGE
+        val spreadDelta = abs(current.lumaStandardDeviation - reference.lumaStandardDeviation)
+        val distributionShift = histogramDistance >= histogramDistanceThreshold &&
+            spreadDelta >= lumaSpreadThreshold
         return LocalVlmSceneComparison(
-            materiallyDifferent = meanDelta >= meanLumaThreshold ||
-                histogramDistance >= histogramDistanceThreshold ||
-                structuralDistance >= normalizedStructureThreshold,
+            materiallyDifferent = meanDelta >= meanLumaThreshold || distributionShift,
             normalizedChangeScore = maxOf(
                 meanDelta / meanLumaThreshold,
-                histogramDistance / histogramDistanceThreshold,
-                structuralDistance / normalizedStructureThreshold,
+                minOf(
+                    histogramDistance / histogramDistanceThreshold,
+                    spreadDelta / lumaSpreadThreshold,
+                ),
             ),
         )
     }
@@ -597,10 +699,6 @@ class LocalVlmSceneChangeGate(
     fun reset() {
         baseline = null
         changedFrames = 0
-    }
-
-    private companion object {
-        const val NORMALIZED_STRUCTURE_RANGE = 4.0
     }
 }
 

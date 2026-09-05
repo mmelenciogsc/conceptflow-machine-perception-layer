@@ -5,7 +5,9 @@ import java.nio.ByteBuffer
 import org.conceptflow.mpl.rokid.core.FrameDropReason
 import org.conceptflow.mpl.rokid.core.PixelDimensions
 import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
+import org.conceptflow.mpl.rokid.core.buildI420Frame
 import org.conceptflow.mpl.rokid.core.buildRgbFrame
+import org.conceptflow.mpl.rokid.core.buildAvcIntraFrame
 import org.conceptflow.mpl.v1.ImageEncoding
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -146,6 +148,67 @@ class AdaptiveYuv420ProcessorTest {
     }
 
     @Test
+    fun productionTransferPacksIndependentI420FrameAtHalfRgbSize() {
+        val processor = AdaptiveYuv420Processor(outputFormat = CameraTransferPixelFormat.I420)
+        val solid = solidYuvFrame(648, 648, yValue = 81, uValue = 90, vValue = 240)
+        val transform = SquareAspectFillTransform.centered(648, 648, 640)
+        val packed = Yuv420I420Converter.toI420(
+            solid,
+            Yuv420I420SamplingPlan.aspectFill(solid.dimensions, transform),
+        )
+        assertEquals(640 * 640 * 3 / 2, packed.size)
+        assertTrue(packed.copyOfRange(0, 640 * 640).all { (it.toInt() and 0xff) == 81 })
+        assertTrue(packed.copyOfRange(640 * 640, 640 * 640 + 320 * 320).all { (it.toInt() and 0xff) == 90 })
+        assertTrue(packed.copyOfRange(640 * 640 + 320 * 320, packed.size).all { (it.toInt() and 0xff) == 240 })
+
+        val processed = processor.process(checkerYuvFrame(648, 648), 1_000_000_000L)
+
+        assertTrue(processed.decision.emit)
+        assertNull(processed.rgb8)
+        assertNull(processed.rgbConversionBackend)
+        assertEquals(false, processed.i420NativeConversion)
+        val i420 = checkNotNull(processed.i420)
+        assertEquals(640 * 640 * 3 / 2, i420.size)
+        val payload = buildI420Frame(
+            requestId = "camera-1",
+            sessionId = "camera-session",
+            streamId = "camera2-yuv-i420",
+            frameId = 1L,
+            timestampNanos = 1_000_000_000L,
+            wallTimeMillis = 1L,
+            width = 640,
+            height = 640,
+            bytes = i420,
+            synthetic = false,
+        )
+        assertEquals(ImageEncoding.IMAGE_ENCODING_YUV420_I420, payload.image.encoding)
+        assertEquals(640, payload.image.rowStrideBytes)
+        assertEquals("application/x-conceptflow-i420", payload.image.mediaType)
+    }
+
+    @Test
+    fun avcTransportKeepsTheProtectedPostGateI420InputAndRequiresIndependentAccessUnit() {
+        val processor = AdaptiveYuv420Processor(outputFormat = CameraTransferPixelFormat.AVC_INTRA)
+        val processed = processor.process(checkerYuvFrame(648, 648), 1_000_000_000L)
+        assertTrue(processed.decision.emit)
+        assertNull(processed.rgb8)
+        assertEquals(640 * 640 * 3 / 2, checkNotNull(processed.i420).size)
+
+        val accessUnit = byteArrayOf(
+            0, 0, 0, 1, 0x67, 1,
+            0, 0, 0, 1, 0x68, 2,
+            0, 0, 0, 1, 0x65, 3,
+        )
+        val payload = buildAvcIntraFrame(
+            "camera-1", "camera-session", "camera2-avc-annex-b-intra",
+            1L, 1_000_000_000L, 1L, 640, 640, accessUnit, false,
+        )
+        assertEquals(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA, payload.image.encoding)
+        assertEquals(0, payload.image.rowStrideBytes)
+        assertEquals("video/avc", payload.image.mediaType)
+    }
+
+    @Test
     fun yuvPathKeepsProtectedDarknessCadenceAndMotionState() {
         val processor = AdaptiveYuv420Processor(
             analysisGate = PixelDimensions(8, 8),
@@ -158,7 +221,9 @@ class AdaptiveYuv420ProcessorTest {
         val rejected = processor.process(dark, 1L)
         assertEquals(FrameDropReason.DARK, rejected.decision.reason)
         assertNull(rejected.rgb8)
+        assertNull(rejected.i420)
         assertNull(rejected.rgbConversionBackend)
+        assertNull(rejected.i420NativeConversion)
 
         processor.reset()
         val first = processor.process(still, 1_000_000_000L)

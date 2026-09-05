@@ -13,8 +13,8 @@ privacy failures.
 | --- | --- | --- |
 | Image bytes | Bounded frame validation and synthetic/mock processing; physical Camera2 capture; acknowledged Rokid-to-Poco pull spool and transient QNN input | App-private no-backup spool until authenticated acknowledgement, new-session purge, or quota eviction |
 | Pose and intrinsics | Optional frame context; Android pose sampling; gated IMU batches and optional validated Camera2 calibration metadata | Bounded app-private JSON manifest until acknowledgement, new-session purge, or quota eviction |
-| On-demand microphone PCM | Explicit, maximum-ten-second Rokid microphone sublease | App-private WAV chunks until acknowledgement, new-session purge, or quota eviction |
-| Ambient sound profile | One bounded three-second microphone window after a newly accepted scene classification | Content-free statistics in memory for at most 60 seconds; PCM is not retained |
+| On-demand microphone PCM | Explicit, maximum-ten-second Rokid microphone sublease | Bounded RAM only; owned mutable speech buffers are zeroed after VAD/transcription or cancellation |
+| Ambient sound profile | One bounded ten-second microphone window after a newly accepted scene classification | Content-free statistics in memory for at most 60 seconds; owned mutable speech buffers are zeroed after analysis |
 | Environment evidence | Ephemeral semantic probabilities and optional aggregate GNSS reception quality | In-memory only; selected manual mode only is persisted |
 | Request/session/stream/frame IDs | Correlation, ordering, cancellation, and health/status; ephemeral live session, lease, nonce, lane-ticket, and sequence state | In-memory session state only |
 | Device capability labels | Route and worker selection | In-memory state and redacted operational logs |
@@ -41,7 +41,7 @@ direct live test is another explicit action: it runs for at most 30 seconds,
 negotiates camera and IMU only, and can be stopped from either device. A
 separate accessible Android control may request one mic-only window of at most
 ten seconds after that session is mutually authenticated. An explicitly enabled
-Machine Perception Layer session may also request one three-second ambient-profile
+Machine Perception Layer session may also request one ten-second ambient-profile
 window after a new VLM scene classification; that path emits statistics only.
 Each request is bound
 to the exact active session/lease and must set explicit microphone intent;
@@ -67,11 +67,15 @@ JPEG and matched HEAD pose; microphone samples never enter its wire message and
 only nonzero local signal gates dispatch. This development control is not the
 intended product consent interface.
 
-Live microphone PCM is never logged. Gate-admitted samples are written as
-bounded app-private WAV chunks solely for the authenticated Android pull path;
-they are excluded from Android backup and deleted after acknowledgement,
-new-session purge, or quota eviction. Android host status contains only
-aggregate chunk and byte counts. Per-chunk admission enforces the monotonic microphone deadline;
+Live microphone PCM is never logged. The production path moves gate-admitted
+samples through bounded in-memory buffers and immediately drains the Android
+timeline. Diagnostic legacy persistence remains explicitly disabled by
+default. Speech windows are capped at ten seconds; their owned mutable PCM and
+float buffers are zeroized after VAD/transcription or cancellation, while
+immutable transport objects are promptly released for garbage collection.
+Android host status contains only aggregate
+chunk/byte counts, speech-presence state, transcript character count, and
+timing; it contains no recognized words. Per-chunk admission enforces the monotonic microphone deadline;
 a dedicated deadline task closes the recorder, with the 20 ms controller poll
 as a fallback. The Rokid emits short local start/stop earcon hooks; these are
 status indicators, not content recording.

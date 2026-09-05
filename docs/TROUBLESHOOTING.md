@@ -96,6 +96,26 @@ that can conceal backpressure or cancellation defects.
 - If dependencies cannot resolve, check access to Google Maven and Maven
   Central. The declared baseline is Gradle 8.11.1, AGP 8.10.1, Kotlin 2.0.21.
 
+## Android Node disappears under memory pressure
+
+- Inspect `dumpsys activity exit-info org.conceptflow.mpl.androidhost`. A
+  `LOW_MEMORY` reason is distinct from a transport timeout or application
+  exception.
+- The local VLM intentionally lives in `:local_vlm`, uses a reclaimable Binder
+  binding, and retires after a two-minute interaction lease. A stable scene
+  must not continually reload it. Expect the recreated idle process to be much
+  smaller than a warm GenieX process.
+- Android Node and its small `:guardian` process each run a connected-device
+  foreground service. If the main process disappears while the node is still
+  explicitly enabled, the guardian restores it through the persisted mode. A
+  deliberate **Stop Android Node** must leave both service records absent.
+- Do not raise queue limits, keep the VLM resident for an entire sensor epoch,
+  or bind it as important to conceal process death. Those changes increase the
+  probability that HyperOS reclaims the camera/IMU backbone as well.
+- A guardian recovery reconstructs the listener and model sessions; the glasses
+  may take another bounded rendezvous interval to authenticate. Confirm service
+  recovery separately from advancing camera and IMU counters.
+
 ## ADB or Rokid non-display runtime fails
 
 - Run `adb devices -l`. If more than one device is attached, pass `-s` on every
@@ -173,7 +193,23 @@ that can conceal backpressure or cancellation defects.
   camera/microphone `startForeground()` step. Each pre-authentication epoch has
   finite partial CPU and Wi-Fi low-latency locks covering its handshake
   deadline; there is no lock during cooldown and no `FLAG_KEEP_SCREEN_ON`. A
-  Wi-Fi lock does not turn a disabled radio on. Doze or vendor freezing may
+  Wi-Fi lock does not turn a disabled radio on. If Android Node remains at
+  `Waiting for glasses`, verify `adb shell cmd wifi status` while the Rokid is
+  attached. The 2026-09-02 fault was a live Rokid process with the YodaOS Wi-Fi
+  service disabled; manual ADB recovery restored the saved WLAN and exposed the
+  missing production behavior. On 2026-09-03 the exact non-display product was
+  verified to accept YodaOS system-assist `open_wifi_p2p` from the sideloaded
+  Rokid Node without a system signature or client secret. The explicitly armed
+  node now requests this recovery on a finite 0/1/3/8-second schedule and
+  checks twice after enablement, using public `WifiP2pManager.removeGroup` only
+  for an empty, locally owned temporary group. Do not substitute the vendor
+  `close_wifi_p2p` command: on this firmware that command also disables Wi-Fi
+  and creates an open/close loop. An unarmed node never requests recovery. This
+  compatibility path is product-gated and unsupported firmware fails closed;
+  it is not a general Android Wi-Fi API.
+  Continue treating cable insertion as a radio-state validation point while
+  collecting longer-term firmware evidence.
+  Doze or vendor freezing may
   defer the callback. Same-boot recovery after a process kill depends on the
   explicitly provisioned Rokid gesture AccessibilityService and its visible
   broker. After reboot, only inert service state is restored; run authorized

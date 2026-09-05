@@ -25,6 +25,16 @@ enum class LiveLinkNetworkTopology(val configValue: String) {
     }
 }
 
+enum class LiveCameraTransport(val configValue: String) {
+    I420("i420"),
+    AVC_INTRA("avc_intra");
+
+    companion object {
+        fun parse(value: String): LiveCameraTransport = entries.singleOrNull { it.configValue == value }
+            ?: throw IllegalArgumentException("camera_transport is unsupported")
+    }
+}
+
 /**
  * Validated app-private live-link configuration. The peer certificate is public material, while
  * the local private key remains non-exportable in Android Keystore under [identityAlias].
@@ -43,6 +53,7 @@ class LiveLinkPrivateConfig private constructor(
     val socketReadTimeoutMs: Int,
     val cameraTicketLifetimeMs: Int,
     val networkTopology: LiveLinkNetworkTopology,
+    val cameraTransport: LiveCameraTransport,
 ) {
     override fun toString(): String =
         "LiveLinkPrivateConfig(role=$role,address=<redacted>,ports=<redacted>,identityAlias=<redacted>,peerCertificate=<public-redacted>)"
@@ -67,6 +78,7 @@ class LiveLinkPrivateConfig private constructor(
             "socket_read_timeout_ms",
             "camera_ticket_lifetime_ms",
             "network_topology",
+            "camera_transport",
         )
 
         fun parse(input: InputStream, role: LiveLinkEndpointRole): LiveLinkPrivateConfig {
@@ -127,6 +139,11 @@ class LiveLinkPrivateConfig private constructor(
                     ?.takeIf(String::isNotEmpty)
                     ?.let(LiveLinkNetworkTopology::parse)
                     ?: LiveLinkNetworkTopology.PRIVATE_LAN,
+                cameraTransport = properties.getProperty("camera_transport")
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(LiveCameraTransport::parse)
+                    ?: LiveCameraTransport.I420,
             )
         }
 

@@ -18,7 +18,9 @@ lint_repository() {
         scripts/android-model-install scripts/android-model-prepare scripts/android-qnn-build \
         scripts/android-qnn-depth-build scripts/android-qnn-depth-benchmark \
         scripts/android-qnn-jni-build scripts/android-qnn-private-provision \
-        scripts/android-live-link-pair scripts/rokid-install scripts/rokid-control \
+        scripts/android-whisper-build scripts/android-whisper-provision scripts/android-node-control \
+        scripts/android-live-link-pair scripts/avc-fidelity-probe scripts/avc-semantic-sweep \
+        scripts/rokid-install scripts/rokid-control \
         scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }
 lint_python() {

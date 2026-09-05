@@ -30,6 +30,13 @@ enum ImageEncoding {
   IMAGE_ENCODING_GRAY8 = 3;
   IMAGE_ENCODING_JPEG = 4;
   IMAGE_ENCODING_PNG = 5;
+  // Tightly packed 4:2:0 planar Y, U, V. Width and height must be even;
+  // row_stride_bytes describes the Y plane and must equal width.
+  IMAGE_ENCODING_YUV420_I420 = 6;
+  // One independently decodable AVC/H.264 Annex-B access unit. The payload
+  // must contain SPS, PPS, and an IDR slice so camera latest-frame dropping
+  // and reconnect never depend on an earlier frame.
+  IMAGE_ENCODING_AVC_ANNEX_B_INTRA = 7;
 }
 
 enum CueModality {
@@ -210,6 +217,9 @@ message StreamLeaseRequest {
   // Zero for phone-originated requests; otherwise binds a glasses gesture
   // START to the resulting microphone sublease without exposing identity.
   uint64 originating_microphone_intent_id = 12;
+  // The requested wire encoding for post-gate camera frames. Unspecified is
+  // interpreted as I420 for peers predating protocol 1.5.
+  ImageEncoding requested_camera_encoding = 13;
 }
 
 message StreamLeaseGrant {
@@ -224,6 +234,9 @@ message StreamLeaseGrant {
   uint32 imu_max_silence_ms = 9;
   ErrorStatus error = 10;
   uint64 originating_microphone_intent_id = 11;
+  // Authoritative encoding selected for this lease. Unspecified is treated
+  // as I420 only when talking to a pre-1.5 peer.
+  ImageEncoding granted_camera_encoding = 12;
 }
 
 message ImuReading {
@@ -350,6 +363,16 @@ message LiveLinkCapabilities {
   bool supports_diagnostic_spool = 13;
 }
 
+// Android BatteryManager charge states. UNSPECIFIED is used when a peer does
+// not expose a reliable state; it must not be interpreted as discharging.
+enum BatteryChargeState {
+  BATTERY_CHARGE_STATE_UNSPECIFIED = 0;
+  BATTERY_CHARGE_STATE_CHARGING = 1;
+  BATTERY_CHARGE_STATE_DISCHARGING = 2;
+  BATTERY_CHARGE_STATE_FULL = 3;
+  BATTERY_CHARGE_STATE_NOT_CHARGING = 4;
+}
+
 // Privacy-safe aggregate pressure telemetry. It deliberately contains no
 // image/audio content, labels, addresses, identifiers, or raw sensor values.
 message LiveLinkTelemetry {
@@ -372,6 +395,20 @@ message LiveLinkTelemetry {
   uint64 camera_frames_dropped_blurry = 17;
   uint64 camera_frames_dropped_cadence = 18;
   uint32 current_camera_target_fps = 19;
+  // Optional power fields permit older peers and unsupported gauges to omit
+  // values without conflating an unavailable reading with numeric zero.
+  optional uint32 battery_level_percent = 20;
+  BatteryChargeState battery_charge_state = 21;
+  optional bool battery_health_good = 22;
+  optional uint64 battery_voltage_microvolts = 23;
+  optional sint64 battery_current_microamps = 24;
+  optional sint64 battery_average_current_microamps = 25;
+  optional sint64 battery_charge_counter_microamp_hours = 26;
+  optional sint32 battery_temperature_deci_celsius = 27;
+  optional bool external_power_connected = 28;
+  optional sint64 battery_energy_nanowatt_hours = 29;
+  uint64 sent_realtime_bytes = 30;
+  uint64 sent_camera_bytes = 31;
 }
 
 message LiveLaneOpenRequest {

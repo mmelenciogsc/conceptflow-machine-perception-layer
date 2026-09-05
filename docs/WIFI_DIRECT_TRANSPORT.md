@@ -18,6 +18,20 @@ route is therefore `private_lan_discovery` on either a trusted infrastructure
 WLAN or the Poco's user-enabled personal hotspot, with exact certificate pins
 and TLS 1.3 mutual authentication unchanged.
 
+On 2026-09-03 the exact non-display YodaOS-Sprite build was also found to
+expose a system-assist command that an ordinary sideloaded application can use
+without a Rokid client secret or system signature. Rokid Node uses
+`open_wifi_p2p` only as a bounded recovery pulse when its explicitly armed
+node observes Wi-Fi disabled, then checks twice and uses the public
+`WifiP2pManager.removeGroup` operation only for an empty, locally owned
+temporary group. The vendor `close_wifi_p2p` command is not used: sustained
+physical testing showed that it also disables Wi-Fi on this build. This is a
+radio-recovery mechanism, not the application data plane and not evidence that
+strict cross-device Wi-Fi Direct peer discovery now works. The authenticated data plane remains
+`private_lan_discovery`; the two devices still formed separate P2P groups
+during strict-topology diagnostics. No firmware-update or OTA command is
+issued.
+
 There is no claim of zero-copy across Wi-Fi. The transport minimizes copies
 inside each device while retaining bounded framing, input validation, camera
 freshness, and independent IMU/audio/touch policies.
@@ -155,11 +169,15 @@ must not be logged. Runtime diagnostics report only role, phase, bounded retry
 count, operation name, radio availability, and a symbolic plus numeric Android
 framework reason code.
 
-The applications cannot silently enable a disabled Wi-Fi radio on current
-Android target SDKs. A Wi-Fi lock keeps an already-enabled radio responsive; it
-does not override YodaOS or user radio policy. Development recovery may use
-`adb shell svc wifi enable`, but production recovery must use a user-visible
-platform/vendor control surface or a verified vendor API. See
+The public Android Wi-Fi APIs do not let the application silently enable a
+disabled radio. A Wi-Fi lock keeps an already-enabled radio responsive; it does
+not override YodaOS or user radio policy. Rokid Node's narrowly product-gated
+recovery controller instead uses the verified YodaOS system-assist control
+described above. Its 0/1/3/8-second request schedule is finite, it runs only
+under an explicit node arm, and an empty locally owned temporary group is
+removed through the public P2P API on the 4/8-second cleanup schedule. It never
+removes a peer-owned group or one with connected clients. Other devices and
+firmware builds remain unsupported and fail closed. See
 [YodaOS runtime resilience](YODAOS_RUNTIME_RESILIENCE.md).
 
 ## Verified Android requirements

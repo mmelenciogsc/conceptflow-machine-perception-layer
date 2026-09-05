@@ -20,6 +20,8 @@ class ImageEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     IMAGE_ENCODING_GRAY8: _ClassVar[ImageEncoding]
     IMAGE_ENCODING_JPEG: _ClassVar[ImageEncoding]
     IMAGE_ENCODING_PNG: _ClassVar[ImageEncoding]
+    IMAGE_ENCODING_YUV420_I420: _ClassVar[ImageEncoding]
+    IMAGE_ENCODING_AVC_ANNEX_B_INTRA: _ClassVar[ImageEncoding]
 
 class CueModality(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -98,6 +100,14 @@ class LiveTransportPeerRole(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: _ClassVar[LiveTransportPeerRole]
     LIVE_TRANSPORT_PEER_ROLE_GLASSES: _ClassVar[LiveTransportPeerRole]
     LIVE_TRANSPORT_PEER_ROLE_HOST: _ClassVar[LiveTransportPeerRole]
+
+class BatteryChargeState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    BATTERY_CHARGE_STATE_UNSPECIFIED: _ClassVar[BatteryChargeState]
+    BATTERY_CHARGE_STATE_CHARGING: _ClassVar[BatteryChargeState]
+    BATTERY_CHARGE_STATE_DISCHARGING: _ClassVar[BatteryChargeState]
+    BATTERY_CHARGE_STATE_FULL: _ClassVar[BatteryChargeState]
+    BATTERY_CHARGE_STATE_NOT_CHARGING: _ClassVar[BatteryChargeState]
 
 class MicrophoneControlOperation(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -186,6 +196,8 @@ IMAGE_ENCODING_RGBA8: ImageEncoding
 IMAGE_ENCODING_GRAY8: ImageEncoding
 IMAGE_ENCODING_JPEG: ImageEncoding
 IMAGE_ENCODING_PNG: ImageEncoding
+IMAGE_ENCODING_YUV420_I420: ImageEncoding
+IMAGE_ENCODING_AVC_ANNEX_B_INTRA: ImageEncoding
 CUE_MODALITY_UNSPECIFIED: CueModality
 CUE_MODALITY_EARCON: CueModality
 CUE_MODALITY_SPEECH: CueModality
@@ -231,6 +243,11 @@ LIVE_TRANSPORT_LANE_CAMERA: LiveTransportLane
 LIVE_TRANSPORT_PEER_ROLE_UNSPECIFIED: LiveTransportPeerRole
 LIVE_TRANSPORT_PEER_ROLE_GLASSES: LiveTransportPeerRole
 LIVE_TRANSPORT_PEER_ROLE_HOST: LiveTransportPeerRole
+BATTERY_CHARGE_STATE_UNSPECIFIED: BatteryChargeState
+BATTERY_CHARGE_STATE_CHARGING: BatteryChargeState
+BATTERY_CHARGE_STATE_DISCHARGING: BatteryChargeState
+BATTERY_CHARGE_STATE_FULL: BatteryChargeState
+BATTERY_CHARGE_STATE_NOT_CHARGING: BatteryChargeState
 MICROPHONE_CONTROL_OPERATION_UNSPECIFIED: MicrophoneControlOperation
 MICROPHONE_CONTROL_OPERATION_START: MicrophoneControlOperation
 MICROPHONE_CONTROL_OPERATION_STOP: MicrophoneControlOperation
@@ -503,7 +520,7 @@ class FramePayload(_message.Message):
     def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., stream_id: _Optional[str] = ..., frame_id: _Optional[int] = ..., capture_monotonic_timestamp_ns: _Optional[int] = ..., capture_wall_time: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., image: _Optional[_Union[ImageDescriptor, _Mapping]] = ..., intrinsics: _Optional[_Union[CameraIntrinsics, _Mapping]] = ..., pose: _Optional[_Union[Pose, _Mapping]] = ..., frame_data: _Optional[bytes] = ..., processing_deadline: _Optional[_Union[datetime.timedelta, _duration_pb2.Duration, _Mapping]] = ..., synthetic: bool = ...) -> None: ...
 
 class StreamLeaseRequest(_message.Message):
-    __slots__ = ("request_id", "session_id", "lease_id", "operation", "requested_streams", "requested_duration_ms", "user_requested_microphone", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "originating_microphone_intent_id")
+    __slots__ = ("request_id", "session_id", "lease_id", "operation", "requested_streams", "requested_duration_ms", "user_requested_microphone", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "originating_microphone_intent_id", "requested_camera_encoding")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -516,6 +533,7 @@ class StreamLeaseRequest(_message.Message):
     IMU_MAX_BATCH_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
     IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
     ORIGINATING_MICROPHONE_INTENT_ID_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_CAMERA_ENCODING_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     session_id: str
     lease_id: str
@@ -528,10 +546,11 @@ class StreamLeaseRequest(_message.Message):
     imu_max_batch_delay_ms: int
     imu_max_silence_ms: int
     originating_microphone_intent_id: int
-    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., operation: _Optional[_Union[StreamLeaseOperation, str]] = ..., requested_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., requested_duration_ms: _Optional[int] = ..., user_requested_microphone: bool = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., originating_microphone_intent_id: _Optional[int] = ...) -> None: ...
+    requested_camera_encoding: ImageEncoding
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., operation: _Optional[_Union[StreamLeaseOperation, str]] = ..., requested_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., requested_duration_ms: _Optional[int] = ..., user_requested_microphone: bool = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., originating_microphone_intent_id: _Optional[int] = ..., requested_camera_encoding: _Optional[_Union[ImageEncoding, str]] = ...) -> None: ...
 
 class StreamLeaseGrant(_message.Message):
-    __slots__ = ("request_id", "session_id", "lease_id", "granted_streams", "granted_duration_ms", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "error", "originating_microphone_intent_id")
+    __slots__ = ("request_id", "session_id", "lease_id", "granted_streams", "granted_duration_ms", "camera_relaxed_fps", "camera_motion_fps", "imu_max_batch_delay_ms", "imu_max_silence_ms", "error", "originating_microphone_intent_id", "granted_camera_encoding")
     REQUEST_ID_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     LEASE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -543,6 +562,7 @@ class StreamLeaseGrant(_message.Message):
     IMU_MAX_SILENCE_MS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     ORIGINATING_MICROPHONE_INTENT_ID_FIELD_NUMBER: _ClassVar[int]
+    GRANTED_CAMERA_ENCODING_FIELD_NUMBER: _ClassVar[int]
     request_id: str
     session_id: str
     lease_id: str
@@ -554,7 +574,8 @@ class StreamLeaseGrant(_message.Message):
     imu_max_silence_ms: int
     error: ErrorStatus
     originating_microphone_intent_id: int
-    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., granted_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., granted_duration_ms: _Optional[int] = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., originating_microphone_intent_id: _Optional[int] = ...) -> None: ...
+    granted_camera_encoding: ImageEncoding
+    def __init__(self, request_id: _Optional[str] = ..., session_id: _Optional[str] = ..., lease_id: _Optional[str] = ..., granted_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., granted_duration_ms: _Optional[int] = ..., camera_relaxed_fps: _Optional[int] = ..., camera_motion_fps: _Optional[int] = ..., imu_max_batch_delay_ms: _Optional[int] = ..., imu_max_silence_ms: _Optional[int] = ..., error: _Optional[_Union[ErrorStatus, _Mapping]] = ..., originating_microphone_intent_id: _Optional[int] = ..., granted_camera_encoding: _Optional[_Union[ImageEncoding, str]] = ...) -> None: ...
 
 class ImuReading(_message.Message):
     __slots__ = ("sequence_id", "pose", "angular_velocity_radians_per_second", "linear_acceleration_meters_per_second_squared", "orientation_accuracy", "angular_velocity_monotonic_timestamp_ns", "linear_acceleration_monotonic_timestamp_ns")
@@ -685,7 +706,7 @@ class LiveLinkCapabilities(_message.Message):
     def __init__(self, protocol_version: _Optional[_Union[ProtocolVersion, _Mapping]] = ..., peer_role: _Optional[_Union[LiveTransportPeerRole, str]] = ..., supported_streams: _Optional[_Iterable[_Union[SensorStreamKind, str]]] = ..., camera_encodings: _Optional[_Iterable[_Union[ImageEncoding, str]]] = ..., max_camera_width: _Optional[int] = ..., max_camera_height: _Optional[int] = ..., max_camera_frame_bytes: _Optional[int] = ..., max_audio_block_bytes: _Optional[int] = ..., max_imu_samples_per_batch: _Optional[int] = ..., max_touch_events_buffered: _Optional[int] = ..., supports_clock_sync: bool = ..., supports_camera_latest_frame: bool = ..., supports_diagnostic_spool: bool = ...) -> None: ...
 
 class LiveLinkTelemetry(_message.Message):
-    __slots__ = ("sampled_monotonic_timestamp_ns", "pending_camera_frames", "pending_imu_batches", "pending_audio_blocks", "pending_touch_events", "dropped_camera_frames", "dropped_imu_batches", "dropped_audio_blocks", "touch_overflow_events", "sent_realtime_messages", "sent_camera_messages", "camera_frames_analyzed", "camera_frames_emitted", "camera_relaxed_tier_samples", "camera_motion_tier_samples", "camera_frames_dropped_dark", "camera_frames_dropped_blurry", "camera_frames_dropped_cadence", "current_camera_target_fps")
+    __slots__ = ("sampled_monotonic_timestamp_ns", "pending_camera_frames", "pending_imu_batches", "pending_audio_blocks", "pending_touch_events", "dropped_camera_frames", "dropped_imu_batches", "dropped_audio_blocks", "touch_overflow_events", "sent_realtime_messages", "sent_camera_messages", "camera_frames_analyzed", "camera_frames_emitted", "camera_relaxed_tier_samples", "camera_motion_tier_samples", "camera_frames_dropped_dark", "camera_frames_dropped_blurry", "camera_frames_dropped_cadence", "current_camera_target_fps", "battery_level_percent", "battery_charge_state", "battery_health_good", "battery_voltage_microvolts", "battery_current_microamps", "battery_average_current_microamps", "battery_charge_counter_microamp_hours", "battery_temperature_deci_celsius", "external_power_connected", "battery_energy_nanowatt_hours", "sent_realtime_bytes", "sent_camera_bytes")
     SAMPLED_MONOTONIC_TIMESTAMP_NS_FIELD_NUMBER: _ClassVar[int]
     PENDING_CAMERA_FRAMES_FIELD_NUMBER: _ClassVar[int]
     PENDING_IMU_BATCHES_FIELD_NUMBER: _ClassVar[int]
@@ -705,6 +726,18 @@ class LiveLinkTelemetry(_message.Message):
     CAMERA_FRAMES_DROPPED_BLURRY_FIELD_NUMBER: _ClassVar[int]
     CAMERA_FRAMES_DROPPED_CADENCE_FIELD_NUMBER: _ClassVar[int]
     CURRENT_CAMERA_TARGET_FPS_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_LEVEL_PERCENT_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_CHARGE_STATE_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_HEALTH_GOOD_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_VOLTAGE_MICROVOLTS_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_CURRENT_MICROAMPS_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_AVERAGE_CURRENT_MICROAMPS_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_CHARGE_COUNTER_MICROAMP_HOURS_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_TEMPERATURE_DECI_CELSIUS_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_POWER_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    BATTERY_ENERGY_NANOWATT_HOURS_FIELD_NUMBER: _ClassVar[int]
+    SENT_REALTIME_BYTES_FIELD_NUMBER: _ClassVar[int]
+    SENT_CAMERA_BYTES_FIELD_NUMBER: _ClassVar[int]
     sampled_monotonic_timestamp_ns: int
     pending_camera_frames: int
     pending_imu_batches: int
@@ -724,7 +757,19 @@ class LiveLinkTelemetry(_message.Message):
     camera_frames_dropped_blurry: int
     camera_frames_dropped_cadence: int
     current_camera_target_fps: int
-    def __init__(self, sampled_monotonic_timestamp_ns: _Optional[int] = ..., pending_camera_frames: _Optional[int] = ..., pending_imu_batches: _Optional[int] = ..., pending_audio_blocks: _Optional[int] = ..., pending_touch_events: _Optional[int] = ..., dropped_camera_frames: _Optional[int] = ..., dropped_imu_batches: _Optional[int] = ..., dropped_audio_blocks: _Optional[int] = ..., touch_overflow_events: _Optional[int] = ..., sent_realtime_messages: _Optional[int] = ..., sent_camera_messages: _Optional[int] = ..., camera_frames_analyzed: _Optional[int] = ..., camera_frames_emitted: _Optional[int] = ..., camera_relaxed_tier_samples: _Optional[int] = ..., camera_motion_tier_samples: _Optional[int] = ..., camera_frames_dropped_dark: _Optional[int] = ..., camera_frames_dropped_blurry: _Optional[int] = ..., camera_frames_dropped_cadence: _Optional[int] = ..., current_camera_target_fps: _Optional[int] = ...) -> None: ...
+    battery_level_percent: int
+    battery_charge_state: BatteryChargeState
+    battery_health_good: bool
+    battery_voltage_microvolts: int
+    battery_current_microamps: int
+    battery_average_current_microamps: int
+    battery_charge_counter_microamp_hours: int
+    battery_temperature_deci_celsius: int
+    external_power_connected: bool
+    battery_energy_nanowatt_hours: int
+    sent_realtime_bytes: int
+    sent_camera_bytes: int
+    def __init__(self, sampled_monotonic_timestamp_ns: _Optional[int] = ..., pending_camera_frames: _Optional[int] = ..., pending_imu_batches: _Optional[int] = ..., pending_audio_blocks: _Optional[int] = ..., pending_touch_events: _Optional[int] = ..., dropped_camera_frames: _Optional[int] = ..., dropped_imu_batches: _Optional[int] = ..., dropped_audio_blocks: _Optional[int] = ..., touch_overflow_events: _Optional[int] = ..., sent_realtime_messages: _Optional[int] = ..., sent_camera_messages: _Optional[int] = ..., camera_frames_analyzed: _Optional[int] = ..., camera_frames_emitted: _Optional[int] = ..., camera_relaxed_tier_samples: _Optional[int] = ..., camera_motion_tier_samples: _Optional[int] = ..., camera_frames_dropped_dark: _Optional[int] = ..., camera_frames_dropped_blurry: _Optional[int] = ..., camera_frames_dropped_cadence: _Optional[int] = ..., current_camera_target_fps: _Optional[int] = ..., battery_level_percent: _Optional[int] = ..., battery_charge_state: _Optional[_Union[BatteryChargeState, str]] = ..., battery_health_good: bool = ..., battery_voltage_microvolts: _Optional[int] = ..., battery_current_microamps: _Optional[int] = ..., battery_average_current_microamps: _Optional[int] = ..., battery_charge_counter_microamp_hours: _Optional[int] = ..., battery_temperature_deci_celsius: _Optional[int] = ..., external_power_connected: bool = ..., battery_energy_nanowatt_hours: _Optional[int] = ..., sent_realtime_bytes: _Optional[int] = ..., sent_camera_bytes: _Optional[int] = ...) -> None: ...
 
 class LiveLaneOpenRequest(_message.Message):
     __slots__ = ("lane", "session_id", "lease_id", "connection_nonce", "lane_ticket")

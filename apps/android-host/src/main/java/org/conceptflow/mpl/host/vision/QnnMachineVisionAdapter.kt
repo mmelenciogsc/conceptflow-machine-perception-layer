@@ -83,6 +83,59 @@ data class RawRgbFrame(
         width == frame.width && height == frame.height
 }
 
+data class RawI420Frame(
+    val frameId: Long,
+    val captureMonotonicTimestampNanos: Long,
+    val width: Int,
+    val height: Int,
+    val rowStrideBytes: Int,
+    val i420: ByteArray,
+) {
+    init {
+        require(frameId > 0 && captureMonotonicTimestampNanos >= 0)
+        require(width in 2..7_680 && height in 2..4_320 && width % 2 == 0 && height % 2 == 0)
+        require(rowStrideBytes == width) { "packed I420 requires a tight Y plane" }
+        val lumaBytes = Math.multiplyExact(width, height)
+        require(i420.size == Math.addExact(lumaBytes, lumaBytes / 2))
+    }
+
+    fun matches(frame: VisionFrame): Boolean = frameId == frame.frameId &&
+        captureMonotonicTimestampNanos == frame.captureMonotonicTimestampNanos &&
+        width == frame.width && height == frame.height
+}
+
+internal object I420RgbConverter {
+    fun convert(frame: RawI420Frame): RgbImage {
+        val lumaBytes = Math.multiplyExact(frame.width, frame.height)
+        val chromaWidth = frame.width / 2
+        val chromaBytes = lumaBytes / 4
+        val uOffset = lumaBytes
+        val vOffset = lumaBytes + chromaBytes
+        val rgb = ByteArray(Math.multiplyExact(lumaBytes, 3))
+        var output = 0
+        repeat(frame.height) { y ->
+            val lumaRow = y * frame.width
+            val chromaRow = (y / 2) * chromaWidth
+            repeat(frame.width) { x ->
+                val luminance = ((frame.i420[lumaRow + x].toInt() and 0xff) - 16).coerceAtLeast(0)
+                val chromaIndex = chromaRow + x / 2
+                val blueDifference = (frame.i420[uOffset + chromaIndex].toInt() and 0xff) - 128
+                val redDifference = (frame.i420[vOffset + chromaIndex].toInt() and 0xff) - 128
+                rgb[output++] = (
+                    (298 * luminance + 409 * redDifference + 128) shr 8
+                    ).coerceIn(0, 255).toByte()
+                rgb[output++] = (
+                    (298 * luminance - 100 * blueDifference - 208 * redDifference + 128) shr 8
+                    ).coerceIn(0, 255).toByte()
+                rgb[output++] = (
+                    (298 * luminance + 516 * blueDifference + 128) shr 8
+                    ).coerceIn(0, 255).toByte()
+            }
+        }
+        return RgbImage(frame.width, frame.height, rgb)
+    }
+}
+
 fun interface EncodedJpegFrameSource {
     /** The source must return only the exact requested frame; null means it has expired. */
     fun take(frameId: Long): EncodedJpegFrame?
