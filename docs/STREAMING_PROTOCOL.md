@@ -6,12 +6,12 @@ It replaces routine JPEG/PCM/JSON spool coordination with bounded RAM
 publication after the existing Rokid gates. The app-private spool remains an
 explicit, disabled-by-default diagnostic mode.
 
-The current implementation identifies itself as protocol version `1.2`. A
-base transport lease is bounded to 610 seconds: at most 600 seconds of sensor
-workload plus a separate 10-second authenticated-shutdown envelope. The
+The current implementation identifies itself as protocol version `1.5`. A
+production transport epoch is bounded to 14,410 seconds: at most four hours of
+sensor workload plus a separate 10-second authenticated-shutdown envelope. The
 ordinary development command deliberately closes after 30 seconds; the
-explicit soak path runs the full 600-second workload. Reconnect never extends
-an existing controller deadline.
+explicit soak path runs for 600 seconds. Reconnect never extends an existing
+controller deadline.
 
 ```text
 ROKID PHYSICAL SENSORS
@@ -59,7 +59,7 @@ and socket timeouts and accepts coalesced records.
 
 ## Version 1.1 record framing
 
-The typed HELLO/capabilities contract is version 1.2. Its outer binary record
+The typed HELLO/capabilities contract is version 1.5. Its outer binary record
 framing remains version 1.1 because the telemetry extension uses
 forward-compatible Protocol Buffers fields and does not alter the 38-byte
 record header or payload placement.
@@ -93,31 +93,73 @@ inside CONTROL provide HELLO/version negotiation, explicit CAPABILITIES
 exchange, lane authentication, stream lease request/grant, repeated CLOCK_SYNC,
 HEARTBEAT/keepalive, microphone authorization, Rokid gesture/command exchange,
 aggregate TELEMETRY, typed ERROR and diagnostic spool operations. A version
-1.2 glasses peer sends its bounded capabilities immediately after HELLO; the
+1.5 glasses peer sends its bounded capabilities immediately after HELLO; the
 host validates them and replies with host capabilities before issuing the
-single-use camera-lane ticket. Older minor-version peers retain the original
-handshake and decode the added fields as unknown fields.
+single-use camera-lane ticket. Every current pair requires explicit I420 capability;
+an older peer that cannot advertise it fails negotiation instead of silently
+misinterpreting the payload. Forward-compatible protobuf readers still preserve
+unknown fields.
 
 Rokid Node publishes aggregate queue-pressure TELEMETRY once per second. It
 contains queue depths, drop/overflow and sent-message totals, plus camera-gate
 counts for analyzed/emitted frames, relaxed/motion-tier decisions,
 dark/blurry/cadence rejection, and the current target FPS. These are aggregate
-counters with a source monotonic sample time—never sensor content, labels,
-identities, addresses or credentials. Android Node validates accounting
+counters and per-lane byte totals with a source monotonic sample time—never
+sensor content, labels, identities, addresses or credentials. Android Node validates accounting
 invariants and exposes the latest sample in its accessible aggregate status.
+
+Protocol 1.4 adds optional, content-free platform power measurements to that
+same one-second message: battery percentage, Android charge state, health,
+microvolts, instantaneous and average microamps, charge-counter microamp-hours,
+deci-degrees Celsius, external-power presence, and energy-counter nanowatt-hours
+where the device exposes them. Protobuf presence is authoritative: an absent
+field means unavailable and is never interpreted as zero. Peers reject values
+outside conservative electrical and temperature bounds. Android Node retains
+only session aggregates and the latest sample; it receives no battery-history
+file or sensor content.
+
+Protocol 1.5 adds explicit camera-wire-encoding request and grant fields. The
+default and backward-compatible value is packed I420. `AVC_ANNEX_B_INTRA` is
+negotiated only when both app-private configurations opt in and both peers
+advertise it. Every AVC payload is one Annex-B access unit containing SPS, PPS,
+and an IDR slice. This deliberately preserves independent decodability: the
+camera queue may replace a stale pending access unit and a new session may
+begin decoding without an earlier frame. A malformed, dependent, or
+unexpectedly encoded frame fails closed. The authenticated protobuf envelope
+continues to carry the original frame ID, capture timestamp, dimensions,
+intrinsics, payload length, and SHA-256 digest.
+
+Android Node also owns a one-way process-lifetime AVC circuit breaker. The
+first decoder failure demotes subsequent lease grants to I420 and closes only
+the active authenticated attempt. The persistent listener remains available;
+Rokid Node reconnects through the existing bounded policy, requests AVC again,
+and accepts the host's I420 grant. The circuit breaker cannot oscillate back to
+AVC until Android Node is explicitly restarted. Debug builds expose a
+shell-only one-shot fault injector; release builds expose no external fault
+command. Aggregate status reports the negotiated camera encoding, failure
+count, and fallback count.
 
 ## Modality contracts
 
 Camera gate behavior is unchanged. Production acquires the exact device-native
 648×648 `YUV_420_888` stream alongside its low-resolution HAL keepalive, applies
-the protected luma gate, and converts only an accepted frame directly to
-640×640 packed RGB8 with row stride 1920. The normal RAM path creates no JPEG
-and writes no frame to flash. One worker owns one processing frame and one
-latest pending frame; intentional replacement is counted. This changes
-acquisition and post-gate handoff, not darkness, blur, motion, hold,
-relaxed-rate or motion-rate decisions. The disabled-by-default diagnostic spool
-may encode an admitted RGB8 frame to bounded JPEG for explicit pull testing;
-that persistence route is not the production stream.
+the protected luma gate, and converts only an accepted frame into tightly packed
+640×640 planar I420. The payload is 409,600 Y bytes followed by 102,400 U bytes
+and 102,400 V bytes; width and height are even, luma stride is 640, and the total
+payload is exactly 614,400 bytes. Each packet is an independently decodable
+frame, so latest-frame replacement and reconnect do not depend on an earlier
+frame. This remains the default. The feature-flagged AVC-intra route hardware-
+encodes that same admitted I420 frame on the glasses; Android Node validates
+the Annex-B structure, hardware-decodes it back to packed I420, and preserves
+the source frame ID, monotonic capture timestamp, intrinsics, and session
+correlation before timeline admission and model preprocessing. The normal RAM path
+creates no JPEG and writes no frame to flash. One worker owns one processing
+frame and one latest pending frame; intentional replacement is counted. This
+changes acquisition and post-gate handoff, not darkness, blur, motion, hold,
+relaxed-rate or motion-rate decisions. Packed 640×640 RGB8 remains a negotiated
+diagnostic compatibility format. The disabled-by-default diagnostic spool may
+encode an admitted RGB8 frame to bounded JPEG for explicit pull testing; that
+persistence route is not the production stream.
 
 - Microphone remains explicit on-demand PCM S16LE, 16 kHz, mono. Its FIFO holds
   eight blocks; overflow rejects newest and counts a gap.

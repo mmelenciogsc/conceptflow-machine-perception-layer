@@ -6,7 +6,7 @@ import org.junit.Test
 
 class IdleControlActivationCoordinatorTest {
     @Test
-    fun visibleServiceRoutingIncludesExplicitEnableAndSameBootRecovery() {
+    fun visibleServiceRoutingIncludesExplicitAndBothRecoveryModes() {
         assertEquals(
             VisibleServiceActivation.IDLE_CONTROL,
             VisibleServiceActivation.fromCommand(RuntimeCommand.ENABLE_IDLE_CONTROL),
@@ -14,6 +14,10 @@ class IdleControlActivationCoordinatorTest {
         assertEquals(
             VisibleServiceActivation.SAME_BOOT_RECOVERY,
             VisibleServiceActivation.fromCommand(RuntimeCommand.RECOVER_SAME_BOOT),
+        )
+        assertEquals(
+            VisibleServiceActivation.PERSISTED_BOOT_RECOVERY,
+            VisibleServiceActivation.fromCommand(RuntimeCommand.RECOVER_PERSISTED_BOOT),
         )
         assertEquals(null, VisibleServiceActivation.fromCommand(RuntimeCommand.PLAY_FULL_BRAND_TEST))
         assertEquals(null, VisibleServiceActivation.fromCommand(RuntimeCommand.STOP))

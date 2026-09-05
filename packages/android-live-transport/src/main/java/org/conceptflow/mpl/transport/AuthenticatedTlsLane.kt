@@ -20,9 +20,10 @@ class AuthenticatedTlsLane internal constructor(
     private val writeLock = ReentrantLock(true)
 
     init {
-        if (lane == LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL) {
-            socket.tcpNoDelay = true
-        }
+        // Versioned framing deliberately writes a small authenticated header/metadata prefix
+        // before each bounded payload. Disable Nagle on both independent lanes so those prefixes
+        // cannot wait behind delayed acknowledgements while a complete RGB frame is in flight.
+        socket.tcpNoDelay = true
     }
 
     fun write(envelope: LiveLinkEnvelope) = withWriteLock {

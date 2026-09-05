@@ -412,3 +412,88 @@ internal fun buildRgbFrame(
     intrinsics?.let(payload::setIntrinsics)
     return payload.build()
 }
+
+internal fun buildI420Frame(
+    requestId: String,
+    sessionId: String,
+    streamId: String,
+    frameId: Long,
+    timestampNanos: Long,
+    wallTimeMillis: Long,
+    width: Int,
+    height: Int,
+    bytes: ByteArray,
+    synthetic: Boolean,
+    intrinsics: CameraIntrinsics? = null,
+    takeOwnership: Boolean = false,
+): FramePayload {
+    require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0) {
+        "I420 dimensions must be positive and even"
+    }
+    val lumaBytes = Math.multiplyExact(width, height)
+    val expectedBytes = Math.addExact(lumaBytes, lumaBytes / 2)
+    require(bytes.size == expectedBytes) { "I420 payload size does not match dimensions" }
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val descriptor = ImageDescriptor.newBuilder()
+        .setWidth(width)
+        .setHeight(height)
+        .setRowStrideBytes(width)
+        .setEncoding(ImageEncoding.IMAGE_ENCODING_YUV420_I420)
+        .setMediaType("application/x-conceptflow-i420")
+        .setPayloadBytes(bytes.size.toLong())
+        .setSha256(ByteString.copyFrom(digest))
+        .build()
+    val payload = FramePayload.newBuilder()
+        .setRequestId(requestId)
+        .setSessionId(sessionId)
+        .setStreamId(streamId)
+        .setFrameId(frameId)
+        .setCaptureMonotonicTimestampNs(timestampNanos)
+        .setCaptureWallTime(protobufTimestamp(wallTimeMillis))
+        .setImage(descriptor)
+        .setFrameData(if (takeOwnership) UnsafeByteOperations.unsafeWrap(bytes) else ByteString.copyFrom(bytes))
+        .setSynthetic(synthetic)
+    intrinsics?.let(payload::setIntrinsics)
+    return payload.build()
+}
+
+internal fun buildAvcIntraFrame(
+    requestId: String,
+    sessionId: String,
+    streamId: String,
+    frameId: Long,
+    timestampNanos: Long,
+    wallTimeMillis: Long,
+    width: Int,
+    height: Int,
+    bytes: ByteArray,
+    synthetic: Boolean,
+    intrinsics: CameraIntrinsics? = null,
+    takeOwnership: Boolean = false,
+): FramePayload {
+    require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0)
+    require(bytes.isNotEmpty() && bytes.size <= 2 * 1_024 * 1_024)
+    org.conceptflow.mpl.transport.AvcAnnexBAccessUnit.requireIndependent(bytes)
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    val descriptor = ImageDescriptor.newBuilder()
+        .setWidth(width)
+        .setHeight(height)
+        .setRowStrideBytes(0)
+        .setEncoding(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+        .setMediaType(org.conceptflow.mpl.transport.AvcAnnexBAccessUnit.MEDIA_TYPE)
+        .setPayloadBytes(bytes.size.toLong())
+        .setSha256(ByteString.copyFrom(digest))
+        .build()
+    val payload = FramePayload.newBuilder()
+        .setRequestId(requestId)
+        .setSessionId(sessionId)
+        .setStreamId(streamId)
+        .setFrameId(frameId)
+        .setCaptureMonotonicTimestampNs(timestampNanos)
+        .setCaptureWallTime(protobufTimestamp(wallTimeMillis))
+        .setImage(descriptor)
+        .setFrameData(if (takeOwnership) UnsafeByteOperations.unsafeWrap(bytes) else ByteString.copyFrom(bytes))
+        .setSynthetic(synthetic)
+    intrinsics?.let(payload::setIntrinsics)
+    return payload.build()
+}

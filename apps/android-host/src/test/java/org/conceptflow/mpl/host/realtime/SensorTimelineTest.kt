@@ -86,6 +86,21 @@ class SensorTimelineTest {
         assertEquals(0L, snapshot.touchOverflow)
     }
 
+    @Test
+    fun `continuous audio consumer prevents the previously observed sixteen block overflow`() {
+        val timeline = SensorTimeline(SensorTimelineLimits(maximumAudioBlocks = 16))
+
+        repeat(74) { index ->
+            val id = index + 1L
+            assertTrue(timeline.acceptAudio(audioDelivery(id)))
+            assertEquals(id, timeline.drainAudio().single().block.chunkId)
+        }
+
+        val snapshot = timeline.snapshotAround(0L)
+        assertEquals(0, snapshot.audio.size)
+        assertEquals(0L, snapshot.audioOverflow)
+    }
+
     private fun imuDelivery(timestamps: List<Long>, receiveNs: Long): LiveSensorDelivery {
         val readings = timestamps.mapIndexed { index, timestamp ->
             ImuReading.newBuilder()

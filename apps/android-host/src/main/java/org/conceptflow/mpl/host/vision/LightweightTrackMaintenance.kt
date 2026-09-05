@@ -73,6 +73,8 @@ data class LightweightTrackState(
     val missedKeyframes: Int,
     val headCameraTranslationApplied: Boolean,
     val covariance: LightweightTrackCovariance,
+    /** False means private temporal evidence; downstream user-facing surfaces must ignore it. */
+    val confirmedForPublication: Boolean = true,
 ) {
     init {
         require(stableTrackId.isNotBlank() && sourceTrackId.isNotBlank() && classId.isNotBlank())
@@ -126,10 +128,17 @@ fun interface TrackAppearanceSimilarity {
 class LightweightTrackMaintainer(
     private val capacity: Int = 64,
     private val trackTtlNanos: Long = 1_500_000_000L,
+    private val minimumPostInferenceHoldNanos: Long = 1_250_000_000L,
     private val maximumDepthAgeNanos: Long = 500_000_000L,
     private val maximumMissedKeyframes: Int = 6,
     private val minimumAssociationScore: Double = 0.38,
     private val confidenceDecayPerSecond: Double = 0.45,
+    private val immediateConfirmationConfidence: Double =
+        YoloSemanticConfidencePolicy.IMMEDIATE_PUBLICATION_CONFIDENCE,
+    private val consistentObservationsRequired: Int =
+        YoloSemanticConfidencePolicy.CONSISTENT_OBSERVATIONS_REQUIRED,
+    private val confirmationWindowNanos: Long = 2_000_000_000L,
+    private val maximumTentativeMissedKeyframes: Int = 1,
     private val classCompatibility: TrackClassCompatibility = TrackClassCompatibility.EXACT,
     private val appearanceSimilarity: TrackAppearanceSimilarity? = null,
     headFromCamera: VerifiedHeadCameraExtrinsic? = null,
@@ -156,6 +165,9 @@ class LightweightTrackMaintainer(
         var depthVariance: Double?,
         var appearance: FloatArray?,
         var missedKeyframes: Int,
+        var consistentObservations: Int,
+        var confirmedForPublication: Boolean,
+        val classVotes: MutableMap<String, Double>,
     )
 
     private data class AssociationCandidate(val trackId: String, val score: Double)
@@ -171,10 +183,15 @@ class LightweightTrackMaintainer(
     init {
         require(capacity in 1..128)
         require(trackTtlNanos in 100_000_000L..10_000_000_000L)
+        require(minimumPostInferenceHoldNanos in 0L..5_000_000_000L)
         require(maximumDepthAgeNanos in 10_000_000L..trackTtlNanos)
         require(maximumMissedKeyframes in 1..30)
         require(minimumAssociationScore.isFinite() && minimumAssociationScore in 0.0..1.0)
         require(confidenceDecayPerSecond.isFinite() && confidenceDecayPerSecond >= 0.0)
+        require(immediateConfirmationConfidence.isFinite() && immediateConfirmationConfidence in 0.0..1.0)
+        require(consistentObservationsRequired in 2..10)
+        require(confirmationWindowNanos in 100_000_000L..5_000_000_000L)
+        require(maximumTentativeMissedKeyframes in 0..maximumMissedKeyframes)
     }
 
     @Synchronized
@@ -340,6 +357,9 @@ class LightweightTrackMaintainer(
         measurement.representativeDistance.uncertaintyMeters?.let { it * it },
         appearance?.copyOf(),
         0,
+        1,
+        measurement.confidence >= immediateConfirmationConfidence,
+        linkedMapOf(measurement.classId to measurement.confidence * INITIAL_CLASS_VOTE_MULTIPLIER),
     )
 
     private fun updateRecord(
@@ -349,6 +369,9 @@ class LightweightTrackMaintainer(
     ): Record {
         val elapsedSeconds = (measurement.sourceCaptureMonotonicTimestampNanos - record.sourceCaptureNanos) /
             NANOS_PER_SECOND
+        val observationGapNanos =
+            (measurement.sourceCaptureMonotonicTimestampNanos - record.sourceCaptureNanos).coerceAtLeast(0L)
+        val priorMissedKeyframes = record.missedKeyframes
         val priorGeometry = record.geometry
         val observedGeometry = measurement.maskGeometry
         if (priorGeometry != null && observedGeometry != null && elapsedSeconds > 0.0) {
@@ -375,17 +398,49 @@ class LightweightTrackMaintainer(
             uncertainty * uncertainty + (depthResidual?.let { it * it * 0.25 } ?: 0.0)
         }
         record.sourceTrackId = measurement.trackId
-        record.classId = measurement.classId
+        updateStableClass(record, measurement)
         record.sourceFrameId = measurement.frameId
         record.sourceCaptureNanos = measurement.sourceCaptureMonotonicTimestampNanos
         record.sourceInferenceNanos = measurement.sourceInferenceMonotonicTimestampNanos
-        record.confidence = measurement.confidence
+        record.confidence = CONFIDENCE_OBSERVATION_WEIGHT * measurement.confidence +
+            (1.0 - CONFIDENCE_OBSERVATION_WEIGHT) * record.confidence
         record.geometry = observedGeometry
         record.depth = observedDepth
         record.cameraVectorMeters = measurement.cameraVectorMeters
         record.appearance = appearance?.copyOf()
+        if (!record.confirmedForPublication) {
+            record.consistentObservations = if (
+                observationGapNanos <= confirmationWindowNanos &&
+                priorMissedKeyframes <= maximumTentativeMissedKeyframes
+            ) {
+                record.consistentObservations + 1
+            } else {
+                1
+            }
+            record.confirmedForPublication =
+                measurement.confidence >= immediateConfirmationConfidence ||
+                record.consistentObservations >= consistentObservationsRequired
+        }
         record.missedKeyframes = 0
         return record
+    }
+
+    private fun updateStableClass(record: Record, measurement: MetricSemanticTrack) {
+        record.classVotes.replaceAll { _, score -> score * CLASS_VOTE_DECAY }
+        record.classVotes.entries.removeIf { it.value < MINIMUM_CLASS_VOTE }
+        record.classVotes[measurement.classId] =
+            (record.classVotes[measurement.classId] ?: 0.0) + measurement.confidence
+        while (record.classVotes.size > MAXIMUM_CLASS_VOTES) {
+            val victim = record.classVotes.entries.minWithOrNull(
+                compareBy<Map.Entry<String, Double>>(Map.Entry<String, Double>::value)
+                    .thenBy(Map.Entry<String, Double>::key),
+            ) ?: break
+            record.classVotes.remove(victim.key)
+        }
+        record.classId = record.classVotes.entries.maxWithOrNull(
+            compareBy<Map.Entry<String, Double>>(Map.Entry<String, Double>::value)
+                .thenByDescending(Map.Entry<String, Double>::key),
+        )?.key ?: measurement.classId
     }
 
     private fun score(
@@ -394,12 +449,13 @@ class LightweightTrackMaintainer(
         observedAppearance: FloatArray?,
         timestampNanos: Long,
     ): Double? {
-        if (!classCompatibility.compatible(record.classId, measurement.classId)) return null
+        val sameClass = classCompatibility.compatible(record.classId, measurement.classId)
         val sourceMatch = record.sourceTrackId == measurement.trackId
         var hasIdentityEvidence = sourceMatch
         var weightedScore = if (sourceMatch) 0.20 else 0.0
         var totalWeight = if (sourceMatch) 0.20 else 0.0
 
+        var strongCrossClassGeometry = false
         val predicted = record.geometry?.let { predictGeometry(record, timestampNanos) }
         val observed = measurement.maskGeometry
         if (predicted != null && observed != null) {
@@ -417,10 +473,13 @@ class LightweightTrackMaintainer(
             if (overlap < MINIMUM_GEOMETRY_IOU && centroidScore == 0.0 && !sourceMatch) return null
             val maskAreaScore = min(predicted.foregroundPixelCount, observed.foregroundPixelCount).toDouble() /
                 max(predicted.foregroundPixelCount, observed.foregroundPixelCount)
+            strongCrossClassGeometry = overlap >= MINIMUM_CROSS_CLASS_IOU &&
+                centroidScore >= MINIMUM_CROSS_CLASS_CENTROID_SCORE
             weightedScore += GEOMETRY_WEIGHT * (0.55 * overlap + 0.30 * centroidScore + 0.15 * maskAreaScore)
             totalWeight += GEOMETRY_WEIGHT
             hasIdentityEvidence = true
         }
+        if (!sameClass && !strongCrossClassGeometry) return null
 
         val priorDepth = record.depth
         val observedDepth = measurement.representativeDistance
@@ -450,7 +509,9 @@ class LightweightTrackMaintainer(
             totalWeight += APPEARANCE_WEIGHT
             hasIdentityEvidence = true
         }
-        return if (hasIdentityEvidence && totalWeight > 0.0) weightedScore / totalWeight else null
+        if (!hasIdentityEvidence || totalWeight <= 0.0) return null
+        val normalized = weightedScore / totalWeight
+        return if (sameClass) normalized else normalized * CROSS_CLASS_ASSOCIATION_PENALTY
     }
 
     private fun snapshotInternal(
@@ -514,7 +575,7 @@ class LightweightTrackMaintainer(
                 sourceCaptureTimestampNanos = record.sourceCaptureNanos,
                 sourceInferenceTimestampNanos = record.sourceInferenceNanos,
                 outputTimestampNanos = maxOf(nowNanos, record.sourceInferenceNanos),
-                expiresAtTimestampNanos = saturatingAdd(record.sourceCaptureNanos, trackTtlNanos),
+                expiresAtTimestampNanos = expiryTimestampNanos(record),
                 confidence = confidence,
                 coordinateValidity = TrackCoordinateValidity(
                     image2d = if (predictedGeometry == null) {
@@ -552,6 +613,7 @@ class LightweightTrackMaintainer(
                     headOrientationVarianceRadiansSquared = orientationVariance,
                     localWorldVarianceMetersSquared = localWorldVariance,
                 ),
+                confirmedForPublication = record.confirmedForPublication,
             )
         }.sortedBy(LightweightTrackState::stableTrackId)
     }
@@ -591,14 +653,30 @@ class LightweightTrackMaintainer(
 
     private fun pruneExpired(nowNanos: Long): List<String> {
         val expired = records.values.filter {
-            nowNanos > saturatingAdd(it.sourceCaptureNanos, trackTtlNanos)
+            // A result that already exceeded the capture-age admission limit must never be
+            // revived by the post-inference continuity window. For an admitted result, however,
+            // preserve a bounded period after inference so transport/model latency cannot consume
+            // the entire user-facing dwell interval before the track is first published.
+            it.sourceInferenceNanos > saturatingAdd(it.sourceCaptureNanos, trackTtlNanos) ||
+                nowNanos > expiryTimestampNanos(it)
         }.map(Record::stableTrackId).sorted()
         expired.forEach(records::remove)
         return expired
     }
 
+    private fun expiryTimestampNanos(record: Record): Long = maxOf(
+        saturatingAdd(record.sourceCaptureNanos, trackTtlNanos),
+        saturatingAdd(record.sourceInferenceNanos, minimumPostInferenceHoldNanos),
+    )
+
     private fun pruneMissed(): List<String> {
-        val expired = records.values.filter { it.missedKeyframes > maximumMissedKeyframes }
+        val expired = records.values.filter {
+            it.missedKeyframes > if (it.confirmedForPublication) {
+                maximumMissedKeyframes
+            } else {
+                maximumTentativeMissedKeyframes
+            }
+        }
             .map(Record::stableTrackId).sorted()
         expired.forEach(records::remove)
         return expired
@@ -652,6 +730,8 @@ class LightweightTrackMaintainer(
         const val MISSED_KEYFRAME_VARIANCE_PIXELS_SQUARED = 16.0
         const val ORIENTATION_UNCERTAINTY_RADIANS_PER_SECOND = 0.035
         const val MINIMUM_GEOMETRY_IOU = 0.03
+        const val MINIMUM_CROSS_CLASS_IOU = 0.35
+        const val MINIMUM_CROSS_CLASS_CENTROID_SCORE = 0.65
         const val MAXIMUM_CENTROID_DISTANCE_FRACTION = 0.30
         const val MINIMUM_DEPTH_TOLERANCE_METERS = 0.75
         const val DEPTH_TOLERANCE_FRACTION = 0.40
@@ -659,6 +739,12 @@ class LightweightTrackMaintainer(
         const val GEOMETRY_WEIGHT = 0.55
         const val DEPTH_WEIGHT = 0.25
         const val APPEARANCE_WEIGHT = 0.20
+        const val CROSS_CLASS_ASSOCIATION_PENALTY = 0.82
+        const val CONFIDENCE_OBSERVATION_WEIGHT = 0.65
+        const val CLASS_VOTE_DECAY = 0.85
+        const val INITIAL_CLASS_VOTE_MULTIPLIER = 2.0
+        const val MINIMUM_CLASS_VOTE = 0.01
+        const val MAXIMUM_CLASS_VOTES = 8
     }
 }
 

@@ -37,6 +37,22 @@ class SpatialFocusTest {
     }
 
     @Test
+    fun `tentative tracker evidence is never focusable`() {
+        val manager = SpatialFocusManager()
+
+        val state = manager.updateTracks(
+            1L,
+            1L,
+            100L,
+            listOf(track("candidate", 1.0).copy(confirmedForPublication = false)),
+        )
+
+        assertEquals(0, state.itemCount)
+        assertEquals(SpatialFocusMode.INACTIVE, state.mode)
+        assertEquals(null, state.target)
+    }
+
+    @Test
     fun `previous clamps and dwell becomes ready exactly once per generation`() {
         val manager = SpatialFocusManager()
         manager.updateTracks(1L, 1L, 0L, listOf(track("only", 0.9144)))
@@ -111,6 +127,154 @@ class SpatialFocusTest {
         assertEquals(SpatialFocusDwell.NONE, removed.dwell)
         assertEquals(0, removed.itemCount)
         assertEquals(0L, manager.reset(2L, 3L).snapshotId)
+    }
+
+    @Test
+    fun `track rejection reports whether head coordinates or freshness are missing`() {
+        val manager = SpatialFocusManager()
+        val cameraOnly = track("camera-only", 1.0)
+        val missingHead = manager.updateTracks(
+            1L,
+            1L,
+            100L,
+            listOf(
+                cameraOnly.copy(
+                    headRelativeVectorMeters = null,
+                    headCameraTranslationApplied = false,
+                    coordinateValidity = cameraOnly.coordinateValidity.copy(
+                        headRelative = TrackEstimateValidity.UNAVAILABLE,
+                    ),
+                ),
+            ),
+        )
+        assertEquals("tracks_rejected_head_frame_unavailable", missingHead.statusReason)
+        assertEquals(0, missingHead.itemCount)
+
+        val expired = manager.updateTracks(
+            1L,
+            2L,
+            2_000_000_001L,
+            listOf(track("expired", 1.0)),
+        )
+        assertEquals("tracks_rejected_expired", expired.statusReason)
+        assertEquals(0, expired.itemCount)
+    }
+
+    @Test
+    fun `navigation during a detector gap selects the next fresh target within a bounded window`() {
+        val manager = SpatialFocusManager(browseIntentTtlNanos = 2_000_000_000L)
+        manager.updateTracks(1L, 1L, 0L, emptyList())
+
+        val pending = manager.command(SpatialFocusCommand.NEXT, 100L).state
+        assertEquals(SpatialFocusMode.INACTIVE, pending.mode)
+        assertEquals("browse_pending", pending.statusReason)
+        manager.updateTracks(1L, 2L, 200L, emptyList())
+        val selected = manager.updateTracks(1L, 3L, 300L, listOf(track("fresh", 1.0)))
+
+        assertEquals(SpatialFocusMode.BROWSING, selected.mode)
+        assertEquals("fresh", selected.target?.stableTrackId)
+        assertEquals(SpatialFocusDwell.PENDING, selected.dwell)
+
+        manager.reset(1L, 400L)
+        manager.updateTracks(1L, 4L, 500L, emptyList())
+        manager.command(SpatialFocusCommand.NEXT, 600L)
+        val expired = manager.updateTracks(
+            1L,
+            5L,
+            2_000_000_601L,
+            listOf(
+                track("too-late", 1.0).copy(
+                    sourceFrameId = 2L,
+                    sourceCaptureTimestampNanos = 2_000_000_000L,
+                    sourceInferenceTimestampNanos = 2_000_000_000L,
+                    outputTimestampNanos = 2_000_000_000L,
+                    expiresAtTimestampNanos = 4_000_000_000L,
+                ),
+            ),
+        )
+        assertEquals(SpatialFocusMode.INACTIVE, expired.mode)
+        assertEquals(null, expired.target)
+    }
+
+    @Test
+    fun `brief browsing dropout prefers exact stable target without restarting dwell`() {
+        val manager = SpatialFocusManager()
+        manager.updateTracks(1L, 1L, 0L, listOf(track("one", 1.0)))
+        val selected = manager.command(SpatialFocusCommand.NEXT, 100L).state
+
+        val missing = manager.updateTracks(1L, 2L, 200L, emptyList())
+        assertEquals(SpatialFocusMode.INACTIVE, missing.mode)
+        assertEquals(null, missing.target)
+
+        val unrelated = manager.updateTracks(1L, 3L, 300L, listOf(track("two", 2.0)))
+        assertEquals(SpatialFocusMode.INACTIVE, unrelated.mode)
+        assertEquals(null, unrelated.target)
+
+        val reacquired = manager.updateTracks(
+            1L,
+            4L,
+            400L,
+            listOf(track("one", 1.1), track("two", 2.0)),
+        )
+        assertEquals(SpatialFocusMode.BROWSING, reacquired.mode)
+        assertEquals("one", reacquired.target?.stableTrackId)
+        assertEquals(selected.focusGeneration, reacquired.focusGeneration)
+        assertEquals(selected.dwellStartedTimestampNanos, reacquired.dwellStartedTimestampNanos)
+        assertEquals(selected.dwellDeadlineTimestampNanos, reacquired.dwellDeadlineTimestampNanos)
+        assertEquals(SpatialFocusDwell.READY, manager.advance(750_000_100L).dwell)
+    }
+
+    @Test
+    fun `brief detector id churn conservatively reacquires one matching spatial target`() {
+        val manager = SpatialFocusManager()
+        manager.updateTracks(1L, 1L, 0L, listOf(track("old-id", 1.0)))
+        val selected = manager.command(SpatialFocusCommand.NEXT, 100L).state
+        manager.updateTracks(1L, 2L, 200L, emptyList())
+
+        val replacement = track("new-id", 1.08).copy(
+            sourceFrameId = 2L,
+            imageGeometry = InstanceMaskGeometry(100, 100, 12, 10, 22, 20),
+        )
+        val reacquired = manager.updateTracks(1L, 3L, 300L, listOf(replacement))
+
+        assertEquals(SpatialFocusMode.BROWSING, reacquired.mode)
+        assertEquals("new-id", reacquired.target?.stableTrackId)
+        assertEquals(selected.focusGeneration, reacquired.focusGeneration)
+        assertEquals(selected.dwellDeadlineTimestampNanos, reacquired.dwellDeadlineTimestampNanos)
+    }
+
+    @Test
+    fun `detector id churn does not retarget across class distance or ambiguity`() {
+        val differentClass = SpatialFocusManager()
+        differentClass.updateTracks(1L, 1L, 0L, listOf(track("old-id", 1.0)))
+        differentClass.command(SpatialFocusCommand.NEXT, 100L)
+        differentClass.updateTracks(1L, 2L, 200L, emptyList())
+        val rejectedClass = differentClass.updateTracks(
+            1L,
+            3L,
+            300L,
+            listOf(track("new-id", 1.0).copy(classId = "table")),
+        )
+        assertEquals(SpatialFocusMode.INACTIVE, rejectedClass.mode)
+
+        val ambiguous = SpatialFocusManager()
+        ambiguous.updateTracks(1L, 1L, 0L, listOf(track("old-id", 1.0)))
+        ambiguous.command(SpatialFocusCommand.NEXT, 100L)
+        ambiguous.updateTracks(1L, 2L, 200L, emptyList())
+        val rejectedAmbiguity = ambiguous.updateTracks(
+            1L,
+            3L,
+            300L,
+            listOf(track("candidate-a", 1.02), track("candidate-b", 1.04)),
+        )
+        assertEquals(SpatialFocusMode.INACTIVE, rejectedAmbiguity.mode)
+
+        val distant = SpatialFocusManager()
+        distant.updateTracks(1L, 1L, 0L, listOf(track("old-id", 1.0)))
+        distant.command(SpatialFocusCommand.NEXT, 100L)
+        distant.updateTracks(1L, 2L, 200L, emptyList())
+        val rejectedDistance = distant.updateTracks(1L, 3L, 300L, listOf(track("new-id", 2.0)))
+        assertEquals(SpatialFocusMode.INACTIVE, rejectedDistance.mode)
     }
 
     @Test

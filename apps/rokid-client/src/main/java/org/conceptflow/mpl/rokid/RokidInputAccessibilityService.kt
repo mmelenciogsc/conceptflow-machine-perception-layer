@@ -3,7 +3,13 @@ package org.conceptflow.mpl.rokid
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -11,6 +17,7 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import org.conceptflow.mpl.rokid.core.ExactRokidInputHardwarePolicy
 import org.conceptflow.mpl.rokid.core.IdleControlPolicy
+import org.conceptflow.mpl.rokid.core.IdleControlRecoveryAuthorization
 import org.conceptflow.mpl.rokid.core.RokidCandidateInputProfile
 import org.conceptflow.mpl.rokid.core.RokidInputAction
 import org.conceptflow.mpl.rokid.core.RokidInputDispatchPolicy
@@ -32,6 +39,25 @@ class RokidInputAccessibilityService : AccessibilityService() {
     private val sequence = RokidInputSequenceStateMachine(hardwarePolicy)
     private val commandGateStore by lazy { RokidInputCommandGateStore(this) }
     private var systemBroadcastObserver: RokidSystemBroadcastObserver? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var runtimeBound = false
+    private var runtimeBinding = false
+    private var recoveryRequestInFlight = false
+
+    private val runtimeConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            runtimeBinding = false
+            val runtime = service as? RokidRuntimeService.RuntimeBinder
+            runtimeBound = runtime != null
+            if (runtime == null || !runtime.isIdleControlArmed()) requestRecoveryIfArmed()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) = handleRuntimeLoss("disconnected")
+
+        override fun onBindingDied(name: ComponentName?) = handleRuntimeLoss("binding_died")
+
+        override fun onNullBinding(name: ComponentName?) = handleRuntimeLoss("null_binding")
+    }
 
     override fun onServiceConnected() {
         serviceInfo = serviceInfo.apply {
@@ -39,7 +65,7 @@ class RokidInputAccessibilityService : AccessibilityService() {
         }
         systemBroadcastObserver?.close()
         systemBroadcastObserver = RokidSystemBroadcastObserver(this)
-        requestSameBootRecoveryIfArmed()
+        bindRuntimeObserver()
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
@@ -103,26 +129,38 @@ class RokidInputAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
+        if (runtimeBound || runtimeBinding) runCatching { unbindService(runtimeConnection) }
+        runtimeBound = false
+        runtimeBinding = false
         systemBroadcastObserver?.close()
         systemBroadcastObserver = null
         sequence.reset()
         super.onDestroy()
     }
 
-    private fun requestSameBootRecoveryIfArmed() {
+    private fun requestRecoveryIfArmed() {
+        if (recoveryRequestInFlight) return
         val store = IdleControlModeStore(this)
         val currentBootCount = runCatching {
             Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT)
         }.getOrNull()
-        if (!IdleControlPolicy.mayResumeSameBoot(
-                enabled = store.isEnabled(),
-                armedBootCount = store.armedBootCount(),
-                currentBootCount = currentBootCount,
-            )
-        ) {
-            Log.i(TAG, "state=same_boot_recovery result=not_authorized")
-            return
+        val authorization = IdleControlPolicy.recoveryAuthorization(
+            enabled = store.isEnabled(),
+            armedBootCount = store.armedBootCount(),
+            currentBootCount = currentBootCount,
+        )
+        val action = when (authorization) {
+            IdleControlRecoveryAuthorization.SAME_BOOT ->
+                RokidRuntimeService.ACTION_RECOVER_SAME_BOOT
+            IdleControlRecoveryAuthorization.PERSISTED_NEW_BOOT ->
+                RokidRuntimeService.ACTION_RECOVER_PERSISTED_BOOT
+            IdleControlRecoveryAuthorization.NOT_AUTHORIZED -> {
+                Log.i(TAG, "state=system_bound_recovery result=not_authorized")
+                return
+            }
         }
+        recoveryRequestInFlight = true
         runCatching {
             // YodaOS rejects Service.startForeground() when a killed process is recreated only in
             // the background, even though this system-bound accessibility service is restarted.
@@ -131,7 +169,7 @@ class RokidInputAccessibilityService : AccessibilityService() {
             // independently rechecks the same-boot capability before opening the network.
             startActivity(
                 Intent(this, RokidCommandActivity::class.java)
-                    .setAction(RokidRuntimeService.ACTION_RECOVER_SAME_BOOT)
+                    .setAction(action)
                     .addFlags(
                         Intent.FLAG_ACTIVITY_NEW_TASK or
                             Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -139,9 +177,49 @@ class RokidInputAccessibilityService : AccessibilityService() {
                     ),
             )
         }.onSuccess {
-            Log.i(TAG, "state=same_boot_recovery result=visible_broker_requested")
+            Log.i(
+                TAG,
+                "state=system_bound_recovery authorization=${authorization.name.lowercase()} " +
+                    "result=visible_broker_requested",
+            )
         }.onFailure {
-            Log.w(TAG, "state=same_boot_recovery result=rejected")
+            recoveryRequestInFlight = false
+            Log.w(
+                TAG,
+                "state=system_bound_recovery authorization=${authorization.name.lowercase()} " +
+                    "result=rejected",
+            )
+        }
+        mainHandler.postDelayed(
+            { recoveryRequestInFlight = false },
+            RECOVERY_REQUEST_DEDUPLICATION_MILLIS,
+        )
+    }
+
+    private fun handleRuntimeLoss(reason: String) {
+        runtimeBound = false
+        runtimeBinding = false
+        Log.w(TAG, "state=runtime_observer main_loss=$reason recovery=scheduled")
+        mainHandler.removeCallbacks(runtimeRebind)
+        mainHandler.postDelayed(runtimeRebind, RUNTIME_REBIND_DELAY_MILLIS)
+    }
+
+    private val runtimeRebind = Runnable { bindRuntimeObserver() }
+
+    private fun bindRuntimeObserver() {
+        if (runtimeBound || runtimeBinding) return
+        runtimeBinding = true
+        val accepted = runCatching {
+            bindService(
+                Intent(this, RokidRuntimeService::class.java),
+                runtimeConnection,
+                Context.BIND_AUTO_CREATE,
+            )
+        }.getOrDefault(false)
+        if (!accepted) {
+            runtimeBinding = false
+            mainHandler.removeCallbacks(runtimeRebind)
+            mainHandler.postDelayed(runtimeRebind, RUNTIME_REBIND_DELAY_MILLIS)
         }
     }
 
@@ -224,6 +302,8 @@ class RokidInputAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ConceptFlowRokidInput"
+        private const val RUNTIME_REBIND_DELAY_MILLIS = 1_000L
+        private const val RECOVERY_REQUEST_DEDUPLICATION_MILLIS = 10_000L
         private val candidateEvents = AtomicLong(0L)
     }
 }

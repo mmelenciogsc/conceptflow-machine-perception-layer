@@ -9,6 +9,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import org.conceptflow.mpl.rokid.core.AudioCueOutput
 import org.conceptflow.mpl.rokid.core.HapticCueOutput
+import org.conceptflow.mpl.rokid.core.OperationalEarconGenerator
 import org.conceptflow.mpl.rokid.core.StereoBalance
 import org.conceptflow.mpl.v1.Haptic
 import org.conceptflow.mpl.v1.HapticPattern
@@ -21,17 +22,9 @@ class PlatformStereoAudioOutput : AudioCueOutput, AutoCloseable {
 
     @Synchronized
     override fun play(earconId: String, gain: Float, pitch: Float, balance: StereoBalance): Boolean {
-        val sampleRate = 24_000
-        val frameCount = 2_880
-        val frequency = (620.0 * pitch.coerceIn(0.5f, 2f)).coerceIn(310.0, 1_100.0)
-        val pcm = ShortArray(frameCount * 2)
-        for (frame in 0 until frameCount) {
-            val envelope = minOf(frame / 240f, (frameCount - frame) / 360f, 1f).coerceAtLeast(0f)
-            val wave = sin(2.0 * PI * frequency * frame / sampleRate)
-            val amplitude = (wave * Short.MAX_VALUE * gain.coerceIn(0f, 0.75f) * envelope)
-            pcm[frame * 2] = (amplitude * balance.left).toInt().toShort()
-            pcm[frame * 2 + 1] = (amplitude * balance.right).toInt().toShort()
-        }
+        val operational = OperationalEarconGenerator.generateOrNull(earconId, gain)
+        val sampleRate = operational?.sampleRateHz ?: 24_000
+        val pcm = operational?.stereoPcm16 ?: ordinaryEarcon(gain, pitch, balance, sampleRate)
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -71,6 +64,26 @@ class PlatformStereoAudioOutput : AudioCueOutput, AutoCloseable {
             activeTracks.removeFirst().release()
         }
         return true
+    }
+
+    private fun ordinaryEarcon(
+        gain: Float,
+        pitch: Float,
+        balance: StereoBalance,
+        sampleRate: Int,
+    ): ShortArray {
+        val frameCount = 2_880
+        val frequency = (620.0 * pitch.coerceIn(0.5f, 2f)).coerceIn(310.0, 1_100.0)
+        return ShortArray(frameCount * 2).also { pcm ->
+            for (frame in 0 until frameCount) {
+                val envelope = minOf(frame / 240f, (frameCount - frame) / 360f, 1f)
+                    .coerceAtLeast(0f)
+                val wave = sin(2.0 * PI * frequency * frame / sampleRate)
+                val amplitude = wave * Short.MAX_VALUE * gain.coerceIn(0f, 0.75f) * envelope
+                pcm[frame * 2] = (amplitude * balance.left).toInt().toShort()
+                pcm[frame * 2 + 1] = (amplitude * balance.right).toInt().toShort()
+            }
+        }
     }
 
     @Synchronized

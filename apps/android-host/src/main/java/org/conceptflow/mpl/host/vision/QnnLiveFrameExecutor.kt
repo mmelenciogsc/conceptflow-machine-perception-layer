@@ -121,6 +121,29 @@ class QnnLiveFrameExecutor(
         )
     }
 
+    @Synchronized
+    fun process(
+        frame: RawI420Frame,
+        visionFrame: VisionFrame,
+        sourceSessionGeneration: Long = 0L,
+        selectDepthProfile: (List<SceneSemanticDetection>) -> MachineVisionModelProfile?,
+    ): QnnLiveFrameResult? {
+        check(!closed) { "live QNN frame executor is closed" }
+        require(frame.matches(visionFrame)) { "I420 and vision frame metadata do not correlate" }
+        val frameStarted = clockNanos()
+        val image = I420RgbConverter.convert(frame)
+        val decodeCompleted = clockNanos()
+        return processDecoded(
+            frame.frameId,
+            visionFrame,
+            image,
+            sourceSessionGeneration,
+            frameStarted,
+            decodeCompleted,
+            selectDepthProfile,
+        )
+    }
+
     private fun processDecoded(
         frameId: Long,
         visionFrame: VisionFrame,
@@ -150,7 +173,9 @@ class QnnLiveFrameExecutor(
         val segmentationPostprocessingCompleted = clockNanos()
 
         val selectedDepthProfile = selectDepthProfile(
-            trackedDetections.map { SceneSemanticDetection(it.detection.classId, it.detection.confidence) },
+            trackedDetections.filter {
+                it.detection.confidence >= YoloSemanticConfidencePolicy.IMMEDIATE_PUBLICATION_CONFIDENCE
+            }.map { SceneSemanticDetection(it.detection.classId, it.detection.confidence) },
         ) ?: return null
         require(selectedDepthProfile == MachineVisionModelProfiles.depthIndoorBalanced ||
             selectedDepthProfile == MachineVisionModelProfiles.depthOutdoorBalanced

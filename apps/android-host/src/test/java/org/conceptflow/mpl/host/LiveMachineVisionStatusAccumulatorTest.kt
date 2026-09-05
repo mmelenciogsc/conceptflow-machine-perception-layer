@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host
 
+import org.conceptflow.mpl.host.speech.PrivateSpeechResultSummary
 import org.conceptflow.mpl.host.vision.LiveMetricCalibrationState
 import org.conceptflow.mpl.host.vision.LiveMetricFusionReason
 import org.conceptflow.mpl.host.vision.LiveMetricFusionResult
@@ -13,13 +14,47 @@ import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkFailureLane
 import org.conceptflow.mpl.transport.RokidNodeCommandDelivery
 import org.conceptflow.mpl.v1.RokidNodeCommandOperation
+import org.conceptflow.mpl.v1.BatteryChargeState
 import org.conceptflow.mpl.v1.LiveLinkTelemetry
+import org.conceptflow.mpl.v1.ImageEncoding
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveMachineVisionStatusAccumulatorTest {
+    @Test
+    fun `AVC fallback is counted separately from decoder failures`() {
+        val status = LiveMachineVisionStatusAccumulator("depth-indoor-392")
+        status.sessionReady(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+        status.avcDecodeFailed(fallbackInitiated = true)
+        status.avcDecodeFailed(fallbackInitiated = false)
+
+        val snapshot = status.snapshot()
+        assertEquals(2L, snapshot.avcDecodeFailures)
+        assertEquals(1L, snapshot.avcTransportFallbacks)
+        assertTrue(snapshot.accessibleSummary().contains("failures 2; fallbacks 1"))
+        assertTrue(snapshot.accessibleSummary().contains("Current camera transport: AVC intra"))
+    }
+
+    @Test
+    fun `private speech status exposes outcome metadata but never transcript content`() {
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+        status.privateSpeechResult(
+            PrivateSpeechResultSummary(
+                pending = true,
+                speechDetected = true,
+                transcriptCharacterCount = 19,
+                transcriptionTimedOut = false,
+            ),
+        )
+
+        val summary = status.snapshot().accessibleSummary()
+        assertTrue(summary.contains("Private speech result pending: true"))
+        assertTrue(summary.contains("transcript characters: 19"))
+        assertFalse(summary.contains("where is the chair"))
+    }
+
     @Test
     fun `peer pressure telemetry is exposed without sensor content`() {
         val status = LiveMachineVisionStatusAccumulator("automatic-pending")
@@ -44,20 +79,60 @@ class LiveMachineVisionStatusAccumulatorTest {
                 .setCameraFramesDroppedBlurry(1)
                 .setCameraFramesDroppedCadence(1)
                 .setCurrentCameraTargetFps(5)
+                .setBatteryLevelPercent(88)
+                .setBatteryChargeState(BatteryChargeState.BATTERY_CHARGE_STATE_DISCHARGING)
+                .setBatteryVoltageMicrovolts(4_100_000L)
+                .setBatteryCurrentMicroamps(-420_000L)
+                .setBatteryChargeCounterMicroampHours(600_000L)
+                .setBatteryTemperatureDeciCelsius(330)
+                .setExternalPowerConnected(false)
+                .build(),
+        )
+        status.peerTelemetry(
+            LiveLinkTelemetry.newBuilder()
+                .setSampledMonotonicTimestampNs(2L)
+                .setPendingCameraFrames(1)
+                .setPendingImuBatches(2)
+                .setPendingAudioBlocks(3)
+                .setPendingTouchEvents(4)
+                .setDroppedCameraFrames(5)
+                .setDroppedImuBatches(6)
+                .setDroppedAudioBlocks(7)
+                .setTouchOverflowEvents(8)
+                .setSentRealtimeMessages(9)
+                .setSentCameraMessages(10)
+                .setCameraFramesAnalyzed(14)
+                .setCameraFramesEmitted(11)
+                .setCameraRelaxedTierSamples(8)
+                .setCameraMotionTierSamples(6)
+                .setCameraFramesDroppedDark(1)
+                .setCameraFramesDroppedBlurry(1)
+                .setCameraFramesDroppedCadence(1)
+                .setCurrentCameraTargetFps(5)
+                .setBatteryLevelPercent(86)
+                .setBatteryChargeCounterMicroampHours(580_000L)
+                .setBatteryTemperatureDeciCelsius(345)
                 .build(),
         )
 
         val snapshot = status.snapshot()
-        assertEquals(1L, snapshot.peerPressure?.samplesReceived)
+        assertEquals(2L, snapshot.peerPressure?.samplesReceived)
         assertEquals(8L, snapshot.peerPressure?.touchOverflowEvents)
         assertEquals(9L, snapshot.peerPressure?.sentRealtimeMessages)
         assertEquals(10L, snapshot.peerPressure?.sentCameraMessages)
         assertEquals(8L, snapshot.peerPressure?.cameraRelaxedTierSamples)
         assertEquals(6L, snapshot.peerPressure?.cameraMotionTierSamples)
         assertEquals(5, snapshot.peerPressure?.currentCameraTargetFramesPerSecond)
-        assertTrue(snapshot.accessibleSummary().contains("Rokid queue telemetry: samples 1"))
+        assertTrue(snapshot.accessibleSummary().contains("Rokid queue telemetry: samples 2"))
         assertTrue(snapshot.accessibleSummary().contains("sent realtime messages 9, camera messages 10"))
         assertTrue(snapshot.accessibleSummary().contains("relaxed tier 8, motion tier 6"))
+        assertEquals(2L, snapshot.peerPower?.samplesReceived)
+        assertEquals(88, snapshot.peerPower?.initialLevelPercent)
+        assertEquals(86, snapshot.peerPower?.latestLevelPercent)
+        assertEquals(86, snapshot.peerPower?.minimumLevelPercent)
+        assertEquals(-20_000L, snapshot.peerPower?.chargeCounterDeltaMicroampHours)
+        assertEquals(345, snapshot.peerPower?.maximumTemperatureDeciCelsius)
+        assertTrue(snapshot.accessibleSummary().contains("Rokid power telemetry: samples 2"))
         assertFalse(snapshot.accessibleSummary().contains("timestamp"))
     }
 

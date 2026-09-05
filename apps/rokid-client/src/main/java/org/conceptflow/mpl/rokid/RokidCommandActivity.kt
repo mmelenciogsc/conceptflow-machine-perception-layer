@@ -40,8 +40,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
         }
         val visibleService = VisibleServiceActivation.fromCommand(pendingCommand)
         if (visibleService != null) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
+            prepareVisibleCameraEligibilityWindow()
             beginVisibleServiceActivation(visibleService)
             return
         }
@@ -72,8 +71,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
         pendingCommand = command
         val visibleService = VisibleServiceActivation.fromCommand(command)
         if (visibleService != null) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
+            prepareVisibleCameraEligibilityWindow()
             beginVisibleServiceActivation(visibleService)
         } else if (command.requiresVisibleWake) {
             setShowWhenLocked(true)
@@ -85,6 +83,21 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
             cancelVisibleServiceActivation()
             runtime?.let { dispatch(it, command) } ?: bindRuntimeService()
         }
+    }
+
+    /**
+     * Keeps YodaOS's logical display awake while the nonvisual broker remains armed.
+     *
+     * This target revokes Camera2 access when the broker's UID becomes idle, even when the
+     * associated service was originally promoted from a visible activity. The window is
+     * transparent and input-pass-through after activation, so this flag preserves camera
+     * eligibility without introducing a visual or touch surface. Android releases the flag when
+     * the Activity is destroyed after idle control is disabled.
+     */
+    private fun prepareVisibleCameraEligibilityWindow() {
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -211,6 +224,7 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
                 val armed = when (activeVisibleService) {
                     VisibleServiceActivation.IDLE_CONTROL,
                     VisibleServiceActivation.SAME_BOOT_RECOVERY,
+                    VisibleServiceActivation.PERSISTED_BOOT_RECOVERY,
                     -> runtime?.isIdleControlArmed() == true
                     null -> false
                 }
@@ -253,6 +267,10 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
             VisibleServiceActivation.SAME_BOOT_RECOVERY -> Log.i(
                 TAG,
                 "state=same_boot_recovery_broker result=activation_completed",
+            )
+            VisibleServiceActivation.PERSISTED_BOOT_RECOVERY -> Log.i(
+                TAG,
+                "state=persisted_boot_recovery_broker result=activation_completed",
             )
         }
         keepCameraEligibilityVisible()
@@ -318,6 +336,8 @@ class RokidCommandActivity : Activity(), android.content.ServiceConnection {
         get() = when (this) {
             VisibleServiceActivation.IDLE_CONTROL -> "idle_control_activity_unavailable"
             VisibleServiceActivation.SAME_BOOT_RECOVERY -> "same_boot_recovery_activity_unavailable"
+            VisibleServiceActivation.PERSISTED_BOOT_RECOVERY ->
+                "persisted_boot_recovery_activity_unavailable"
         }
 
     private fun authorizedCommand(action: String?): RuntimeCommand? {

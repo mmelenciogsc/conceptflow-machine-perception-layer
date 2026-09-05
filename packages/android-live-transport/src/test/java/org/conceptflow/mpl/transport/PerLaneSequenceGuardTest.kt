@@ -133,6 +133,26 @@ class PerLaneSequenceGuardTest {
         assertEquals(1L, guard.nextExpected(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL))
     }
 
+    @Test
+    fun `impossible power telemetry fails before sequence advances`() {
+        val guard = PerLaneSequenceGuard(binding)
+        val valid = LiveControlMessages.telemetry(
+            sampledMonotonicNs = 10L,
+            queues = LiveOutboundQueueSnapshot(0, 0, 0, 0, 0, 0, 0, 0),
+            transport = SanitizedTransportMetrics().snapshot(),
+        )
+        val malformed = valid.toBuilder().setTelemetry(
+            valid.telemetry.toBuilder().setBatteryLevelPercent(101),
+        ).build()
+
+        val error = assertThrows(LaneProtocolException::class.java) {
+            guard.accept(control(sequence = 1, malformed))
+        }
+
+        assertEquals(LaneProtocolFailure.MALFORMED_CONTROL, error.failure)
+        assertEquals(1L, guard.nextExpected(LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL))
+    }
+
     private fun realtime(sequence: Long, batchId: Long): LiveLinkEnvelope {
         val sensor = SensorStreamEnvelope.newBuilder()
             .setSessionId(binding.sessionId)

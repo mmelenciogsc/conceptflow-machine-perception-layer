@@ -51,6 +51,10 @@ class RuntimeCommandTest {
             RuntimeCommand.RECOVER_SAME_BOOT,
             RuntimeCommand.fromAction("org.conceptflow.mpl.rokid.internal.RECOVER_SAME_BOOT"),
         )
+        assertEquals(
+            RuntimeCommand.RECOVER_PERSISTED_BOOT,
+            RuntimeCommand.fromAction("org.conceptflow.mpl.rokid.internal.RECOVER_PERSISTED_BOOT"),
+        )
     }
 
     @Test
@@ -64,6 +68,7 @@ class RuntimeCommandTest {
             RuntimeCommand.ENABLE_IDLE_CONTROL,
             RuntimeCommand.DISABLE_IDLE_CONTROL,
             RuntimeCommand.START_PHYSICAL_TRACE,
+            RuntimeCommand.BENCHMARK_VIDEO_CODECS,
             RuntimeCommand.PLAY_FULL_BRAND_TEST,
             RuntimeCommand.ENABLE_VALIDATED_GESTURE_COMMANDS,
             RuntimeCommand.DISABLE_GESTURE_COMMANDS,
@@ -73,5 +78,11 @@ class RuntimeCommandTest {
             assertTrue(!RuntimeCommandAuthorization.isAllowed(command, debuggable = false))
         }
         assertTrue(RuntimeCommandAuthorization.isAllowed(RuntimeCommand.PLAY_LEFT_CUE, debuggable = false))
+        assertTrue(
+            RuntimeCommandAuthorization.isAllowed(
+                RuntimeCommand.RECOVER_PERSISTED_BOOT,
+                debuggable = false,
+            ),
+        )
     }
 }

@@ -43,6 +43,14 @@
             android:name="org.conceptflow.mpl.host.AndroidNodeForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- A small process watches the foreground sensor owner through Binder. HyperOS did not
+             honor START_STICKY after a measured LOW_MEMORY termination, so this process restores
+             only an explicitly enabled node and never owns sensors or inference models. -->
+        <service
+            android:name="org.conceptflow.mpl.host.AndroidNodeGuardianService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice"
+            android:process=":guardian" />
         <!-- Keep GenieX's QNN/GGML libraries out of the real-time YOLO/depth process. This
              prevents two independently versioned Qualcomm runtime stacks sharing one linker
              namespace while retaining the same private application UID and storage boundary. -->

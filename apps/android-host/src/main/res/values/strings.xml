@@ -84,6 +84,8 @@
     <string name="android_node_notification_channel">Android Node connection</string>
     <string name="android_node_notification_description">Persistent private connection between Android Node and Rokid Node.</string>
     <string name="android_node_notification_stop">Stop Android Node</string>
+    <string name="android_node_guardian_notification_title">Machine Perception Layer reliability monitor</string>
+    <string name="android_node_guardian_notification_text">Monitoring the Android Node sensor service.</string>
     <string name="environment_automatic">Automatic environment mode (A)</string>
     <string name="environment_indoor">Manual indoor profile (I)</string>
     <string name="environment_outdoor">Manual outdoor profile (O)</string>

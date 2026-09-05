@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+set -euo pipefail
+
+readonly WHISPER_CPP_REPOSITORY="https://github.com/ggml-org/whisper.cpp.git"
+readonly WHISPER_CPP_COMMIT="eacbd8234c6654cdbf2c377f72b2106875479bdc"
+readonly WHISPER_CPP_ABORT_PATCH="third_party/patches/whisper-cpp-eacbd823-bounded-abort.patch"
+
+usage() {
+    printf '%s\n' \
+        "Usage: $0 [--source DIR] [--android-sdk DIR] [--qnn-sdk DIR]" \
+        "Builds the arm64 Android Node with the pinned external whisper.cpp source tree." \
+        "When --qnn-sdk is present, the same APK also includes the existing QNN JNI adapter." \
+        "No model, VAD artifact, or third-party source is copied into the repository."
+}
+
+source_root=""
+android_sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+qnn_sdk=""
+while (($#)); do
+    case "$1" in
+        --source) source_root="${2:-}"; shift 2 ;;
+        --android-sdk) android_sdk="${2:-}"; shift 2 ;;
+        --qnn-sdk) qnn_sdk="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+[[ -n "$android_sdk" ]] || { usage >&2; exit 2; }
+android_sdk="$(realpath -e -- "$android_sdk")"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+if [[ -z "$source_root" ]]; then
+    cache_root="${XDG_CACHE_HOME:-/tmp}/conceptflow-third-party"
+    source_root="$cache_root/whisper.cpp-$WHISPER_CPP_COMMIT"
+    mkdir -p -- "$cache_root"
+    if [[ ! -d "$source_root/.git" ]]; then
+        git clone --filter=blob:none --no-checkout "$WHISPER_CPP_REPOSITORY" "$source_root"
+        git -C "$source_root" checkout --detach "$WHISPER_CPP_COMMIT"
+    fi
+fi
+source_root="$(realpath -e -- "$source_root")"
+[[ -f "$source_root/include/whisper.h" && -f "$source_root/LICENSE" ]] || {
+    printf 'Invalid whisper.cpp source tree.\n' >&2
+    exit 1
+}
+actual_commit="$(git -C "$source_root" rev-parse HEAD 2>/dev/null || true)"
+[[ "$actual_commit" == "$WHISPER_CPP_COMMIT" ]] || {
+    printf 'whisper.cpp source is not at the pinned commit.\n' >&2
+    exit 1
+}
+
+patch_path="$repo_root/$WHISPER_CPP_ABORT_PATCH"
+[[ -f "$patch_path" ]] || { printf 'Missing bounded-abort patch.\n' >&2; exit 1; }
+patch_digest="$(sha256sum "$patch_path" | awk '{print $1}')"
+patched_root="${XDG_CACHE_HOME:-/tmp}/conceptflow-third-party/whisper.cpp-${WHISPER_CPP_COMMIT}-patched-${patch_digest:0:12}"
+if [[ ! -d "$patched_root/.git" ]]; then
+    [[ ! -e "$patched_root" ]] || {
+        printf 'Refusing invalid pre-existing patched source path.\n' >&2
+        exit 1
+    }
+    mkdir -p -- "$patched_root"
+    cp -a -- "$source_root/." "$patched_root/"
+    git -C "$patched_root" apply --check "$patch_path"
+    git -C "$patched_root" apply "$patch_path"
+fi
+[[ "$(git -C "$patched_root" rev-parse HEAD)" == "$WHISPER_CPP_COMMIT" ]] || {
+    printf 'Patched whisper.cpp source has the wrong base commit.\n' >&2
+    exit 1
+}
+git -C "$patched_root" diff --check
+git -C "$patched_root" apply --reverse --check "$patch_path" || {
+    printf 'Patched whisper.cpp source does not contain the required bounded-abort change.\n' >&2
+    exit 1
+}
+source_root="$patched_root"
+
+gradle_arguments=(
+    "-PwhisperCppRoot=$source_root"
+    "-PrequireWhisper=true"
+)
+if [[ -n "$qnn_sdk" ]]; then
+    qnn_sdk="$(realpath -e -- "$qnn_sdk")"
+    [[ -f "$qnn_sdk/include/QNN/QnnInterface.h" ]] || {
+        printf 'Invalid QNN SDK root.\n' >&2
+        exit 1
+    }
+    gradle_arguments+=("-PqnnSdkRoot=$qnn_sdk" "-PrequireQnn=true")
+fi
+
+cd "$repo_root"
+ANDROID_HOME="$android_sdk" ANDROID_SDK_ROOT="$android_sdk" \
+    ./gradlew "${gradle_arguments[@]}" \
+    :apps:android-host:clean :apps:android-host:assembleDebug
+
+apk="apps/android-host/build/outputs/apk/debug/android-host-debug.apk"
+native_entry="lib/arm64-v8a/libconceptflow_whisper_jni.so"
+unzip -Z1 "$apk" | grep -Fx "$native_entry" >/dev/null || {
+    printf 'Whisper-enabled APK is missing %s.\n' "$native_entry" >&2
+    exit 1
+}
+if [[ -n "$qnn_sdk" ]]; then
+    unzip -Z1 "$apk" | grep -Fx 'lib/arm64-v8a/libconceptflow_qnn_jni.so' >/dev/null || {
+        printf 'Combined APK is missing libconceptflow_qnn_jni.so.\n' >&2
+        exit 1
+    }
+fi
+output_directory="apps/android-host/build/whisper"
+if [[ -n "$qnn_sdk" ]]; then
+    output_apk="$output_directory/android-host-qnn-whisper-debug.apk"
+else
+    output_apk="$output_directory/android-host-whisper-debug.apk"
+fi
+mkdir -p -- "$output_directory"
+install -m 0644 -- "$apk" "$output_apk"
+printf 'Built pinned arm64 whisper.cpp runtime: %s\n' "$output_apk"

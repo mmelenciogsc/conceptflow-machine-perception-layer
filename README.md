@@ -85,6 +85,12 @@ In transport v1 this is an authenticated sublease of the already active
 camera/IMU session: the two-lane handshake still requires its camera lane, and
 microphone capture cannot yet be requested as a standalone session or without
 initializing the Android Node's live Machine Vision runtime.
+Each accepted microphone block is immediately drained into a fixed-capacity,
+RAM-only ten-second window. On the Poco, an optional prewarmed CPU-local
+quantized Whisper `small.en` runtime uses Silero VAD before transcription;
+automatic scene-classification windows expose content-free ambient/VAD results,
+while transcript content is permitted only for explicit user-query windows.
+See [Android on-device speech](docs/ANDROID_ON_DEVICE_SPEECH.md).
 Rokid activation/sleep gestures and the Android Node's accessible brand-playback
 control use typed, replay-guarded, session-bound command round trips on that
 same TLS lane. They do not use ADB Wi-Fi. Bluetooth/BLE wake and discovery are
@@ -163,12 +169,22 @@ is not tracked. This is bearing reinforcement, not route guidance; see
 | --- | --- | --- |
 | Python | 223 tests; protocol regeneration; session-gated bounded image decode; synthetic gRPC reconnect, cancellation, timeout, correlation, stale rejection, worker error, fair bounded queue/backpressure, recovery, assistive-only cue, and headless Map/Morph/Move slices; three wheels/sdists built and isolated-imported | Real model worker and production serving |
 | Android | Named Rokid Node and Android Node APKs; fixed 330-class YOLOE instance segmentation; fully prewarmed, persistent-change-gated Qwen3-VL-2B indoor/outdoor classification serialized with QNN HTP work; selected 392 balanced Depth Anything V2 Metric indoor/outdoor execution; 660 two-range known-dimension records with conservative per-observation correction; bounded class/mask/depth tracking between keyframes; timestamped IMU ingestion; Camera2-sourced rotation-only camera→rigid-head propagation; opt-in app-process QNN JNI path; exact-pin mutual-TLS lanes over an explicitly selected strict-P2P or private-WLAN topology; aggregate-only live status; physical QAIRT 2.48.40 QNN HTP V79 execution on the Poco | Current-firmware strict Wi-Fi Direct peer visibility, empirical camera-intrinsic calibration, camera-to-head translation/anatomical alignment, representative task/depth/environment accuracy, reboot recovery, sustained thermal profiling, manual TalkBack/BVI acceptance |
-| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; exact native 648×648 YUV acquisition with the validated darkness/blur/motion gate and 640×640 RGB output; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; bounded camera-only recovery with session-continuous frame IDs; observed 4032×3024 equal pixel/active/pre-correction arrays, CENTER_ONLY crop, NONE-only rotate-and-crop, and OFF-only OIS; narrow-fingerprint `DERIVED` intrinsics with request/result consistency guards; nominal 100 Hz fused head-IMU acquisition with duplicate suppression, ≤20 ms batches, and ≤1 s absolute refresh; explicit short microphone lease; exact-pin private-WLAN discovery across infrastructure Wi-Fi or the Poco personal hotspot, including hotspot-interface announcements and gateway fallback; strict Wi-Fi Direct remains selectable; current exact-build 600-second hotspot run delivered 1,835 frames and 34,484 IMU samples with bounded queues; no vendor SDK | Strict-P2P discovery on the current firmware, competing-WLAN-free outdoor hotspot autojoin, sustained physical 5 FPS motion-tier validation, forced physical Camera2 recovery, empirical camera calibration, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, reboot recovery, and extended thermal/energy validation |
+| Rokid | Nonvisual standard-Android APK for AI Glasses Style (Non-Display); direct ADB install/control; exact native 648×648 YUV acquisition with the validated darkness/blur/motion gate and 640×640 packed-I420 output; bounded three-request 3 FPS relaxed/5 FPS meaningful-motion capture policy; bounded camera-only recovery with session-continuous frame IDs; observed 4032×3024 equal pixel/active/pre-correction arrays, CENTER_ONLY crop, NONE-only rotate-and-crop, and OFF-only OIS; narrow-fingerprint `DERIVED` intrinsics with request/result consistency guards; nominal 100 Hz fused head-IMU acquisition with duplicate suppression, ≤20 ms batches, and ≤1 s absolute refresh; explicit short microphone lease; exact-pin private-WLAN discovery across infrastructure Wi-Fi or the Poco personal hotspot, including hotspot-interface announcements and gateway fallback; strict Wi-Fi Direct remains selectable; current exact-build 600-second hotspot run delivered 1,835 frames and 34,484 IMU samples with bounded queues; no vendor SDK | Strict-P2P discovery on the current firmware, competing-WLAN-free outdoor hotspot autojoin, sustained physical 5 FPS motion-tier validation, forced physical Camera2 recovery, empirical camera calibration, Unity/FMOD listener interpolation, open-ear localization/listening tests, on-glasses haptics, reboot recovery, and extended thermal/energy validation |
 | Windows | .NET 8 Core, WPF, headless demo, and xUnit; restore/build including WPF cross-target, 156 tests including the shared wire vector, consent-gated demo on Ubuntu | Manual Windows execution, JAWS, NVDA, real capture and endpoint validation |
 | Native/CUDA | Strict Release build, native test executable’s 15 cases, demo, sanitizers, CUDA-aware configure/build on CUDA 12.0 | CUDA kernel, model loading/inference, GPU correctness/performance |
 | Spatial perception | Headless geometry → body-surface field → bounded manifold → four-bank weights → two-layer FMOD command → haptic slice; depth-associated semantic icon; similarity-gated scene request; Unity 6000.3.22f1 ran 27/27 EditMode and 3/3 PlayMode tests and built a launchable ARM64 IL2CPP Android player; FMOD Studio 2.03.14 validated and built the authored banks; scalar native-metric depth values were physically produced from Rokid frames | Same-signature Unity/Android Node Binder session, physical open-ear localization, Unity FMOD runtime listening, representative metric-depth accuracy, calibrated spatial/angular accuracy, target-user validation |
 
 See [`VALIDATION.md`](VALIDATION.md) for the evidence ledger and exact caveats.
+
+The live camera wire default remains independent packed I420. Hardware
+AVC-intra substantially reduced measured radio bytes and now has a proven
+one-way automatic I420 fallback, but a physical 1.5/3/6/9/12-Mbit/s sweep over
+three non-personal semantic fixtures found no profile that preserved every
+tested instance and tensor output. Six Mbit/s passed two fixtures; the Rokid
+encoder produced identical decoded pixels at 6, 9, and 12 Mbit/s and continued
+to lose one kitchen instance. AVC therefore remains experimental and I420
+remains the production default. See
+[Power-aware streaming](docs/POWER_AWARE_STREAMING.md).
 
 ## Prerequisites
 
@@ -549,6 +565,8 @@ creation only. Each product must remain independently operable. See
   Windows acceptance boundary.
 - [Android host](docs/ANDROID_HOST.md) — host policy, build, install, and real
   transport contract.
+- [Android on-device speech](docs/ANDROID_ON_DEVICE_SPEECH.md) — bounded Rokid
+  mic windows, Silero VAD, quantized Whisper, privacy, and provisioning.
 - [Android Machine Vision](docs/ANDROID_MACHINE_VISION.md) — fixed BVI
   vocabulary and instance semantics, three depth-resolution tiers, exact
   calibration/mask correlation, temporal anchor policy, and HTP boundary.

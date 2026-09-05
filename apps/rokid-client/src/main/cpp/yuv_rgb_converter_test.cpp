@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "yuv_rgb_converter.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -101,6 +102,47 @@ int main() {
             output.data(),
             output.size() - 1)) {
         std::cerr << "undersized RGB output was accepted\n";
+        return 1;
+    }
+
+    std::fill(y.begin(), y.end(), static_cast<std::uint8_t>(81));
+    std::fill(u.begin(), u.end(), static_cast<std::uint8_t>(90));
+    std::fill(v.begin(), v.end(), static_cast<std::uint8_t>(240));
+    constexpr std::size_t i420_luma_bytes = 640U * 640U;
+    constexpr std::size_t i420_chroma_bytes = 320U * 320U;
+    std::vector<std::uint8_t> i420(i420_luma_bytes + 2U * i420_chroma_bytes);
+    if (!conceptflow::yuv::ConvertYuv420ToI420(
+            {y.data(), y.size(), y_offset, y_row_stride, 1, width, height},
+            {u.data(), u.size(), u_offset, chroma_row_stride, chroma_pixel_stride, chroma_width, chroma_height},
+            {v.data(), v.size(), v_offset, chroma_row_stride, chroma_pixel_stride, chroma_width, chroma_height},
+            {width, height, 640, 640, 640, 0, 0},
+            i420.data(),
+            i420.size())) {
+        std::cerr << "native I420 conversion rejected a valid production-size frame\n";
+        return 1;
+    }
+    const bool luma_valid = std::all_of(
+        i420.begin(), i420.begin() + i420_luma_bytes, [](std::uint8_t value) { return value == 81; });
+    const bool u_valid = std::all_of(
+        i420.begin() + i420_luma_bytes,
+        i420.begin() + i420_luma_bytes + i420_chroma_bytes,
+        [](std::uint8_t value) { return value == 90; });
+    const bool v_valid = std::all_of(
+        i420.begin() + i420_luma_bytes + i420_chroma_bytes,
+        i420.end(),
+        [](std::uint8_t value) { return value == 240; });
+    if (!luma_valid || !u_valid || !v_valid) {
+        std::cerr << "native I420 plane order or sampling is invalid\n";
+        return 1;
+    }
+    if (conceptflow::yuv::ConvertYuv420ToI420(
+            {y.data(), y.size(), y_offset, y_row_stride, 1, width, height},
+            {u.data(), u.size(), u_offset, chroma_row_stride, chroma_pixel_stride, chroma_width, chroma_height},
+            {v.data(), v.size(), v_offset, chroma_row_stride, chroma_pixel_stride, chroma_width, chroma_height},
+            {width, height, 640, 640, 640, 0, 0},
+            i420.data(),
+            i420.size() - 1U)) {
+        std::cerr << "undersized I420 output was accepted\n";
         return 1;
     }
     return 0;

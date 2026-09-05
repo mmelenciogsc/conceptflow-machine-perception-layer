@@ -40,6 +40,44 @@ class QnnLiveFrameExecutorTest {
     }
 
     @Test
+    fun `packed I420 frame converts on the host and preserves correlation`() {
+        var decoderCalls = 0
+        var observed: RgbImage? = null
+        val executor = QnnLiveFrameExecutor(
+            QnnModelSessionFactory { profile -> FakeSession(profile, mutableListOf()) },
+            JpegFrameDecoder {
+                decoderCalls += 1
+                error("I420 frame must not enter JPEG decoder")
+            },
+            System::nanoTime,
+            { _, _, image -> observed = image },
+        )
+        val i420 = RawI420Frame(
+            frameId = 1L,
+            captureMonotonicTimestampNanos = 10L,
+            width = 2,
+            height = 2,
+            rowStrideBytes = 2,
+            i420 = byteArrayOf(82, 82, 82, 82, 90, 240.toByte()),
+        )
+        val vision = VisionFrame(1L, 10L, 2, 2, synthetic = false)
+
+        val result = requireNotNull(executor.process(i420, vision) {
+            MachineVisionModelProfiles.depthIndoorBalanced
+        })
+
+        assertEquals(0, decoderCalls)
+        assertEquals(1L, result.frameId)
+        val rgb = requireNotNull(observed).pixels
+        rgb.indices.step(3).forEach { offset ->
+            assertEquals(255, rgb[offset].toInt() and 0xff)
+            assertEquals(1, rgb[offset + 1].toInt() and 0xff)
+            assertEquals(0, rgb[offset + 2].toInt() and 0xff)
+        }
+        executor.close()
+    }
+
+    @Test
     fun `decoded JPEG source is observed as RGB without a second encoding step`() {
         var observerCalls = 0
         val decoded = RgbImage(1, 1, byteArrayOf(4, 5, 6))

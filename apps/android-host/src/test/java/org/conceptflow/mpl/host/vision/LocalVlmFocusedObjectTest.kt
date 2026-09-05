@@ -17,6 +17,31 @@ import org.junit.Test
 
 class LocalVlmFocusedObjectTest {
     @Test
+    fun focusedPrewarmIntentSurvivesContentionButExpiresWithinItsBound() {
+        val intent = FocusedVlmPrewarmIntent(maximumWindowNanos = 8_000_000_000L)
+
+        val initial = intent.request(2_000_000_000L)
+        val retry = intent.request(2_250_000_000L)
+
+        assertEquals(LocalVlmHtpWorkKind.PREWARM, initial.kind)
+        assertEquals(2_000_000_000L, initial.startedMonotonicNanos)
+        assertEquals(initial, retry)
+        assertEquals(initial, intent.workState(9_999_999_999L))
+        assertNull(intent.workState(10_000_000_000L))
+    }
+
+    @Test
+    fun focusedPrewarmIntentCanBeClearedAfterSuccessOrPriorityCancellation() {
+        val intent = FocusedVlmPrewarmIntent()
+
+        intent.request(1L)
+        intent.clear()
+
+        assertNull(intent.workState(2L))
+        assertEquals(3L, intent.request(3L).startedMonotonicNanos)
+    }
+
+    @Test
     fun focusedDeadlineBoundsLeaseRetryAndGenerationToOneAbsoluteBudget() {
         val requestedNanos = 2_000_000_000L
         val deadlineNanos = FocusedVqaTiming.deadlineNanos(requestedNanos)
@@ -48,6 +73,54 @@ class LocalVlmFocusedObjectTest {
         assertEquals(1L, FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos - 1_000_000L))
         assertNull(FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos - 999_999L))
         assertNull(FocusedVqaTiming.remainingGenerationMillis(deadlineNanos, deadlineNanos))
+    }
+
+    @Test
+    fun nativeAbortDeadlineAddsOnlyBoundedCooperativeStopGrace() {
+        val deadline = 10_500_000_000L
+
+        assertEquals(
+            8_750_000_000L,
+            LocalVlmNativeAbortPolicy.deadlineDelayNanos(deadline, 2_000_000_000L),
+        )
+        assertEquals(
+            LocalVlmNativeAbortPolicy.COOPERATIVE_STOP_GRACE_NANOS,
+            LocalVlmNativeAbortPolicy.deadlineDelayNanos(deadline, deadline),
+        )
+        assertEquals(0L, LocalVlmNativeAbortPolicy.deadlineDelayNanos(deadline, Long.MAX_VALUE))
+        assertEquals(
+            Long.MAX_VALUE - 1L,
+            LocalVlmNativeAbortPolicy.deadlineDelayNanos(Long.MAX_VALUE, 1L),
+        )
+    }
+
+    @Test
+    fun localVlmPrefillUsesABoundedBatchInsteadOfOneTokenNativeCalls() {
+        assertEquals(32, LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS)
+        assertTrue(LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS in 2..64)
+        assertEquals(
+            0,
+            LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS and
+                (LocalVlmRuntimeTuning.PREFILL_BATCH_TOKENS - 1),
+        )
+        assertEquals(120_000_000_000L, LocalVlmRuntimeTuning.ENGINE_IDLE_RETENTION_NANOS)
+        assertEquals(105_000_000_000L, LocalVlmRuntimeTuning.CLIENT_READY_WINDOW_NANOS)
+        assertTrue(
+            LocalVlmRuntimeTuning.CLIENT_READY_WINDOW_NANOS <
+                LocalVlmRuntimeTuning.ENGINE_IDLE_RETENTION_NANOS,
+        )
+        assertEquals(107_000_000_000L, LocalVlmRuntimeTuning.readyUntilNanos(2_000_000_000L))
+        assertFalse(LocalVlmRuntimeTuning.shouldReleaseForTrimLevel(9))
+        assertTrue(LocalVlmRuntimeTuning.shouldReleaseForTrimLevel(10))
+        assertTrue(LocalVlmRuntimeTuning.shouldReleaseForTrimLevel(80))
+        assertEquals(
+            9_000_000_000L,
+            LocalVlmRuntimeTuning.restartBackoffUntilNanos(9_000_000_000L, 5_000_000_000L),
+        )
+        assertEquals(
+            40_000_000_000L,
+            LocalVlmRuntimeTuning.restartBackoffUntilNanos(40_000_000_000L, 5_000_000_000L),
+        )
     }
 
     @Test

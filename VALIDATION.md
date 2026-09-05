@@ -6,6 +6,569 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Representative semantic AVC profile sweep — 2026-09-05
+
+The attached Rokid and Poco physically exercised a debug-only, process-isolated
+profile sweep at 1.5, 3, 6, 9, and 12 Mbit/s. Three non-personal fixtures were
+converted transiently to the exact 640×640 packed-I420 camera contract: two
+locally generated indoor scenes and one content-free scene diagram containing
+a person proxy, desk, guide-dog shape, cane, window, and sign. Neither source
+images nor converted frames were added to the repository. Every run verified
+the reference digest on both devices and erased its temporary files.
+
+The gate used hardware `c2.qti.avc.encoder` on Rokid, hardware
+`c2.qti.avc.decoder` on Poco, and the real provisioned YOLOE-26S, indoor depth,
+and outdoor depth QNN graphs. YOLO's 300 post-NMS rows are an unordered set, so
+whole-tensor cosine is retained as diagnostic information but is not used to
+judge external semantic fixtures. The applicable gates are class-aware
+postprocessed instance precision/recall/box IoU, prototype-tensor fidelity,
+both depth-tensor fidelities, pixel PSNR, finite-output checks, and same-input
+QNN repeatability.
+
+| Fixture | Reference instances | 1.5 Mbit/s | 3 Mbit/s | 6 Mbit/s and above |
+| --- | ---: | --- | --- | --- |
+| Object-rich kitchen | 4 | Rejected: 3/4 matched plus prototype NRMSE 0.182822 | Rejected: 3/4 matched | Rejected: 3/4 matched |
+| Dim bedroom | 4 | Rejected: 3/4 matched plus prototype fidelity | Rejected: 4/4 matched but prototype NRMSE 0.178469 | Passed: 4/4 matched, mean IoU 0.965239, gated worst NRMSE 0.100577 |
+| Content-free person/desk diagram | 6 | Rejected: two extra instances and indoor-depth NRMSE 0.226064 | Rejected: two extra instances and indoor-depth NRMSE 0.155064 | Passed: 6/6 matched, mean IoU 0.998107, gated worst NRMSE 0.124492 |
+
+For all three fixtures, requested 6, 9, and 12 Mbit/s profiles reconstructed
+identical pixels and had identical access-unit sizes within each fixture. This
+is evidence that the target encoder reached its effective quality ceiling by
+6 Mbit/s; requesting a larger nominal rate did not recover the kitchen
+instance. No profile therefore qualified across the suite. I420 remains the
+production default, and no untethered energy/thermal promotion run was started
+because fidelity is the earlier mandatory gate.
+
+The first attempt at the content-free diagram also exposed an expensive
+postprocessing order: masks were expanded before applying the existing object
+limit. Candidate rows are now ranked first and mask expansion stops as soon as
+the bounded highest-score result set is complete. Each sweep profile also runs
+in a fresh idle Android process/QNN context, preventing a stalled diagnostic
+context from contaminating the next measurement.
+
+The exercised command was:
+
+```bash
+./scripts/avc-semantic-sweep \
+  --fixture /path/to/consented-or-public-safe-image \
+  --rokid-serial "$ROKID_SERIAL" \
+  --android-serial "$POCO_SERIAL"
+```
+
+The final implementation passed 778 focused JVM tests with no failures,
+errors, or skips (174 transport, 346 Android Node, and 258 Rokid Node), all
+three Android lint targets, release-manifest processing, repository policy,
+configuration and secret scans, Bash syntax, ShellCheck, and whitespace
+validation. Debug fidelity providers were absent from both merged release
+manifests. The installed combined QNN/Whisper Android Node APK matched the
+local artifact at SHA-256
+`ea178b0fa3ea4237feb06cdee3ef09998cceee83ba88cfaccbec8770a9bcb3c5`;
+the installed Rokid Node APK matched its local artifact at
+`0c4b5102f81445b2591bc30ddf12e5f92b72619ff73abc21b831c845d2025a68`.
+Both private configurations remained I420. Android Node was stopped, and Rokid
+capture plus persisted idle control were disabled. CameraService had no active
+client, and no probe fixture remained in either app-private or ADB staging
+storage.
+
+## AVC fidelity rejection and automatic I420 recovery — 2026-09-05
+
+The directly connected Rokid and Poco ran a content-free, identical-fixture
+hardware-codec/QNN gate twice. Rokid's Qualcomm hardware AVC encoder produced a
+stable 16,640-byte independent access unit. Poco's Qualcomm hardware decoder
+reconstructed the 640×640 I420 fixture at 43.076720 dB luma PSNR, 60.790482 dB
+chroma PSNR, and 0.733869 overall byte MAE. Repeated QNN reference execution
+was stable (worst cosine 1.0; normalized RMSE 0.0). Indoor and outdoor metric
+depth outputs remained close, but YOLOE did not: detection cosine/normalized
+RMSE was 0.866488/0.532932 and prototype cosine/normalized RMSE was
+0.983710/0.182759. The explicit gate therefore rejected the current 1.5-Mbit/s
+AVC-intra profile. I420 remains the production default; thresholds were not
+relaxed after observing the failure.
+
+The debug-only one-shot decoder fault was then armed during a real AVC sensor
+lease. Android Node observed exactly one decode failure, made exactly one
+process-lifetime demotion, synchronously interrupted only the failing active
+connection, and retained the persistent listener. Rokid Node automatically
+reconnected and accepted an I420 lease. On the exact final build, camera
+reconstruction advanced to 380 total frames while the AVC-decoded counter
+remained fixed at 65, proving that 315 subsequent frames used I420. IMU
+reception reached 5,566 samples and QNN execution reached 234 of 236 attempts.
+No second codec failure or camera, IMU, audio, or touch transport queue loss
+occurred. Both private configurations were restored to I420, Android Node was
+stopped, Rokid capture was disabled, and CameraService had no active client.
+This proves the failure/reconnect/fallback mechanism on the target pair; it
+does not qualify the rejected AVC quality profile for production.
+
+The exercised commands were:
+
+```bash
+ANDROID_HOME=/usr/lib/android-sdk ./gradlew \
+  :packages:android-live-transport:testDebugUnitTest \
+  :apps:android-host:testDebugUnitTest \
+  :apps:rokid-client:testDebugUnitTest
+./scripts/avc-fidelity-probe \
+  --rokid-serial "$ROKID_SERIAL" --android-serial "$POCO_SERIAL"
+./scripts/android-node-control --serial "$POCO_SERIAL" avc-decode-fault
+```
+
+## YodaOS camera eligibility and persisted reboot recovery — 2026-09-05
+
+An untethered run first remained healthy for more than four minutes, with
+camera, IMU, and phone-side HTP inference advancing. YodaOS later rejected a
+camera restart with `ERROR_CAMERA_DISABLED` and an explicit idle-UID access
+denial. The visible, transparent, input-pass-through activation broker now
+applies `FLAG_KEEP_SCREEN_ON` before every idle-control and recovery activation;
+the flag is released with the Activity when idle control is disabled. The
+focused Rokid JVM suite completed 251 tests with zero failures, and the debug
+APK assembled successfully. On-device window inspection confirmed the flag on
+the active transparent broker.
+
+That untethered run ultimately ended in a full glasses reboot rather than a
+transport-only timeout: post-reconnect uptime was six minutes, the boot reason
+was `reboot`, and the battery was at 22 percent while charging. The ordinary
+third-party `BOOT_COMPLETED` receiver was rejected by YodaOS background policy.
+The separately declared, user-enabled input AccessibilityService had been
+disabled, so the system-bound recovery path could not run.
+
+After explicitly enabling only the Rokid Node observer, its persisted-new-boot
+path restored the foreground runtime, enabled Wi-Fi through the bounded verified
+vendor-open/public-group-release sequence, and re-established the authenticated
+in-memory stream. A subsequent cable-powered reboot advanced the boot counter,
+preserved the observer setting, rebound the observer after user-storage unlock,
+restored Wi-Fi, started Rokid Node, and reached authenticated streaming without
+an ADB launch or manual app start. In a following 20-second host sample, camera
+frames advanced by 69, inference completions by 41, and IMU samples by 852.
+All four current Rokid queues were empty; camera, audio, and touch drop counters
+were zero, with one IMU gap retained across the reboot boundary. The phone-side
+depth and segmentation graphs continued to report HTP execution. This validates
+recovery on the attached firmware with the observer explicitly enabled; it does
+not establish endurance at low battery, and no physical touch event was emitted
+in this reboot test.
+
+A subsequent nominal ten-minute untethered run exposed a separate, release-
+blocking power defect. The run began at 68 percent reported battery. Camera,
+IMU, and the host remained active initially; the link recovered twice after
+glasses-side restarts, then remained unavailable. After cable reconnection the
+glasses had advanced from boot count 142 to 150, had approximately one minute
+of uptime, reported boot reason `reboot`, and showed 7 percent battery. Android
+Node and Unity stayed resident throughout. The enabled recovery observer then
+restored Wi-Fi, Rokid Node, and authenticated streaming again, proving recovery
+but also increasing load during repeated low-battery boots.
+
+The runtime was immediately disarmed. Battery temperature remained normal, and
+charging resumed at approximately 0.52–0.58 A, so this was not an observed
+thermal shutdown or app low-memory kill. Framework battery statistics reported
+an estimated 1000 mAh capacity and roughly 520–550 mAh actual drain since the
+charged baseline; that profile is device-reported telemetry, not an independently
+calibrated capacity measurement. Source inspection confirmed exact 648×648 YUV
+scheduled captures, but also a continuously repeating 640×480 Camera2 preview,
+the logical-display eligibility guard, a full-low-latency Wi-Fi lock, and
+uncompressed 640×640 RGB8 transport. Therefore, post-capture 3/5 FPS gating does
+not by itself duty-cycle the sensor/ISP and still carries approximately 29.5 or
+49.2 Mbit/s of raw pixel payload before protocol overhead. Untethered endurance
+is not accepted; further live runs require a measured camera/radio power redesign
+and a low-battery reconnect governor.
+
+That redesign is now implemented. It requests the target's lowest fixed Camera2
+AE range (`[15,15]`) for both active requests, replaces the full-low-latency
+radio lease with `WIFI_MODE_FULL_HIGH_PERF`, transfers each admitted camera
+sample as a self-contained 614,400-byte 640×640 I420 frame, and moves the RGB
+conversion to Android Node. The I420 payload is exactly half the prior RGB8
+payload: 14.7456 Mbit/s at 3 FPS or 24.576 Mbit/s at 5 FPS before framing and
+TLS. A five-second battery monitor refuses a new high-draw epoch below 50
+percent and disarms an active epoch at or below 25 percent or on unhealthy
+battery state; disarming clears persisted arming so reboot recovery cannot form
+a low-battery loop.
+
+On-device Camera2 inspection confirmed `[15,15]` for both requests. A 45-second
+connected sample delivered 143 camera frames (approximately 3.18 FPS) and 2,966
+selected IMU samples (approximately 65.9 samples/s) without a new camera drop or
+link interruption. With the combined private QNN/Whisper host APK, a later
+connected I420 sample reconstructed 275 frames, completed 17 correlated
+inference cycles, reported three current metric tracks, and retained zero camera,
+IMU, audio, and touch queue drops. In that sample capture-to-receive p95 was
+228.9 ms, host I420 decode p95 was 17.9 ms, segmentation p95 was 66.7 ms, depth
+p95 was 26.9 ms, and clock uncertainty p95 was 3.2 ms. These are single
+connected-run observations, not untethered or sustained-performance guarantees.
+
+A reversible development battery override at 24 percent caused the active
+runtime to log the power-guard disarm, release capture, and clear persisted idle
+arming within the monitoring interval. The battery override was reset
+immediately and the reported physical state returned to 100 percent. This
+validates the cutoff transition only; it does not simulate discharge physics.
+The mandatory next hardware gate remains a fully charged, cable-disconnected
+endurance run with reboot count, battery, temperature, delivery, queue, and
+latency telemetry sampled together.
+
+The exact final Rokid APK had SHA-256
+`4e33d0c443c00cc4b9063051ff4adf5ed3ccf729ebf091bfa327ee6027dbf755`
+and was replacement-installed. A privacy-safe first-frame diagnostic proved
+`output=i420` and `native_conversion=true`; Camera2 still showed `[15,15]` on
+both active requests. The final bounded connected sample reconstructed 305
+camera frames, accepted 6,168 of 6,179 received pose samples, completed 120 of
+140 inference attempts, and exposed eight current metric tracks. All four
+modality queue-drop counters and link interruptions remained zero. I420 decode
+p95 was 20.2 ms, capture-to-receive p95 was 249.8 ms, segmentation p95 was 84.1
+ms, and depth p95 was 32.7 ms. The production runtime and Android Node were
+stopped afterward; the low-power observe-only gesture service remained bound.
+The final local suites passed with zero failures, errors, or skips: 257 Rokid
+JVM tests, 162 live-transport JVM tests, and 332 Android Node JVM tests. Native
+CMake/CTest passed 1/1; protocol generation and validation passed; 12 Python
+protocol tests passed; Android lint passed for Rokid Node and live transport;
+repository policy, configuration, formatting, secret scan, and whitespace
+checks passed.
+
+The first charged untethered I420 endurance run completed without a glasses
+reboot, radio/session interruption, or modality queue loss. Its two host
+snapshots bracket 390 one-second peer-telemetry samples, so the measured
+untethered interval is approximately 6.5 minutes rather than the requested ten
+minutes. Over that interval reconstructed camera frames advanced by 1,384,
+received IMU samples by 30,139, accepted poses by 29,826, and completed
+inference cycles by 509. The protected camera gate emitted 1,383 additional
+frames: 179 relaxed-tier and 1,230 motion-tier observations, with 26 cadence
+rejections and no camera transport drop. The host deliberately replaced 25
+stale pending perception frames rather than building backlog. A second bounded
+ambient microphone window delivered 77 chunks with no timeline or transport
+overflow; it did not expose or retain audio content.
+
+The reported glasses battery moved from 100 to 88 percent and temperature from
+31.5 to 33.0 degrees Celsius. Boot count remained exactly 150 and link
+interruptions remained zero. After reconnect, Rokid Node PSS was 35,829 KiB;
+Android Node PSS was 845,650 KiB. The camera/radio workload and Android Node were
+then stopped; reported charge recovered to 89 percent and temperature to 32.5
+degrees Celsius. This validates a materially improved bounded untethered run,
+but not the full ten-minute acceptance gate or long-term battery life. The next
+physical gate is a fresh uninterrupted ten-minute run, followed by a longer
+thermal/battery soak only if that passes.
+
+The subsequent precisely timed run covered 624 seconds from its host baseline
+to final sample. Functionally it passed: camera reconstruction advanced by
+2,285 frames, IMU reception by 53,077 samples, and completed inference by 730
+of 1,085 new attempts. Link interruptions remained zero. The camera sender
+replaced two stale pending frames under its bounded latest-frame policy; IMU,
+audio, and touch loss remained zero. Boot count remained 150. Aggregate session
+p95 was 342.7 ms capture-to-receive, 19.0 ms host I420 decode, 152.3 ms
+segmentation, 74.2 ms depth, and 4.2 ms clock uncertainty. This proves sustained
+native-I420 transport and model execution, not accuracy or perceptual utility.
+
+The energy gate failed. Reported battery fell from 100 to 56 percent and reached
+34.5 degrees Celsius. This did not trigger the 25-percent governor and did not
+reboot, but it leaves insufficient evidence or margin for the planned 30-minute
+soak. Rokid Node PSS was 44,236 KiB and Android Node PSS was 870,395 KiB after
+reconnect; no unbounded Rokid-memory growth was observed. Both high-draw
+runtimes were stopped, CameraService confirmed no active client, and charging
+raised the reported battery to 61 percent. The next gate is a measured
+camera/radio duty and codec comparison; a 30-minute untethered run is prohibited
+until the selected mode materially improves energy consumption.
+
+### Adaptive radio and in-stream power telemetry — 2026-09-05
+
+Protocol 1.4 adds optional, content-free battery measurements to the existing
+one-second aggregate telemetry. The exact device reports battery percentage,
+Android charge state, health, microvolts, instantaneous current, temperature,
+and external-power state; unsupported gauge properties remain absent rather
+than becoming zero. The host validates conservative limits and retains only
+session aggregates and the latest sample. Production sensor payloads, camera
+gates, microphone consent, IMU selection, and touch semantics are unchanged.
+
+Rokid Node now holds the high-performance Wi-Fi lock only during rendezvous and
+reconnect. Once mutual TLS is authenticated, it retains the bounded CPU wake
+lease but releases the Wi-Fi lock to Android's platform-default radio policy.
+Physical logs showed matched high-performance lock acquisition/release counts
+before steady-state streaming.
+
+The charged cable-disconnected interval was bracketed by 358 one-second power
+samples, approximately 5 minutes 58 seconds. Camera reconstruction advanced by
+1,315 frames, received IMU samples by 27,710, and completed HTP inference by
+592 of 702 new attempts. Android deliberately replaced 52 stale pending
+perception frames. Host telemetry reported zero link interruption and zero
+camera, IMU, audio, or touch queue loss during the bracketed interval. Boot
+count remained 150. The platform battery gauge moved from 100 to 85 percent,
+ending at 35.0 degrees Celsius while discharging. After cable reconnection it
+reported charging, camera and IMU advanced again without reinstallation, and
+both high-draw runtimes were stopped; CameraService reported no active camera
+client.
+
+The earlier 624-second run moved from 100 to 56 percent. Normalized battery-
+percentage depletion was approximately 4.23 points/minute in that run and 2.51
+points/minute in this one, a directionally lower rate of about 41 percent.
+Battery percentage is nonlinear and the two workloads and ambient conditions
+were not controlled identically, so this is not a calibrated energy comparison
+or operating-time claim. A repeated fixed-workload A/B test using charge-counter
+or external power instrumentation remains required before accepting a codec or
+claiming battery life.
+
+The final installed Rokid artifact also ran a content-free MediaCodec probe at
+real-time 5 FPS using 30 deterministic synthetic 640×640 I420 frames per codec.
+Qualcomm hardware AVC (`c2.qti.avc.encoder`) produced 30/30 outputs in 6.011
+seconds with 22.28/24.90 ms p50/p95 enqueue-to-output latency. Qualcomm hardware
+HEVC (`c2.qti.hevc.encoder`) produced 30/30 outputs in 6.007 seconds with
+22.44/25.42 ms p50/p95 latency. No payload was persisted. The encoded byte
+counts are not comparable real-scene bitrate evidence because the source was
+synthetic and the configured codec bitrates differed. Production remains I420;
+paired Poco decoding, frame/model fidelity, packet-loss recovery, and controlled
+energy measurements are still mandatory before selecting AVC or HEVC.
+
+The final device state is sensor-off: Android Node and the Rokid runtime are
+stopped, CameraService has no active client, and the glasses report 100 percent
+while charging. The previously authorized Rokid input observer was restored
+after replacement installation and is bound in observe-only mode; it does not
+arm capture or consume OEM gestures.
+
+The exact replacement-installed APKs matched local outputs byte-for-byte:
+Rokid Node SHA-256
+`781ba52dcbd036aca6856c14ef3877071d389592cbf1e3953aa68a32d3562d4f`
+and combined QNN/Whisper Android Node SHA-256
+`5091b6f8e10f485d6d76e6eb606eca1f02e7dadc195d46858b7036506379234d`.
+The Android artifact contains both arm64 QNN and Whisper JNI libraries. Final
+validation passed 233 Python tests (including 12 protocol tests), 753 focused
+live-transport/Rokid/Android JVM tests, both APK assemblies, Android lint for all
+three modules, repository policy, secret/configuration scans, and whitespace
+validation. The local coder service on port 8022 was unavailable, so the parent
+performed the final diff audit directly; no local model was started.
+
+## Bounded YodaOS Wi-Fi recovery — 2026-09-03
+
+The installed non-display YodaOS-Sprite assist service was inspected before
+implementation. Its non-OTA `open_wifi_p2p` control enables Wi-Fi and starts
+the vendor P2P service even while the glasses control connection is active;
+`close_wifi_p2p` stops that temporary group but also disables Wi-Fi on this
+firmware. A disposable, ordinary third-party probe APK physically confirmed
+that the open command does not require a system
+signature, Rokid client secret, or companion-app runtime. The probe was then
+uninstalled and its temporary files removed. No firmware update or OTA command
+was invoked.
+
+Rokid Node now owns this compatibility control only while its existing
+explicit idle arm is active. A disabled radio triggers a finite 0/1/3/8-second
+request schedule. Radio enablement triggers idempotent group releases after 4
+and 8 seconds through public `WifiP2pManager` inspection/removal. Only an
+empty, locally owned group is removed; peer-owned and active-client groups are
+retained. The vendor close command is deliberately absent from the production
+controller. The recovery message contains no network identifier, address,
+credential, device identity, or sensor content. It is gated to the exact
+verified Rokid product family. Camera, IMU, microphone, and touch capture or
+gating code does not pass through this controller.
+
+An earlier short observation appeared to pass with the vendor close command,
+but a longer run exposed repeated radio disable/re-enable cycling; that result
+is explicitly invalidated and drove the public-API removal repair. A separate
+authorization-boundary run
+disabled Rokid Node and then Wi-Fi; the radio remained off for the full
+ten-second observation and no recovery command was logged.
+
+The focused Rokid Node JVM tests, Android lint, and debug APK assembly passed.
+The public-group-removal build was replacement-installed and pulled back
+byte-for-byte before a successful process-scoped fault injection. That artifact recovered the
+radio in 1.923 seconds, recorded exactly one recovery episode and one successful
+public-API group removal, and demonstrated two advancing authenticated camera
+samples four seconds apart at 16.603 seconds after injection; IMU samples also
+advanced. Wi-Fi stayed enabled, the temporary group remained absent, and both
+streams continued through a further 30-second stability window. The 16.603
+second duration is deliberately conservative because it includes the
+four-second sustained-stream confirmation rather than representing first-byte
+reconnection latency. The final resource-cleanup build was then
+replacement-installed and pulled back byte-for-byte (SHA-256
+`8c94ae7745af84fc1190ac99c522c533d97a41342e83e5d89f8d4197312dcf6f`).
+An explicit node disable kept Wi-Fi enabled, and rearming returned Android Node
+to `Capturing`. A separate clean explicit re-arm held the same Rokid process
+for five 15-second samples beyond the former 60-second failure boundary; Wi-Fi
+remained enabled and both camera and IMU counters advanced throughout.
+
+A final outage against that resource-cleanup artifact again recorded one Rokid
+recovery and one successful public group removal, and Wi-Fi remained enabled.
+The combined 30-second end check did not pass because HyperOS separately killed
+the Android Node main and local-VLM processes with `LOW_MEMORY`; Rokid Node
+remained alive and entered bounded reconnect. Restarting Android Node alone
+then restored authenticated camera and IMU delivery with both counters
+advancing. This is evidence for Rokid radio recovery and peer-restart recovery,
+not a successful Android memory-pressure soak. The phone-side defect was
+subsequently repaired and physically revalidated in the section below.
+This evidence validates bounded recovery on the one tested firmware build; it
+does not establish support on other Rokid products, strict cross-device Wi-Fi
+Direct discovery, reboot recovery, or untethered endurance. No fresh physical
+touch gesture was generated in this run, so the unchanged touch path retains
+its earlier evidence rather than receiving a new claim.
+
+## Android Node memory-pressure containment and guardian recovery — 2026-09-03
+
+HyperOS exit history identified the failed run precisely: the isolated
+`:local_vlm` process reached 2.7 GB PSS and the foreground Android Node reached
+740 MB PSS before both received `LOW_MEMORY`. Source inspection found that an
+earlier interaction optimization retained the GenieX runtime for the complete
+four-hour sensor epoch. A direct same-UID `SIGKILL` also proved that this
+HyperOS build did not restore `START_STICKY` within 60 seconds without another
+live app component.
+
+The repaired runtime treats Qwen as a 120-second interaction-scoped memory
+lease. After the stable two-result environment bootstrap, unchanged scenes do
+not rewarm it. Material scene change or explicit object-focus preparation does.
+Android trim-memory notification requests immediate idle release. Because
+`VlmWrapper.destroy()` left about 1.45 GB of proprietary native mappings in the
+process, successful idle release deliberately retires only the isolated VLM
+process; its crash-safe Binder connection recreates an approximately 37 MB idle
+process. The binding now uses `BIND_WAIVE_PRIORITY`, so HyperOS can reclaim this
+optional semantic process before the foreground sensor process.
+
+A separate approximately 35–37 MB `:guardian` connected-device foreground
+service holds only a Binder liveness watch and owns no sensors or models. The
+same installed artifact restored the killed Android Node foreground process in
+about one second, and authenticated camera/IMU delivery resumed in about 14
+seconds including Rokid reconnect backoff. An explicit stop left both service
+records absent for five consecutive three-second samples, proving that recovery
+does not override user intent.
+
+The exact combined QNN/Whisper APK was replacement-installed and read back
+byte-for-byte with SHA-256
+`af3bdbcbd82b81e06d7f5a67fa3093652e541db62d40ff5adc4bd2f5c172b297`.
+In the final 600-second sample, all 20 post-baseline 30-second intervals advanced
+both camera and IMU counters. Camera frames increased from 293 to 2,032; IMU
+samples from 4,225 to 30,210; completed QNN cycles from 69 to 636; reported link
+interruptions remained zero; main and guardian PIDs did not change; main PSS
+peaked at 861,461 kB; and VLM PSS fell from 1,445,042 kB to approximately
+37,115 kB after retirement and remained there. These figures describe one
+attached Poco/Rokid run, not universal performance guarantees.
+
+After that completed soak, the glasses independently rebooted and returned with
+Wi-Fi disabled and Rokid Node absent; boot logs coincide with the previously
+observed firmware-update state. This later `Waiting for glasses` condition is
+not an Android low-memory regression. Cross-reboot unattended YodaOS arming
+remains a separate hardware/firmware validation item.
+
+## Accessible object interaction hardening — 2026-09-02
+
+Android Node now retains a navigation command for at most two seconds when it
+arrives during a detector gap. A briefly missing selected item may resume its
+original 750 ms dwell only when the exact stable track ID returns within the
+existing 1.5-second state lifetime. During the gap the public focus state is
+inactive and has no target, so Unity and FMOD fail closed; a different object,
+an action menu, VQA, or a beacon is never silently reacquired. Focus and frame
+store regression tests cover both bounded paths.
+
+Focused VQA still retains an exact, RAM-only source frame with a maximum
+640-pixel edge. The model input is now separately resized after the context crop
+to an aspect-preserved maximum edge of 224 pixels, then both temporary RGB
+buffers are wiped. Output remains capped at eight tokens and the existing
+8.5-second end-to-end deadline, isolated-process hard abort, exact correlation,
+and HTP admission policy are unchanged. The combined private QNN/Whisper APK
+installed on the Poco had SHA-256
+`5e245941c06010b44fc662608ae2705a035d97c89b687861ff81c0710cd1d1ad`.
+
+On the connected Rokid/Poco pair, YodaOS had restored the Rokid service in its
+correct sensor-off idle state but the glasses Wi-Fi radio itself was disabled.
+The listener on the Poco was healthy. After explicitly enabling that existing
+radio, the already-running bounded retry scheduler authenticated without an app
+restart and resumed in-memory camera and IMU transport. A later live snapshot
+reported 1,719 reconstructed frames, 24,985 accepted poses, zero link
+interruptions, zero audio/IMU/touch queue loss, 13 deliberate latest-camera
+replacements, 989.0 ms end-to-end p95, 382.6 ms capture-to-receive p95,
+116.8 ms segmentation p95, and 44.0 ms depth p95. These measurements describe
+this tethered indoor diagnostic run, not an untethered or thermal claim.
+
+An initial Android Node stop/start recovery probe later appeared to fail, but
+the glasses had independently rebooted during the observation: `boot_count`
+had advanced to 90, uptime was nine minutes, and the post-boot Wi-Fi state was
+disabled. That result is not counted as a same-session reconnect failure. After
+explicit post-boot authorization and enabling the already-provisioned radio,
+three consecutive Android Node stop/start cycles each resumed camera streaming,
+reported zero link interruptions, and retained Rokid `boot_count=90` throughout.
+This validates armed, same-boot host recovery. It does not validate unattended
+capture authorization or automatic Wi-Fi enablement across a glasses reboot;
+those remain deliberately separate privacy and platform-policy boundaries.
+
+A fresh live metric `dryer` target admitted focused VQA. Qwen3-VL-2B acquired
+the shared HTP lease after QNN-priority retries and returned an accepted answer
+in 2,342 ms; five seconds after dispatch the public state was `VQA_RESULT` and
+still carried the exactly correlated target. Answer content was not printed or
+retained in this ledger. A separate physical beacon attempt on the same scene
+was correctly rejected as `LOW_CONFIDENCE` rather than creating a misleading
+anchor. The Unity Android player was relaunched, bound its signature-protected
+service, loaded the private FMOD runtime, and opened a 48 kHz stereo low-latency
+stream. Android reported platform spatial audio available but disabled and the
+route was the phone speaker, so no open-ear HRTF localization claim is made.
+
+The exact debug suites passed with zero failures, errors, or skips: Android Node
+315 tests, Rokid Node 245 tests, Android live transport 162 tests, and Android
+protocol one test. Lint passed for both applications. The FMOD v2 contract and
+FMOD Studio 2.03.14 project validation passed. All 233 Python tests, the native
+CTest target, 156 cross-platform desktop-relay core tests, repository policy,
+secret scanning, configuration validation, and whitespace checks also passed.
+A fresh Unity test run did not start because the licensing client reported no
+valid Editor entitlement; the last completed Unity evidence remains 42/42
+EditMode and 7/7 PlayMode tests. The full Windows relay solution could not be
+built on this Ubuntu installation because its .NET SDK lacks the Windows
+Desktop targeting pack; the platform-independent relay core did build and test.
+The current glasses scene did not provide a beacon-eligible target, and a safe
+collision-free Rokid touch mapping still has not been established, so those two
+physical acceptance checks remain open.
+
+## Bounded on-device speech window — 2026-09-01
+
+Android Node now immediately drains each accepted Rokid PCM16 microphone block
+from the 16-block `SensorTimeline` into a fixed-capacity, RAM-only window capped
+at ten seconds and 1,920,000 bytes. The existing Rokid permission, user-intent,
+capture, timestamp, authenticated-transport, and lease gates were not changed.
+Silero VAD runs for automatic scene-classification windows; the pinned
+quantized Whisper `small.en` model runs only when VAD detects speech in an
+explicit user-query window. Ambient windows cannot release transcript content.
+The speech window's owned mutable PCM and float buffers are zeroized on
+finish/cancel and samples are not logged or persisted; immutable transport
+objects are released for garbage collection after the immediate drain.
+
+The latest combined QNN-plus-Whisper arm64 APK installed on the Poco F7 Ultra had
+SHA-256
+`2a09ec1516f181f677cb6202a0162d6a3b591e7e39409aef5ac75415f695e340`.
+APK inspection found both project JNI boundaries and the required whisper.cpp
+MIT notice, but no Whisper/VAD/QNN model weight. The app independently verified
+the app-private speech model and VAD size, GGML magic, and pinned SHA-256 before
+loading. On the exact final build, a force-stopped app reached speech `ready`
+2,748 ms after the host initiated the automatic-start activity. This is an
+end-to-end host observation that includes app launch and status polling, not
+native model-load time alone. The
+speech JNI library was built for ARMv8.2 FP16 and DOTPROD, exported only its
+four JNI entry points, and had no dynamic whisper, ggml, or OpenMP dependency.
+The whisper.cpp source and model artifacts remain external to Git.
+
+Five consecutive physical ten-second microphone windows on the speech build
+completed while the same authenticated camera/IMU session remained live. The
+four explicit windows
+delivered 77, 77, 77, and 55 PCM blocks; the forced-indoor ambient/VAD window
+delivered 75. Every run reported zero Android timeline overflow and zero
+speech-window rejection. The four observed no-speech VAD analyses took 321.7,
+328, 300, and 245 ms; the ambient/VAD analysis took 277 ms. The ambient pass
+also produced a content-free profile with an observed relative noise floor of
+-61 dBFS. Process PSS was 362,786 KiB before three repeated windows and 357,664
+KiB afterward; this short sample shows no monotonic growth but is not a thermal
+or endurance claim. An earlier combined candidate selected indoor, started the
+ten-second mic lease, produced a content-free ambient profile, and completed
+Silero in 311 ms while camera/IMU streaming and QNN HTP inference continued.
+After the shutdown-race hardening, the exact final build repeated the automatic
+path: it delivered 77 audio blocks / 315,392 bytes with zero timeline overflow
+or rejection and completed Silero in 385.0 ms. A later status snapshot showed
+75 successful QNN inferences out of 85 attempts, one current metric track, zero
+link interruption, and 968.1 ms end-to-end p95 for that broader live workload.
+These QNN and
+end-to-end values are contextual coexistence evidence, not a speech-latency
+claim. A
+private-files check found the two expected model
+artifacts and no PCM, WAV, compressed audio, image, or JSON capture artifact.
+
+Local validation passed all 704 Android JVM tests with zero failures, errors,
+or skips; Android Node lint; repository policy; secret scanning; configuration
+validation; Bash syntax; native arm64 compilation; APK content inspection; and
+ELF dependency/export inspection.
+
+On 2026-09-02 the microphone shell control was moved from a transient Activity
+and synchronous controller call to a nonvisual foreground-service command. Its
+focused unit test and Android lint passed. A tethered smoke test returned the
+queue result in 1,048 ms and delivered 77 blocks / 315,392 bytes without
+stopping camera, IMU, YOLOE, or metric Depth Anything. The subsequent untethered,
+worn positive trial returned in 1,074 ms, delivered 76 blocks / 311,296 bytes,
+reported speech, and produced a 47-character private Whisper result in 6,949.4
+ms without timeout. No transcript or raw audio content entered logs. The
+installed APK matched the built artifact above byte-for-byte. Recognition
+accuracy, TalkBack/open-ear echo behavior, and long-duration thermal performance
+remain pending and are not claimed.
+
 ## Poco personal-hotspot data plane — 2026-08-30
 
 Android Node was extended to observe the API-36 public tethering callback and
@@ -1739,9 +2302,10 @@ selection, returns `START_STICKY`, handles null-intent restoration, and clears
 that state only on explicit stop. Auxiliary mic, branding, and focus commands
 also reconstruct a missing controller only when the node is still explicitly
 enabled. JVM tests and Android lint passed, and a QNN-enabled APK built and ran.
-ADB-induced crash and same-UID kill probes were classified by HyperOS as
-explicit service stops, so they did not demonstrate the natural-LMK restart
-path; a future naturally occurring LMK remains the physical proof gate.
+Later testing showed that `START_STICKY` alone still did not restore the service
+on this HyperOS build. The process-isolated guardian and bounded VLM retirement
+described in the 2026-09-03 memory-pressure section supersede that interim
+state.
 
 The installed private Unity player shares Android Node's signing certificate,
 successfully binds the signature-protected Perception Bus, and contains the

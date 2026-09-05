@@ -33,6 +33,7 @@ Commands:
   idle-enable    Persist and start sensor-off private-network rendezvous standby.
   idle-disable   Disable persisted idle control and stop its foreground service.
   physical-trace Capture once and use the ADB-reverse loopback gRPC development path.
+  codec-benchmark  Benchmark bounded synthetic 640x640 I420 input on hardware AVC/HEVC encoders.
   cue-left       Emit one development left audio/haptic cue.
   cue-right      Emit one development right audio/haptic cue.
   brand-audio-test  Play the complete brand narration without changing its 72-hour timestamp.
@@ -58,7 +59,7 @@ while (($# > 0)); do
             usage
             exit 0
             ;;
-        capture-start|stream-test|live-link-init|live-link-start|live-link-soak|live-link-stop|idle-enable|idle-disable|physical-trace|cue-left|cue-right|brand-audio-test|legacy-spool-enable|legacy-spool-disable|stop|status)
+        capture-start|stream-test|live-link-init|live-link-start|live-link-soak|live-link-stop|idle-enable|idle-disable|physical-trace|codec-benchmark|cue-left|cue-right|brand-audio-test|legacy-spool-enable|legacy-spool-disable|stop|status)
             [[ -z "$command_name" ]] || fail "only one command may be supplied"
             command_name="$1"
             shift
@@ -134,6 +135,11 @@ case "$command_name" in
             -n "$component" -a "$ACTION_PREFIX.START_PHYSICAL_TRACE"
         printf 'Requested one bounded physical trace over the authorized ADB reverse tunnel.\n'
         printf 'Raw microphone audio remains on the glasses; only aggregate activity is reported.\n'
+        ;;
+    codec-benchmark)
+        adb -s "$ROKID_SERIAL" shell am start --user 0 -W \
+            -n "$component" -a "$ACTION_PREFIX.BENCHMARK_VIDEO_CODECS"
+        printf 'Requested bounded hardware AVC/HEVC encoder benchmark using synthetic I420 frames.\n'
         ;;
     cue-left)
         adb -s "$ROKID_SERIAL" shell am start --user 0 -W \

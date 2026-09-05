@@ -211,9 +211,11 @@ class StoredFocusedVqaFrameProvider(
     private val store: BoundedFocusedVqaFrameStore,
     private val encoder: FocusedVqaJpegEncoder,
     private val contextMarginFraction: Double = DEFAULT_CONTEXT_MARGIN_FRACTION,
+    private val maximumInputEdgePixels: Int = DEFAULT_MAXIMUM_INPUT_EDGE_PIXELS,
 ) : FocusedVqaFrameProvider {
     init {
         require(contextMarginFraction in 0.0..1.0)
+        require(maximumInputEdgePixels in 64..BoundedFocusedVqaFrameStore.MAXIMUM_STORED_EDGE_PIXELS)
     }
 
     override fun prepare(request: org.conceptflow.mpl.host.focus.FocusedVqaRequest): EncodedJpegFrame? {
@@ -224,9 +226,10 @@ class StoredFocusedVqaFrameProvider(
                 request.sourceCaptureTimestampNanos,
             ),
         ) ?: return null
-        val selected = request.imageGeometry?.let { geometry ->
+        val cropped = request.imageGeometry?.let { geometry ->
             cropWithContext(source, geometry)
         } ?: source.image
+        val selected = resizeWithinInputBudget(cropped)
         return try {
             val jpeg = encoder.encode(selected)
             val encoded = runCatching {
@@ -242,7 +245,29 @@ class StoredFocusedVqaFrameProvider(
             encoded
         } finally {
             selected.pixels.fill(0)
+            if (selected !== cropped) cropped.pixels.fill(0)
         }
+    }
+
+    private fun resizeWithinInputBudget(image: RgbImage): RgbImage {
+        val largest = max(image.width, image.height)
+        if (largest <= maximumInputEdgePixels) return image
+        val scale = maximumInputEdgePixels.toDouble() / largest
+        val width = (image.width * scale).roundToInt().coerceIn(1, maximumInputEdgePixels)
+        val height = (image.height * scale).roundToInt().coerceIn(1, maximumInputEdgePixels)
+        val output = ByteArray(Math.multiplyExact(Math.multiplyExact(width, height), 3))
+        var destination = 0
+        for (y in 0 until height) {
+            val sourceY = ((y + 0.5) * image.height / height).toInt().coerceIn(0, image.height - 1)
+            for (x in 0 until width) {
+                val sourceX = ((x + 0.5) * image.width / width).toInt().coerceIn(0, image.width - 1)
+                val source = (sourceY * image.width + sourceX) * 3
+                output[destination++] = image.pixels[source]
+                output[destination++] = image.pixels[source + 1]
+                output[destination++] = image.pixels[source + 2]
+            }
+        }
+        return RgbImage(width, height, output)
     }
 
     private fun cropWithContext(source: FocusedVqaSourceFrame, geometry: InstanceMaskGeometry): RgbImage {
@@ -275,6 +300,9 @@ class StoredFocusedVqaFrameProvider(
 
     private companion object {
         const val DEFAULT_CONTEXT_MARGIN_FRACTION = 0.25
+        // Match the physically validated environment-classification input. Larger focused crops
+        // made multimodal prefill exceed the bounded VQA deadline on the Poco HTP path.
+        const val DEFAULT_MAXIMUM_INPUT_EDGE_PIXELS = 224
     }
 }
 

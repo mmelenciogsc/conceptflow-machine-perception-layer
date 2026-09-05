@@ -61,7 +61,7 @@ class LightweightTrackMaintenanceTest {
 
     @Test
     fun shortOcclusionPredictsOnlyUntilBoundedTtl() {
-        val maintainer = maintainer(ttlNanos = 1_000_000_000L)
+        val maintainer = maintainer(ttlNanos = 1_000_000_000L, postInferenceHoldNanos = 0L)
         maintainer.updateKeyframe(
             frame(1L, 0L),
             listOf(track("chair-a", 1L, 0L, classId = "chair")),
@@ -176,7 +176,10 @@ class LightweightTrackMaintenanceTest {
 
     @Test
     fun inferenceCompletingAfterTrackTtlIsNeverPublished() {
-        val maintainer = maintainer(ttlNanos = 1_000_000_000L)
+        val maintainer = maintainer(
+            ttlNanos = 1_000_000_000L,
+            postInferenceHoldNanos = 1_250_000_000L,
+        )
         val staleInference = track("late", 1L, 0L).copy(
             sourceInferenceMonotonicTimestampNanos = 1_000_000_001L,
         )
@@ -186,6 +189,115 @@ class LightweightTrackMaintenanceTest {
         assertTrue(update.tracks.isEmpty())
         assertTrue(update.sourceToStableTrackIds.isEmpty())
         assertEquals(listOf("maint-00000001"), update.evictedTrackIds)
+    }
+
+    @Test
+    fun admittedLateInferenceRetainsBoundedPostInferenceContinuityWithoutRefreshingDepth() {
+        val maintainer = maintainer(
+            ttlNanos = 1_500_000_000L,
+            maximumDepthAgeNanos = 500_000_000L,
+            postInferenceHoldNanos = 1_250_000_000L,
+        )
+        val delayed = track("chair-a", 1L, 0L, classId = "chair").copy(
+            sourceInferenceMonotonicTimestampNanos = 1_400_000_000L,
+        )
+
+        val published = maintainer.updateKeyframe(frame(1L, 0L), listOf(delayed), pose(0L))
+            .tracks.single()
+
+        assertEquals(2_650_000_000L, published.expiresAtTimestampNanos)
+        assertFalse(published.depthFresh)
+        assertEquals(TrackEstimateValidity.OBSERVED, published.coordinateValidity.image2d)
+        assertTrue(maintainer.snapshot(2_650_000_000L).isNotEmpty())
+        assertTrue(maintainer.snapshot(2_650_000_001L).isEmpty())
+    }
+
+    @Test
+    fun lowConfidenceProposalRequiresThreeConsistentObservationsBeforePublication() {
+        val maintainer = maintainer()
+
+        val first = maintainer.updateKeyframe(
+            frame(1L, 0L),
+            listOf(track("candidate", 1L, 0L, confidence = 0.50)),
+            pose(0L),
+        ).tracks.single()
+        val second = maintainer.updateKeyframe(
+            frame(2L, 400_000_000L),
+            listOf(track("candidate", 2L, 400_000_000L, confidence = 0.51)),
+            pose(400_000_000L),
+        ).tracks.single()
+        val third = maintainer.updateKeyframe(
+            frame(3L, 800_000_000L),
+            listOf(track("candidate", 3L, 800_000_000L, confidence = 0.49)),
+            pose(800_000_000L),
+        ).tracks.single()
+
+        assertFalse(first.confirmedForPublication)
+        assertFalse(second.confirmedForPublication)
+        assertTrue(third.confirmedForPublication)
+        assertEquals(first.stableTrackId, third.stableTrackId)
+    }
+
+    @Test
+    fun strongObservationPublishesImmediatelyAndConfirmationIsSticky() {
+        val maintainer = maintainer()
+
+        val strong = maintainer.updateKeyframe(
+            frame(1L, 0L),
+            listOf(track("chair", 1L, 0L, classId = "chair", confidence = 0.70)),
+            pose(0L),
+        ).tracks.single()
+        val weaker = maintainer.updateKeyframe(
+            frame(2L, 400_000_000L),
+            listOf(track("chair", 2L, 400_000_000L, classId = "chair", confidence = 0.47)),
+            pose(400_000_000L),
+        ).tracks.single()
+
+        assertTrue(strong.confirmedForPublication)
+        assertTrue(weaker.confirmedForPublication)
+    }
+
+    @Test
+    fun oneFrameLowConfidenceProposalIsPrunedBeforeItCanLeak() {
+        val maintainer = maintainer()
+        maintainer.updateKeyframe(
+            frame(1L, 0L),
+            listOf(track("candidate", 1L, 0L, confidence = 0.50)),
+            pose(0L),
+        )
+
+        assertEquals(1, maintainer.updateKeyframe(frame(2L, 400_000_000L), emptyList(), pose(400_000_000L))
+            .tracks.single().missedKeyframes)
+        assertTrue(
+            maintainer.updateKeyframe(frame(3L, 800_000_000L), emptyList(), pose(800_000_000L))
+                .tracks.isEmpty(),
+        )
+    }
+
+    @Test
+    fun strongGeometryAndDepthPreserveIdentityWhileLabelVotingRejectsOneFrameFlicker() {
+        val maintainer = maintainer()
+        val chair = maintainer.updateKeyframe(
+            frame(1L, 0L),
+            listOf(track("chair-source", 1L, 0L, classId = "chair", confidence = 0.90)),
+            pose(0L),
+        ).tracks.single()
+
+        val oneFrameFlicker = maintainer.updateKeyframe(
+            frame(2L, 400_000_000L),
+            listOf(track("stool-source", 2L, 400_000_000L, classId = "stool", confidence = 0.90)),
+            pose(400_000_000L),
+        ).tracks.single()
+        val sustainedReplacement = maintainer.updateKeyframe(
+            frame(3L, 800_000_000L),
+            listOf(track("stool-source", 3L, 800_000_000L, classId = "stool", confidence = 0.90)),
+            pose(800_000_000L),
+        ).tracks.single()
+
+        assertEquals(chair.stableTrackId, oneFrameFlicker.stableTrackId)
+        assertEquals("chair", oneFrameFlicker.classId)
+        assertEquals(chair.stableTrackId, sustainedReplacement.stableTrackId)
+        assertEquals("stool", sustainedReplacement.classId)
     }
 
     @Test
@@ -382,10 +494,12 @@ class LightweightTrackMaintenanceTest {
         capacity: Int = 8,
         ttlNanos: Long = 1_500_000_000L,
         maximumDepthAgeNanos: Long = 500_000_000L,
+        postInferenceHoldNanos: Long = 1_250_000_000L,
         appearanceSimilarity: TrackAppearanceSimilarity? = null,
     ) = LightweightTrackMaintainer(
         capacity = capacity,
         trackTtlNanos = ttlNanos,
+        minimumPostInferenceHoldNanos = postInferenceHoldNanos,
         maximumDepthAgeNanos = maximumDepthAgeNanos,
         appearanceSimilarity = appearanceSimilarity,
         headFromCamera = VerifiedHeadCameraExtrinsic(

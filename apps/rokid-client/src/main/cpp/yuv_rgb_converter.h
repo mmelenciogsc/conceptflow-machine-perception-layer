@@ -36,4 +36,14 @@ bool ConvertYuv420ToRgb8(
     std::uint8_t* output,
     std::size_t output_capacity);
 
+// Produces tightly packed Y, U, V planes. The output dimensions and all transform offsets must
+// be even so the chroma geometry remains explicit and reversible on the host.
+bool ConvertYuv420ToI420(
+    const PlaneView& y,
+    const PlaneView& u,
+    const PlaneView& v,
+    const SquareAspectFillTransform& transform,
+    std::uint8_t* output,
+    std::size_t output_capacity);
+
 }  // namespace conceptflow::yuv

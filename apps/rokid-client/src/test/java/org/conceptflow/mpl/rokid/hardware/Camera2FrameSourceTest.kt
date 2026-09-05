@@ -21,6 +21,21 @@ import org.conceptflow.mpl.rokid.core.CameraSourceDiagnosticDomain
 
 class Camera2FrameSourceTest {
     @Test
+    fun previewUsesLowestFixedSensorCadence() {
+        assertEquals(
+            15..15,
+            selectPowerEfficientAeFpsRange(
+                listOf(15..15, 24..24, 14..30, 30..30),
+            ),
+        )
+        assertEquals(
+            14..30,
+            selectPowerEfficientAeFpsRange(listOf(14..30, 15..30)),
+        )
+        assertNull(selectPowerEfficientAeFpsRange(emptyList()))
+    }
+
+    @Test
     fun continuousCaptureSelectsOnlyTheNativeSquareYuvSize() {
         val selected = selectContinuousYuvSize(
             listOf(

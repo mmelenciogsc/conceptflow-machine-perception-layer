@@ -14,8 +14,8 @@ does not imply physical usability, perceptual accuracy, or release readiness.
 
 | Area | Implemented | Deterministic validation | Physical status |
 | --- | --- | --- | --- |
-| Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, TalkBack-facing state, and shell-only debug controls in debuggable builds | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, and reset | The debug path was dispatched on the Poco while live detections briefly appeared, but the target expired before the multi-command dwell/menu sequence completed; this is not a target-user or TalkBack acceptance run |
-| Android focused VQA | Explicit-only typed request, bounded exact-frame retention, one absolute deadline, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, exact source lookup, no-callback timeout, exact cancellation, late-response rejection, slot reuse, reset, and HTP admission | One focused query completed through GenieX on the Poco HTP in 3.594 seconds; a later query did not complete, so repeated-run reliability remains unvalidated |
+| Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, TalkBack-facing state, and shell-only debug controls in debuggable builds | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, reset, a two-second pending browse command, and exact-ID-only reacquisition | Live focus produced the concise phrase `dryer. 11 o'clock. about 1 foot away.` and retained the exact selected target through a completed VQA request; this is not yet a target-user TalkBack acceptance run |
+| Android focused VQA | Explicit-only typed request, bounded exact-frame retention, aspect-preserved 224-pixel model input, one absolute deadline, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, resizing, exact source lookup, no-callback timeout, exact cancellation, late-response rejection, slot reuse, reset, and HTP admission | A current focused query completed through Qwen3-VL-2B/GenieX on the Poco HTP in 2.342 seconds after the 224-pixel input change; repeated-run and spoken conversational VQA validation remain open |
 | Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads; `CFFS` v3 carries the Android-authored accessibility transition | Android dispatcher/codec tests, strict Java lifecycle/version/announcement-gate tests, and Unity decoder tests exercise valid and malformed packets; the Java cache admits `CFFS` v1 through v3 only | Same-signed Android Node and private licensed-lab builds were installed and remained live together on the Poco; foreground-Unity TalkBack delivery still needs the physical listening check |
 | Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, a listener transform driven by the accepted canonical head pose, and a debug-only blinded HRTF trial runner | Unity 6000.3.22f1 ran 40/40 EditMode and 6/6 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks without FMOD/Unity runtime errors; focused-icon localization, loudness, and the 24-trial open-ear protocol remain physically unvalidated |
 | Beacon | Two-tier admission, immutable bounded anchor, Binder encoding, and Unity/FMOD rendering | Android JVM and Unity tests cover world preference, no-world fallback, reference-pose freshness, source-track expiry, decoder rejection, head-turn stability, pulse cadence, and TTL | The orientation-stabilized relative tier is executable without WORLD translation; it does not track user translation and has not had open-ear localization acceptance testing |
@@ -68,7 +68,17 @@ a HEAD-relative vector and metric depth. Initial order is:
 Later updates preserve the order of surviving stable track IDs and append new
 items in the same deterministic order. They do not continuously reorder the
 list around the wearer. If the selected target expires or disappears, focus is
-cleared rather than silently transferred to a different object.
+never silently transferred to a different object. A browsing-only dropout may
+retain the selection intent for at most 1.5 seconds and restore it only when the
+exact stable track ID returns. During that gap the published focus state is
+inactive and carries no renderable target. Menus, VQA, and beacons never use
+this path.
+
+If `Next` or `Previous` arrives while the current detector snapshot is empty,
+Android retains that one browse intent for at most two seconds. The first fresh
+eligible target arriving inside that window begins the ordinary 750 ms dwell;
+after the window expires the command has no effect. This bounds asynchronous
+gesture/command timing without turning stale geometry into a current target.
 
 The state starts `INACTIVE`. `Next` or `Previous` enters `BROWSING` at the first
 item. While browsing, `Next` and `Previous` move one item and clamp at the list

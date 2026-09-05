@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 package org.conceptflow.mpl.host
 
+import org.conceptflow.mpl.host.speech.SpeechRuntimePhase
 import org.conceptflow.mpl.host.vision.SemanticDepthCadenceTier
 import org.conceptflow.mpl.host.vision.VisionFrame
 import org.conceptflow.mpl.host.vision.HtpExecutionLease
@@ -137,6 +138,23 @@ class LiveMachineVisionPresentationTest {
         assertFalse(
             liveMicrophoneControlEnabled(LiveMachineVisionPhase.STREAMING, LiveMicrophonePhase.ACTIVE),
         )
+        assertFalse(
+            liveMicrophoneControlEnabled(
+                LiveMachineVisionPhase.STREAMING,
+                LiveMicrophonePhase.COMPLETE,
+                SpeechRuntimePhase.ANALYZING,
+            ),
+        )
+        assertFalse(
+            liveMicrophoneControlEnabled(
+                LiveMachineVisionPhase.STREAMING,
+                LiveMicrophonePhase.COMPLETE,
+                SpeechRuntimePhase.TRANSCRIBING,
+            ),
+        )
+        assertTrue(speechAnalysisPriorityActive(SpeechRuntimePhase.ANALYZING))
+        assertTrue(speechAnalysisPriorityActive(SpeechRuntimePhase.TRANSCRIBING))
+        assertFalse(speechAnalysisPriorityActive(SpeechRuntimePhase.CAPTURING))
     }
 
     @Test

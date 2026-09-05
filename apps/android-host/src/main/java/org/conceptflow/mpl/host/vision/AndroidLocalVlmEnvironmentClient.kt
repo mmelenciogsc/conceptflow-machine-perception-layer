@@ -47,10 +47,13 @@ class AndroidLocalVlmEnvironmentClient(
     private var binding = false
     private var closed = false
     private var prewarmReady = false
+    private var prewarmReadyUntilNanos = 0L
     private var prewarmInFlight = false
     private var prewarmRequestId = 0L
     private var prewarmStartedNanos = -1L
     private var nextPrewarmAttemptNanos = 0L
+    private var prewarmRetryScheduled = false
+    private val focusedPrewarmIntent = FocusedVlmPrewarmIntent()
     private var activeRequest: ActiveRequest? = null
     private var latestSceneObservation: SceneObservation? = null
 
@@ -75,6 +78,15 @@ class AndroidLocalVlmEnvironmentClient(
                 }
             }
             if (rejectConnection) unbindQuietly()
+            if (!rejectConnection) {
+                synchronized(lock) {
+                    val now = clockNanos()
+                    if (focusedPrewarmIntent.workState(now) != null) {
+                        requestPrewarmLocked(now)
+                        scheduleFocusedPrewarmRetryLocked(now)
+                    }
+                }
+            }
             Log.i(LOG_TAG, "local VLM service connected")
         }
 
@@ -135,9 +147,11 @@ class AndroidLocalVlmEnvironmentClient(
     ): LocalVlmSubmissionResult = synchronized(lock) {
         val now = clockNanos()
         if (closed || service == null) return LocalVlmSubmissionResult.UNAVAILABLE
-        if (!prewarmReady) {
+        if (!prewarmReadyLocked(now)) {
+            focusedPrewarmIntent.request(now)
             requestPrewarmLocked(now)
-            return if (prewarmInFlight) LocalVlmSubmissionResult.BUSY else LocalVlmSubmissionResult.UNAVAILABLE
+            scheduleFocusedPrewarmRetryLocked(now)
+            return LocalVlmSubmissionResult.BUSY
         }
         if (activeRequest != null) return LocalVlmSubmissionResult.BUSY
         val correlation = request.correlation
@@ -213,8 +227,20 @@ class AndroidLocalVlmEnvironmentClient(
         activeRequest = null
         active.image.delete()
         prewarmReady = false
+        prewarmReadyUntilNanos = 0L
         nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
         true
+    }
+
+    /** Starts the bounded VLM warm window when the user begins spatial-object browsing. */
+    fun prepareFocusedObjectVqa(): Boolean = synchronized(lock) {
+        val now = clockNanos()
+        if (closed || service == null) return false
+        if (prewarmReadyLocked(now)) return true
+        focusedPrewarmIntent.request(now)
+        requestPrewarmLocked(now)
+        scheduleFocusedPrewarmRetryLocked(now)
+        prewarmInFlight || focusedPrewarmIntent.workState(now) != null
     }
 
     private fun offer(
@@ -225,12 +251,13 @@ class AndroidLocalVlmEnvironmentClient(
     ): Boolean = synchronized(lock) {
         val now = clockNanos()
         if (closed || service == null) return false
-        if (!prewarmReady) {
+        val scene = observeLocked(frameId, descriptor, now)
+        if (activeRequest != null || !cadence.needsClassification(scene.significantChange)) return false
+        if (!prewarmReadyLocked(now)) {
             requestPrewarmLocked(now)
             return false
         }
-        val scene = observeLocked(frameId, descriptor, now)
-        if (activeRequest != null || !cadence.tryStart(now, scene.significantChange)) return false
+        if (!cadence.tryStart(now, scene.significantChange)) return false
         val jpeg = runCatching(jpegProvider).getOrElse {
             cadence.fail(clockNanos())
             return false
@@ -375,6 +402,8 @@ class AndroidLocalVlmEnvironmentClient(
                 it.startedNanos,
             )
         }
+        val now = clockNanos()
+        focusedPrewarmIntent.workState(now)?.let { return it }
         if (prewarmInFlight && prewarmStartedNanos >= 0L) {
             LocalVlmHtpWorkState(LocalVlmHtpWorkKind.PREWARM, prewarmStartedNanos)
         } else {
@@ -389,7 +418,8 @@ class AndroidLocalVlmEnvironmentClient(
      */
     fun cancelHtpWorkForQnn(): Boolean = synchronized(lock) {
         val active = activeRequest
-        val hadWork = active != null || prewarmInFlight
+        val hadWork = active != null || prewarmInFlight ||
+            focusedPrewarmIntent.workState(clockNanos()) != null
         if (!hadWork) return false
         runCatching { service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL_ALL)) }
         active?.image?.delete()
@@ -400,8 +430,10 @@ class AndroidLocalVlmEnvironmentClient(
             null -> Unit
         }
         prewarmReady = false
+        prewarmReadyUntilNanos = 0L
         prewarmInFlight = false
         prewarmStartedNanos = -1L
+        focusedPrewarmIntent.clear()
         nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
         true
     }
@@ -411,8 +443,10 @@ class AndroidLocalVlmEnvironmentClient(
         if (closed) return
         runCatching { service?.send(Message.obtain(null, LocalVlmIpc.REQUEST_CANCEL_ALL)) }
         prewarmReady = false
+        prewarmReadyUntilNanos = 0L
         prewarmInFlight = false
         prewarmStartedNanos = -1L
+        focusedPrewarmIntent.clear()
         nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
         activeRequest?.image?.delete()
         activeRequest = null
@@ -430,8 +464,10 @@ class AndroidLocalVlmEnvironmentClient(
             reconnectPolicy.close()
             service = null
             prewarmReady = false
+            prewarmReadyUntilNanos = 0L
             prewarmInFlight = false
             prewarmStartedNanos = -1L
+            focusedPrewarmIntent.clear()
             activeRequest?.image?.delete()
             activeRequest = null
             cadence.reset()
@@ -459,15 +495,20 @@ class AndroidLocalVlmEnvironmentClient(
             prewarmStartedNanos = -1L
             if (message.what == LocalVlmIpc.RESPONSE_PREWARMED) {
                 prewarmReady = true
+                prewarmReadyUntilNanos = LocalVlmRuntimeTuning.readyUntilNanos(clockNanos())
+                focusedPrewarmIntent.clear()
                 Log.i(LOG_TAG, "local VLM prewarm complete")
             } else if (message.what == LocalVlmIpc.RESPONSE_DEFERRED ||
                 message.what == LocalVlmIpc.RESPONSE_BUSY
             ) {
                 prewarmReady = false
+                prewarmReadyUntilNanos = 0L
                 nextPrewarmAttemptNanos = clockNanos() + QNN_PRIORITY_RETRY_NANOS
+                scheduleFocusedPrewarmRetryLocked(clockNanos())
                 Log.i(LOG_TAG, "local VLM prewarm deferred")
             } else {
                 prewarmReady = false
+                prewarmReadyUntilNanos = 0L
                 nextPrewarmAttemptNanos = clockNanos() + PREWARM_RETRY_NANOS
                 Log.w(LOG_TAG, "local VLM prewarm failed")
             }
@@ -508,6 +549,7 @@ class AndroidLocalVlmEnvironmentClient(
         if (response == LocalVlmIpc.RESPONSE_FAILED) {
             cadence.fail(nowNanos)
             prewarmReady = false
+            prewarmReadyUntilNanos = 0L
             requestPrewarmLocked(nowNanos)
             Log.w(LOG_TAG, "local VLM environment request failed")
             return
@@ -542,6 +584,8 @@ class AndroidLocalVlmEnvironmentClient(
             LocalVlmModelProfile.RUNTIME_ID,
             LocalVlmModelProfile.COMPUTE_UNIT,
         )
+        prewarmReady = true
+        prewarmReadyUntilNanos = LocalVlmRuntimeTuning.readyUntilNanos(nowNanos)
         val confirmed = cadence.complete(label, nowNanos)
         if (confirmed == label) {
             sceneChangeGate.markClassified(request.descriptor)
@@ -590,11 +634,12 @@ class AndroidLocalVlmEnvironmentClient(
                 return
             }
             LocalVlmIpc.RESPONSE_FAILED -> {
+                prewarmReady = false
+                prewarmReadyUntilNanos = 0L
                 val failure = when (data.getString(LocalVlmIpc.KEY_FAILURE)) {
                     "invalid_request" -> LocalVlmFocusedObjectFailure.INVALID_REQUEST
                     "timed_out" -> LocalVlmFocusedObjectFailure.TIMED_OUT
                     else -> {
-                        prewarmReady = false
                         requestPrewarmLocked(nowNanos)
                         LocalVlmFocusedObjectFailure.INFERENCE_FAILED
                     }
@@ -620,6 +665,8 @@ class AndroidLocalVlmEnvironmentClient(
             notifyFocused(request, LocalVlmFocusedObjectFailure.STALE_OR_MISMATCHED)
             return
         }
+        prewarmReady = true
+        prewarmReadyUntilNanos = LocalVlmRuntimeTuning.readyUntilNanos(nowNanos)
         notifyFocused(request, LocalVlmFocusedObjectOutcome.Answered(answer))
     }
 
@@ -675,8 +722,14 @@ class AndroidLocalVlmEnvironmentClient(
             service = null
             binding = false
             prewarmReady = false
+            prewarmReadyUntilNanos = 0L
             prewarmInFlight = false
             prewarmStartedNanos = -1L
+            val now = clockNanos()
+            nextPrewarmAttemptNanos = LocalVlmRuntimeTuning.restartBackoffUntilNanos(
+                nextPrewarmAttemptNanos,
+                now,
+            )
             delivery = abandonActiveLocked(LocalVlmFocusedObjectFailure.UNAVAILABLE)
             if (unbindBeforeRetry) {
                 shouldUnbind = bound
@@ -699,7 +752,9 @@ class AndroidLocalVlmEnvironmentClient(
             context.bindService(
                 Intent(context, LocalVlmInferenceService::class.java),
                 connection,
-                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT,
+                // The multi-gigabyte optional semantic process must be reclaimed before the
+                // foreground sensor/QNN process. Its Binder-death path is explicitly recoverable.
+                Context.BIND_AUTO_CREATE or Context.BIND_WAIVE_PRIORITY,
             )
         }.getOrDefault(false)
         var shouldUnbind = false
@@ -774,7 +829,11 @@ class AndroidLocalVlmEnvironmentClient(
 
     private fun requestPrewarmLocked(nowNanos: Long) {
         val target = service ?: return
-        if (prewarmReady || prewarmInFlight || nowNanos < nextPrewarmAttemptNanos) return
+        if (prewarmReadyLocked(nowNanos) || prewarmInFlight) return
+        if (nowNanos < nextPrewarmAttemptNanos) {
+            scheduleFocusedPrewarmRetryLocked(nowNanos)
+            return
+        }
         val requestId = requestIds.incrementAndGet()
         try {
             target.send(Message.obtain(null, LocalVlmIpc.REQUEST_PREWARM).apply {
@@ -786,7 +845,39 @@ class AndroidLocalVlmEnvironmentClient(
             prewarmStartedNanos = nowNanos
         } catch (_: RemoteException) {
             nextPrewarmAttemptNanos = nowNanos + PREWARM_RETRY_NANOS
+            scheduleFocusedPrewarmRetryLocked(nowNanos)
         }
+    }
+
+    private fun scheduleFocusedPrewarmRetryLocked(nowNanos: Long) {
+        if (closed || prewarmRetryScheduled || prewarmReadyLocked(nowNanos) ||
+            focusedPrewarmIntent.workState(nowNanos) == null
+        ) return
+        val delayNanos = (nextPrewarmAttemptNanos - nowNanos).coerceAtLeast(1_000_000L)
+        val delayMillis = ((delayNanos + 999_999L) / 1_000_000L).coerceAtLeast(1L)
+        prewarmRetryScheduled = true
+        responseHandler.postDelayed(
+            {
+                synchronized(lock) {
+                    prewarmRetryScheduled = false
+                    val retryNow = clockNanos()
+                    if (closed || prewarmReadyLocked(retryNow) ||
+                        focusedPrewarmIntent.workState(retryNow) == null
+                    ) return@synchronized
+                    requestPrewarmLocked(retryNow)
+                    if (!prewarmInFlight) scheduleFocusedPrewarmRetryLocked(retryNow)
+                }
+            },
+            delayMillis,
+        )
+    }
+
+    private fun prewarmReadyLocked(nowNanos: Long): Boolean {
+        if (!prewarmReady) return false
+        if (nowNanos < prewarmReadyUntilNanos) return true
+        prewarmReady = false
+        prewarmReadyUntilNanos = 0L
+        return false
     }
 
     private fun inboxDirectory() = File(context.cacheDir, INBOX_DIRECTORY).apply { mkdirs() }

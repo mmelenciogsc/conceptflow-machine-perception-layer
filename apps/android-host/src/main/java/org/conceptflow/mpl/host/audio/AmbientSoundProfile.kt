@@ -84,7 +84,7 @@ data class AmbientSoundProfile(
  */
 class AmbientSoundProfiler(
     private val minimumProfileNanos: Long = 1_000_000_000L,
-    private val maximumProfileNanos: Long = 3_000_000_000L,
+    private val maximumProfileNanos: Long = 10_000_000_000L,
     private val profileTtlNanos: Long = 60_000_000_000L,
 ) {
     private var active = false
@@ -92,6 +92,8 @@ class AmbientSoundProfiler(
     private var prior = AmbientEnvironmentPrior.UNKNOWN
     private var startedNs = 0L
     private var endedNs = 0L
+    private var leadingSuppressionNanos = 0L
+    private var firstAudioTimestampNs: Long? = null
     private var sampleRateHz = 0
     private var channelCount = 0
     private var sampleCount = 0L
@@ -116,14 +118,21 @@ class AmbientSoundProfiler(
     }
 
     @Synchronized
-    fun begin(generation: Long, environmentPrior: AmbientEnvironmentPrior, startedTimestampNs: Long) {
+    fun begin(
+        generation: Long,
+        environmentPrior: AmbientEnvironmentPrior,
+        startedTimestampNs: Long,
+        leadingSuppressionNanos: Long = 0L,
+    ) {
         require(generation > 0L && startedTimestampNs >= 0L)
+        require(leadingSuppressionNanos in 0L..MAXIMUM_LEADING_SUPPRESSION_NANOS)
         reset()
         active = true
         sessionGeneration = generation
         prior = environmentPrior
         startedNs = startedTimestampNs
         endedNs = startedTimestampNs
+        this.leadingSuppressionNanos = leadingSuppressionNanos
     }
 
     @Synchronized
@@ -131,6 +140,10 @@ class AmbientSoundProfiler(
         if (!active || hostCaptureTimestampNs < startedNs ||
             hostCaptureTimestampNs - startedNs > maximumProfileNanos
         ) return false
+        val firstTimestamp = firstAudioTimestampNs ?: hostCaptureTimestampNs.also {
+            firstAudioTimestampNs = it
+        }
+        if (hostCaptureTimestampNs - firstTimestamp < leadingSuppressionNanos) return true
         if (chunk.encoding != AudioSampleEncoding.AUDIO_SAMPLE_ENCODING_PCM_S16LE ||
             chunk.sampleRateHz !in 8_000..48_000 || chunk.channelCount !in 1..2
         ) return false
@@ -229,6 +242,8 @@ class AmbientSoundProfiler(
         prior = AmbientEnvironmentPrior.UNKNOWN
         startedNs = 0L
         endedNs = 0L
+        leadingSuppressionNanos = 0L
+        firstAudioTimestampNs = null
         sampleRateHz = 0
         channelCount = 0
         sampleCount = 0L
@@ -270,6 +285,7 @@ class AmbientSoundProfiler(
     companion object {
         private const val MAXIMUM_FRAME_LEVELS = 500
         private const val MAXIMUM_CHANNELS = 2
+        private const val MAXIMUM_LEADING_SUPPRESSION_NANOS = 2_000_000_000L
         private const val TRANSIENT_RISE_DB = 9.0
     }
 }

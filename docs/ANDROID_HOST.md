@@ -72,7 +72,7 @@ The debug APK is produced at
 | `PerceptionBus` / `AndroidPerceptionBridge` | Compact latest world state and ordered touch delivery to Unity without exposing raw camera/audio buffers or blocking Unity's main thread. |
 | `DeterministicSensorReplay` | Bounded original/slowed/accelerated/stepwise delivery through the same transport-observer seam for sanitized offline fixtures. |
 | `HostSpoolPullCoordinator` | Disabled-by-default diagnostic-only manifest/artifact reader retained for A/B regression; not the production hot path. |
-| `Request 10-second glasses microphone` | Separate TalkBack- and keyboard-accessible control that is enabled by behavior only during an authenticated camera/IMU session; sends an exact-binding mic-only lease and retains no audio. |
+| `Request 10-second glasses microphone` | Separate TalkBack- and keyboard-accessible control that is enabled only during an authenticated camera/IMU session; sends an exact-binding mic-only lease and feeds a bounded RAM-only Silero VAD/Whisper window. |
 | `Play glasses brand sequence` | Sends a two-second-TTL command over the authenticated private-WLAN control lane and retains its correlated Rokid acknowledgement in TalkBack-readable status. |
 | `AccessibilityAwareSpeechFeedback.speak` | Text-to-speech when available, suppressed when an accessibility service is enabled. |
 | `MachineVisionPipeline.process` | Correlated, freshness-bounded, fixed-vocabulary semantic-mask/depth fusion using the selected environment profile. |
@@ -89,6 +89,15 @@ transport session. It is disabled until v1 has an active authenticated
 camera/IMU session and the live Machine Vision runtime is initialized, and it
 remains disabled while a microphone request or window is active. A rejected
 microphone request does not stop the existing camera or IMU streams.
+The Android consumer immediately drains accepted PCM blocks from the 16-block
+sensor timeline into a fixed-capacity ten-second window. Automatic scene
+classification runs ambient profiling plus VAD without releasing transcript
+content. An explicit user-query window may invoke the prewarmed, CPU-local
+quantized `small.en` model after VAD. See
+[Android on-device speech window](ANDROID_ON_DEVICE_SPEECH.md).
+The control also remains disabled during native model prewarm and while a prior
+window is being analyzed, preventing overlapping leases from replacing a
+still-live result.
 An authenticated glasses gesture can send the same intent in the reverse
 direction. The host validates exact binding, explicit user origin, monotonic
 intent ordering, and clock-normalized freshness before issuing the correlated
@@ -107,18 +116,43 @@ correlation through ordinary motion and semantic-track occlusion, but still
 yields to rapid-approach evidence and the same hard completion window. Its
 isolated-process HTP lease acquisition retries only QNN-priority/busy/timeout
 refusals for at most 1.5 seconds; background classification remains fail-fast.
-Focused generation is capped at 24 tokens and accepted answers at 16 words.
+Focused generation is capped at eight tokens and accepted answers at 16 words.
 Direct motion has precedence when it occurs at the same time as routine
 staleness. Session replacement, reconnect, and stop synchronously
 invalidate generation-scoped VLM work, clear cached scene evidence, and cancel
 queued jobs without allowing a stale lazy job to clear a replacement owner.
 Kernel file locks are process-death safe, while in-process handles are
 idempotently released. Wait/hold telemetry contains no frame or scene content.
+
+Camera transport defaults to packed I420. Protocol 1.5 can explicitly
+negotiate independently decodable AVC Annex-B access units for controlled
+hardware tests. Android Node rejects an encoding that differs from its lease,
+requires SPS, PPS, and IDR in every AVC unit, selects a hardware decoder, copies
+the decoded `YUV_420_888` planes into canonical I420 while honoring row/pixel
+strides and crop bounds, and preserves the original frame correlation before
+timeline/QNN admission. Decoder failure resets codec state and drops that frame;
+it does not reinterpret compressed bytes as raw pixels. The first failure also
+opens a one-way process-lifetime circuit breaker: only the active connection is
+closed, the persistent listener stays up, and the next negotiated lease grants
+I420. Repeated faults cannot cause codec oscillation. Current encoding, decode
+failures, and fallback count are available through content-free runtime status.
 The VLM checks QNN demand every 20 ms and requests the supported GenieX stream
-stop, but a proprietary native call may not yield promptly. Therefore neither
-the 8,000 ms coroutine timeout nor the 8.5-second admission window is claimed
-as a hard maximum HTP hold; the remaining worst case is the duration of one
-already admitted native call.
+stop. If a focused proprietary native call does not yield by its absolute
+deadline plus a 250 ms cooperative grace period, Android Node terminates only
+the isolated `:local_vlm` process; the foreground sensor/QNN process remains
+alive and rebinds. The 8,000 ms coroutine timeout alone is not claimed as a
+hard native bound.
+
+The Qwen runtime is also a bounded memory lease, not a four-hour resident
+allocation. Initial automatic classification prewarms it, while two agreeing
+results establish the scene baseline. After 120 seconds without VLM work the
+isolated process closes the wrapper and retires so proprietary native mappings
+are fully reclaimed. Stable scenes do not rewarm it. A persistent material
+scene change or an explicit focus/VQA interaction starts a new warm window.
+Android memory-pressure callbacks request the same idle retirement, while
+in-flight work completes or reaches its existing hard bound first. The binding
+uses `BIND_WAIVE_PRIORITY`, making the optional semantic process reclaimable
+before the foreground sensor backbone.
 
 Rokid activation and sleep gestures are separate from microphone control. The
 host validates each typed `RokidGestureIntent`, maps it to an ACTIVATE or SLEEP
@@ -221,15 +255,15 @@ The persistent node records only an enabled flag and the selected automatic or
 forced depth-environment mode in private app preferences. Its connected-device
 foreground service returns Android's sticky restart disposition and reconstructs
 the controller from that state when Android redelivers a null restart intent.
-Explicit **Stop Android Node** clears the state synchronously, so a deliberate
-stop is never converted into an automatic restart. Camera, audio, IMU, touch,
-peer identity, and model output are not stored in this restart record.
-
-On the tested HyperOS build, an ADB-induced process crash or same-UID `SIGKILL`
-is classified as an explicit service stop and does not model low-memory
-reclamation. Those commands therefore cannot be used as evidence that sticky
-LMK restoration passed. A naturally occurring LMK event is the remaining
-physical validation gate for the new host restart path.
+The tested HyperOS build did not redeliver the sticky service within 60 seconds
+after either a natural low-memory termination or a same-UID `SIGKILL`. A second,
+small `:guardian` foreground process therefore holds only a Binder liveness
+watch on Android Node. It owns no sensor, network, model, Unity, or FMOD state.
+On Binder death it restarts the explicitly enabled foreground node, which reads
+the durable mode and reconstructs all runtime resources. Explicit **Stop Android
+Node** clears the state and stops both services, so the guardian never overrides
+user intent. Camera, audio, IMU, touch, peer identity, and model output are not
+stored in this restart record.
 
 On 2026-08-22 the current debug APK was installed and launched on the attached
 Poco F7 Ultra after the user approved Xiaomi's **Install via USB** prompt. The

@@ -190,7 +190,8 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
                     telemetry.pendingImuBatches > 64 ||
                     telemetry.pendingAudioBlocks > 64 ||
                     telemetry.pendingTouchEvents > 256 ||
-                    cameraGateTelemetryIsMalformed(telemetry)
+                    cameraGateTelemetryIsMalformed(telemetry) ||
+                    powerTelemetryIsMalformed(telemetry)
                 ) malformedControl()
             }
             LiveLinkControl.PayloadCase.LEASE_REQUEST -> {
@@ -261,6 +262,23 @@ class PerLaneSequenceGuard(binding: LiveSessionBinding) {
                 ).fold(0L, Math::addExact) != telemetry.cameraFramesAnalyzed
         }.getOrDefault(true)
     }
+
+    private fun powerTelemetryIsMalformed(telemetry: LiveLinkTelemetry): Boolean =
+        (telemetry.hasBatteryLevelPercent() && telemetry.batteryLevelPercent > 100) ||
+            telemetry.batteryChargeState == org.conceptflow.mpl.v1.BatteryChargeState.UNRECOGNIZED ||
+            (telemetry.hasBatteryVoltageMicrovolts() &&
+                telemetry.batteryVoltageMicrovolts > LivePowerTelemetry.MAX_VOLTAGE_MICROVOLTS) ||
+            (telemetry.hasBatteryCurrentMicroamps() &&
+                telemetry.batteryCurrentMicroamps !in
+                -LivePowerTelemetry.MAX_CURRENT_MICROAMPS..LivePowerTelemetry.MAX_CURRENT_MICROAMPS) ||
+            (telemetry.hasBatteryAverageCurrentMicroamps() &&
+                telemetry.batteryAverageCurrentMicroamps !in
+                -LivePowerTelemetry.MAX_CURRENT_MICROAMPS..LivePowerTelemetry.MAX_CURRENT_MICROAMPS) ||
+            (telemetry.hasBatteryChargeCounterMicroampHours() &&
+                telemetry.batteryChargeCounterMicroampHours < 0L) ||
+            (telemetry.hasBatteryTemperatureDeciCelsius() &&
+                telemetry.batteryTemperatureDeciCelsius !in -500..1_000) ||
+            (telemetry.hasBatteryEnergyNanowattHours() && telemetry.batteryEnergyNanowattHours < 0L)
 
     private fun bindingMismatch(): Nothing =
         throw LaneProtocolException(LaneProtocolFailure.BINDING_MISMATCH)

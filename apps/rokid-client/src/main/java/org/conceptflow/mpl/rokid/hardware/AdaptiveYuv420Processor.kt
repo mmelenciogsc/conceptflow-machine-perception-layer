@@ -67,13 +67,18 @@ internal data class Yuv420Frame(
 
 internal data class ProcessedYuvCameraFrame(
     val rgb8: ByteArray?,
+    val i420: ByteArray?,
     val inputDimensions: PixelDimensions,
     val outputDimensions: PixelDimensions,
     val decision: AdaptiveFrameDecision,
     val rgbConversionBackend: RgbConversionBackend?,
+    val i420NativeConversion: Boolean?,
 ) {
     init {
         require((rgb8 == null) == (rgbConversionBackend == null))
+        require((i420 == null) == (i420NativeConversion == null))
+        require(rgb8 == null || i420 == null)
+        require(!decision.emit || rgb8 != null || i420 != null)
     }
 }
 
@@ -82,11 +87,18 @@ internal enum class RgbConversionBackend {
     NATIVE_INTEGER,
 }
 
-/** Applies the protected gate in capture order, then converts only admitted frames to RGB8. */
+enum class CameraTransferPixelFormat {
+    RGB8,
+    I420,
+    AVC_INTRA,
+}
+
+/** Applies the protected gate in capture order, then converts only admitted frames. */
 internal class AdaptiveYuv420Processor(
     private val frameGate: AdaptiveFrameGate = AdaptiveFrameGate(),
     private val analysisGate: PixelDimensions = PixelDimensions(160, 90),
     private val outputSize: Int = 640,
+    private val outputFormat: CameraTransferPixelFormat = CameraTransferPixelFormat.RGB8,
 ) {
     private var cachedPlans: ProcessorSamplingPlans? = null
 
@@ -111,27 +123,36 @@ internal class AdaptiveYuv420Processor(
                 sourceDimensions = frame.dimensions,
                 analysis = PlaneSamplingPlan.scaled(frame.dimensions, analysisDimensions),
                 output = Yuv420RgbSamplingPlan.aspectFill(frame.dimensions, transform),
+                i420Output = Yuv420I420SamplingPlan.aspectFill(frame.dimensions, transform),
             ).also { cachedPlans = it }
         val decision = frameGate.evaluate(
             timestampNanos,
             Yuv420RgbConverter.toLumaFrame(frame, plans.analysis),
         )
-        val converted = if (decision.emit) {
+        val convertedRgb = if (decision.emit && outputFormat == CameraTransferPixelFormat.RGB8) {
             NativeYuv420RgbConverter.tryConvert(frame, plans.output)
                 ?.let { RgbConversionResult(it, RgbConversionBackend.NATIVE_INTEGER) }
                 ?: RgbConversionResult(
                     Yuv420RgbConverter.toRgb8(frame, plans.output),
                     RgbConversionBackend.KOTLIN_REFERENCE,
                 )
-        } else {
-            null
-        }
+        } else null
+        val convertedI420 = if (decision.emit && outputFormat != CameraTransferPixelFormat.RGB8) {
+            NativeYuv420I420Converter.tryConvert(frame, plans.i420Output)
+                ?.let { I420ConversionResult(it, native = true) }
+                ?: I420ConversionResult(
+                    Yuv420I420Converter.toI420(frame, plans.i420Output),
+                    native = false,
+                )
+        } else null
         return ProcessedYuvCameraFrame(
-            rgb8 = converted?.bytes,
+            rgb8 = convertedRgb?.bytes,
+            i420 = convertedI420?.bytes,
             inputDimensions = frame.dimensions,
             outputDimensions = PixelDimensions(outputSize, outputSize),
             decision = decision,
-            rgbConversionBackend = converted?.backend,
+            rgbConversionBackend = convertedRgb?.backend,
+            i420NativeConversion = convertedI420?.native,
         )
     }
 
@@ -145,6 +166,11 @@ internal class AdaptiveYuv420Processor(
 private data class RgbConversionResult(
     val bytes: ByteArray,
     val backend: RgbConversionBackend,
+)
+
+private data class I420ConversionResult(
+    val bytes: ByteArray,
+    val native: Boolean,
 )
 
 /** Preferred zero-copy native path for direct Camera2 planes; JVM/non-direct inputs use Kotlin. */
@@ -215,10 +241,79 @@ internal object NativeYuv420RgbConverter {
     ): Boolean
 }
 
+internal object NativeYuv420I420Converter {
+    private val loadResult = runCatching { System.loadLibrary("conceptflow_yuv_jni") }
+    internal val available: Boolean get() = loadResult.isSuccess
+
+    fun tryConvert(frame: Yuv420Frame, plan: Yuv420I420SamplingPlan): ByteArray? {
+        if (!available || plan.luma.sourceDimensions != frame.dimensions) return null
+        val y = frame.y as? ByteBufferYuv420Plane ?: return null
+        val u = frame.u as? ByteBufferYuv420Plane ?: return null
+        val v = frame.v as? ByteBufferYuv420Plane ?: return null
+        if (!y.nativeBuffer.isDirect || !u.nativeBuffer.isDirect || !v.nativeBuffer.isDirect) return null
+        val output = plan.luma.outputDimensions
+        require(output.width == output.height && output.width % 2 == 0)
+        val lumaBytes = Math.multiplyExact(output.width, output.height)
+        val bytes = ByteArray(Math.addExact(lumaBytes, lumaBytes / 2))
+        val transform = plan.transform
+        val converted = try {
+            convert(
+                y.nativeBuffer,
+                y.nativeOffset,
+                y.rowStride,
+                y.pixelStride,
+                u.nativeBuffer,
+                u.nativeOffset,
+                u.rowStride,
+                u.pixelStride,
+                v.nativeBuffer,
+                v.nativeOffset,
+                v.rowStride,
+                v.pixelStride,
+                frame.dimensions.width,
+                frame.dimensions.height,
+                output.width,
+                transform.scaledWidth,
+                transform.scaledHeight,
+                transform.cropLeft,
+                transform.cropTop,
+                bytes,
+            )
+        } catch (_: LinkageError) {
+            false
+        }
+        return bytes.takeIf { converted }
+    }
+
+    private external fun convert(
+        yBuffer: ByteBuffer,
+        yOffset: Int,
+        yRowStride: Int,
+        yPixelStride: Int,
+        uBuffer: ByteBuffer,
+        uOffset: Int,
+        uRowStride: Int,
+        uPixelStride: Int,
+        vBuffer: ByteBuffer,
+        vOffset: Int,
+        vRowStride: Int,
+        vPixelStride: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        outputSize: Int,
+        scaledWidth: Int,
+        scaledHeight: Int,
+        cropLeft: Int,
+        cropTop: Int,
+        output: ByteArray,
+    ): Boolean
+}
+
 private data class ProcessorSamplingPlans(
     val sourceDimensions: PixelDimensions,
     val analysis: PlaneSamplingPlan,
     val output: Yuv420RgbSamplingPlan,
+    val i420Output: Yuv420I420SamplingPlan,
 )
 
 internal data class BilinearAxisPlan(
@@ -340,6 +435,84 @@ internal data class Yuv420RgbSamplingPlan(
     }
 }
 
+internal data class Yuv420I420SamplingPlan(
+    val transform: SquareAspectFillTransform,
+    val luma: PlaneSamplingPlan,
+    val chroma: PlaneSamplingPlan,
+) {
+    companion object {
+        fun aspectFill(
+            source: PixelDimensions,
+            transform: SquareAspectFillTransform,
+        ): Yuv420I420SamplingPlan {
+            require(transform.outputSize % 2 == 0)
+            require(transform.scaledWidth % 2 == 0 && transform.scaledHeight % 2 == 0)
+            require(transform.cropLeft % 2 == 0 && transform.cropTop % 2 == 0)
+            val luma = PlaneSamplingPlan.aspectFill(source, transform)
+            val chromaSource = PixelDimensions((source.width + 1) / 2, (source.height + 1) / 2)
+            val chromaOutput = PixelDimensions(transform.outputSize / 2, transform.outputSize / 2)
+            val chroma = PlaneSamplingPlan(
+                sourceDimensions = chromaSource,
+                outputDimensions = chromaOutput,
+                x = BilinearAxisPlan.create(
+                    chromaOutput.width,
+                    transform.scaledWidth / 2,
+                    transform.cropLeft / 2,
+                    chromaSource.width,
+                ),
+                y = BilinearAxisPlan.create(
+                    chromaOutput.height,
+                    transform.scaledHeight / 2,
+                    transform.cropTop / 2,
+                    chromaSource.height,
+                ),
+            )
+            return Yuv420I420SamplingPlan(transform, luma, chroma)
+        }
+    }
+}
+
+/** Packs a resized frame as tightly packed Y, U, V planes without RGB conversion. */
+internal object Yuv420I420Converter {
+    fun toI420(frame: Yuv420Frame, plan: Yuv420I420SamplingPlan): ByteArray {
+        require(plan.luma.sourceDimensions == frame.dimensions)
+        val lumaBytes = Math.multiplyExact(
+            plan.luma.outputDimensions.width,
+            plan.luma.outputDimensions.height,
+        )
+        val chromaBytes = Math.multiplyExact(
+            plan.chroma.outputDimensions.width,
+            plan.chroma.outputDimensions.height,
+        )
+        val output = ByteArray(Math.addExact(lumaBytes, Math.multiplyExact(chromaBytes, 2)))
+        copyPlane(frame.y, plan.luma, output, 0)
+        copyPlane(frame.u, plan.chroma, output, lumaBytes)
+        copyPlane(frame.v, plan.chroma, output, lumaBytes + chromaBytes)
+        return output
+    }
+
+    private fun copyPlane(
+        source: Yuv420Plane,
+        plan: PlaneSamplingPlan,
+        output: ByteArray,
+        outputOffset: Int,
+    ) {
+        plan.rows.reset()
+        var offset = outputOffset
+        repeat(plan.outputDimensions.height) { outputY ->
+            val lowerY = plan.y.lower[outputY]
+            val upperY = plan.y.upper[outputY]
+            val yWeight = plan.y.upperWeight[outputY]
+            plan.rows.prepare(source, plan.x, lowerY, upperY)
+            val lower = plan.rows.lowerValues
+            val upper = plan.rows.upperValues
+            repeat(plan.outputDimensions.width) { outputX ->
+                output[offset++] = interpolatePlaneSample(lower[outputX], upper[outputX], yWeight).toByte()
+            }
+        }
+    }
+}
+
 /** Pure, deterministic YUV_420_888 sampling with cached coordinates and explicit strides. */
 internal object Yuv420RgbConverter {
     fun toLumaFrame(frame: Yuv420Frame, output: PixelDimensions): LumaFrame {
@@ -437,6 +610,15 @@ internal object Yuv420RgbConverter {
 
     private const val RGB_CHANNELS = 3
 }
+
+@Suppress("NOTHING_TO_INLINE")
+private inline fun interpolatePlaneSample(lower: Int, upper: Int, upperWeight: Int): Int =
+    (
+        (
+            lower.toLong() * (FIXED_ONE_INT - upperWeight) +
+                upper.toLong() * upperWeight + FIXED_ROUND
+            ) shr (FIXED_SHIFT * 2)
+        ).toInt()
 
 /** Fixed two-row cache; output storage is allocated once with its immutable sampling plan. */
 internal class BilinearPlaneRowCache(outputWidth: Int) {

@@ -525,7 +525,16 @@ class SpatialFocusManager(
     private val maximumBeaconHeadPoseAgeNanos: Long = 250_000_000L,
     private val vqaPendingTtlNanos: Long = FocusedVqaTiming.PUBLICATION_BUDGET_NANOS,
     private val vqaResultTtlNanos: Long = 10_000_000_000L,
+    private val browseIntentTtlNanos: Long = 2_000_000_000L,
 ) {
+    private data class PendingBrowsingReacquisition(
+        val target: SpatialFocusItem,
+        val validUntilTimestampNanos: Long,
+        val dwell: SpatialFocusDwell,
+        val dwellStartedTimestampNanos: Long,
+        val dwellDeadlineTimestampNanos: Long,
+    )
+
     private var revision = 0L
     private var snapshotCounter = 0L
     private var focusGeneration = 0L
@@ -545,6 +554,8 @@ class SpatialFocusManager(
     private var activeBeacon: SpatialBeacon? = null
     private var beaconActivationCounter = 0L
     private var vqaStateUntilNs = 0L
+    private var pendingBrowseUntilNs = 0L
+    private var pendingBrowsingReacquisition: PendingBrowsingReacquisition? = null
 
     init {
         require(dwellNanos == 750_000_000L)
@@ -553,6 +564,7 @@ class SpatialFocusManager(
         require(maximumBeaconHeadPoseAgeNanos in 1_000_000L..1_000_000_000L)
         require(vqaPendingTtlNanos in 1_000_000_000L..9_000_000_000L)
         require(vqaResultTtlNanos in 1_000_000_000L..60_000_000_000L)
+        require(browseIntentTtlNanos in dwellNanos..5_000_000_000L)
     }
 
     @Synchronized
@@ -563,13 +575,22 @@ class SpatialFocusManager(
         tracks: List<LightweightTrackState>,
     ): SpatialFocusState {
         require(sessionGeneration > 0L && sourceWorldRevision > 0L && nowNanos >= 0L)
-        val candidates = tracks.asSequence()
-            .filter { nowNanos < it.expiresAtTimestampNanos }
+        val freshTracks = tracks.filter { nowNanos < it.expiresAtTimestampNanos }
+        val candidates = freshTracks.asSequence()
             .mapNotNull { toItem(it, nowNanos) }
             .associateBy(SpatialFocusItem::stableTrackId)
+        val updateReason = when {
+            tracks.isEmpty() || candidates.isNotEmpty() -> "tracks_updated"
+            freshTracks.isEmpty() -> "tracks_rejected_expired"
+            freshTracks.none { it.headRelativeVectorMeters != null } ->
+                "tracks_rejected_head_frame_unavailable"
+            freshTracks.none { it.metricDepth != null } -> "tracks_rejected_metric_depth_unavailable"
+            else -> "tracks_rejected_ineligible"
+        }
         val prior = snapshot
         if (prior != null && prior.sessionGeneration != sessionGeneration) clearSelection()
         if (activeBeacon?.let { nowNanos >= it.validUntilTimestampNanos } == true) clearSelection()
+        expirePendingBrowse(nowNanos)
         currentSourceWorldRevision = sourceWorldRevision
         if (prior != null && prior.sessionGeneration == sessionGeneration &&
             (mode == SpatialFocusMode.VQA_PENDING || mode == SpatialFocusMode.VQA_RESULT) &&
@@ -594,7 +615,9 @@ class SpatialFocusManager(
                 snapshotCounter, sessionGeneration, sourceWorldRevision, nowNanos,
                 candidates.values.sortedWith(ITEM_ORDER),
             )
-            if (snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
+            if (snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE &&
+                !hasPendingBrowse(nowNanos)
+            ) {
                 resetInternal(sessionGeneration)
             } else if (mode != SpatialFocusMode.INACTIVE) {
                 select(0, nowNanos)
@@ -606,17 +629,24 @@ class SpatialFocusManager(
                 sourceWorldRevision = sourceWorldRevision,
                 items = survivorIds.map(candidates::getValue) + appended,
             )
-            val targetId = prior.items.getOrNull(selectedIndex)?.stableTrackId
+            val target = prior.items.getOrNull(selectedIndex)
+            val targetId = target?.stableTrackId
             val retainedIndex = targetId?.let { id -> snapshot!!.items.indexOfFirst { it.stableTrackId == id } }
             when {
-                snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE -> resetInternal(sessionGeneration)
+                snapshot!!.items.isEmpty() && mode == SpatialFocusMode.BROWSING && targetId != null ->
+                    suspendBrowsingSelection(requireNotNull(target), nowNanos)
+                snapshot!!.items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE &&
+                    !hasPendingBrowse(nowNanos) -> resetInternal(sessionGeneration)
+                targetId != null && retainedIndex == -1 && mode == SpatialFocusMode.BROWSING ->
+                    suspendBrowsingSelection(requireNotNull(target), nowNanos)
                 targetId != null && retainedIndex == -1 && mode != SpatialFocusMode.BEACON_ACTIVE -> clearSelection()
                 mode == SpatialFocusMode.BEACON_ACTIVE && retainedIndex == -1 -> selectedIndex = -1
                 retainedIndex != null -> selectedIndex = retainedIndex
                 else -> selectedIndex = -1
             }
         }
-        return publish(nowNanos, "tracks_updated")
+        restorePendingBrowse(nowNanos)
+        return publish(nowNanos, updateReason)
     }
 
     @Synchronized
@@ -633,6 +663,15 @@ class SpatialFocusManager(
         }
         val items = snapshot?.items.orEmpty()
         if (items.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
+            if (command == SpatialFocusCommand.NEXT || command == SpatialFocusCommand.PREVIOUS) {
+                pendingBrowseUntilNs = Math.addExact(nowNanos, browseIntentTtlNanos)
+                pendingBrowsingReacquisition = null
+                return SpatialFocusTransition(
+                    publish(nowNanos, "browse_pending"),
+                    SpatialFocusEffect.None,
+                )
+            }
+            if (command == SpatialFocusCommand.BACK) clearPendingBrowse()
             return SpatialFocusTransition(publish(nowNanos, "no_spatial_targets"), SpatialFocusEffect.None)
         }
         var effect: SpatialFocusEffect = SpatialFocusEffect.None
@@ -749,6 +788,7 @@ class SpatialFocusManager(
                 SpatialFocusMode.VQA_PENDING, SpatialFocusMode.BEACON_ACTIVE -> Unit
             }
             SpatialFocusCommand.BACK -> {
+                clearPendingBrowse()
                 val activeVqa = vqaGate.cancel()
                 if (activeVqa != null) {
                     runCatching { vqaGateway.cancel(activeVqa) }
@@ -852,6 +892,7 @@ class SpatialFocusManager(
         vqaAnswer = ""
         vqaRequestId = 0L
         vqaStateUntilNs = 0L
+        clearPendingBrowse()
     }
 
     private fun cancelDwell() {
@@ -879,13 +920,25 @@ class SpatialFocusManager(
         if (survivors.size == current.items.size) return false
         snapshot = current.copy(items = survivors)
         if (survivors.isEmpty() && mode != SpatialFocusMode.BEACON_ACTIVE) {
-            resetInternal(current.sessionGeneration)
+            if (selectedId != null && mode == SpatialFocusMode.BROWSING) {
+                suspendBrowsingSelection(requireNotNull(current.items.firstOrNull {
+                    it.stableTrackId == selectedId
+                }), nowNanos)
+            } else {
+                resetInternal(current.sessionGeneration)
+            }
             return selectedId != null
         }
         if (selectedId != null && survivors.none { it.stableTrackId == selectedId } &&
             mode != SpatialFocusMode.BEACON_ACTIVE
         ) {
-            clearSelection()
+            if (mode == SpatialFocusMode.BROWSING) {
+                suspendBrowsingSelection(requireNotNull(current.items.firstOrNull {
+                    it.stableTrackId == selectedId
+                }), nowNanos)
+            } else {
+                clearSelection()
+            }
             return true
         }
         selectedIndex = selectedId?.let { id -> survivors.indexOfFirst { it.stableTrackId == id } } ?: -1
@@ -899,6 +952,129 @@ class SpatialFocusManager(
         clearSelection()
     }
 
+    /**
+     * A detector gap must stop spatial rendering immediately, but it need not erase the user's
+     * place in a linear browse. The exact stable ID is preferred. A replacement ID may resume the
+     * selection only when it is the sole same-class candidate inside tight direction, depth, and
+     * image-position gates during one bounded state lifetime. Menus, VQA, and beacons never use
+     * this grace path.
+     */
+    private fun suspendBrowsingSelection(target: SpatialFocusItem, nowNanos: Long) {
+        pendingBrowsingReacquisition = PendingBrowsingReacquisition(
+            target,
+            Math.addExact(nowNanos, stateTtlNanos),
+            dwell,
+            dwellStartedNs,
+            dwellDeadlineNs,
+        )
+        pendingBrowseUntilNs = 0L
+        mode = SpatialFocusMode.INACTIVE
+        selectedIndex = -1
+        menuIndex = 0
+        cancelDwell()
+        vqaAnswer = ""
+        vqaRequestId = 0L
+        vqaStateUntilNs = 0L
+        operatorNotice = SpatialFocusOperatorNotice.None
+        activeBeacon = null
+    }
+
+    private fun restorePendingBrowse(nowNanos: Long) {
+        val current = snapshot ?: return
+        val reacquisition = pendingBrowsingReacquisition
+        if (reacquisition != null && nowNanos <= reacquisition.validUntilTimestampNanos) {
+            val exactIndex = current.items.indexOfFirst {
+                it.stableTrackId == reacquisition.target.stableTrackId
+            }
+            val index = if (exactIndex >= 0) {
+                exactIndex
+            } else {
+                conservativeReplacementIndex(reacquisition.target, current.items)
+            }
+            if (index >= 0) {
+                mode = SpatialFocusMode.BROWSING
+                selectedIndex = index
+                dwell = if (reacquisition.dwell == SpatialFocusDwell.PENDING &&
+                    nowNanos >= reacquisition.dwellDeadlineTimestampNanos
+                ) SpatialFocusDwell.READY else reacquisition.dwell
+                dwellStartedNs = reacquisition.dwellStartedTimestampNanos
+                dwellDeadlineNs = reacquisition.dwellDeadlineTimestampNanos
+                pendingBrowsingReacquisition = null
+                return
+            }
+        }
+        if (pendingBrowseUntilNs > 0L && nowNanos <= pendingBrowseUntilNs && current.items.isNotEmpty()) {
+            mode = SpatialFocusMode.BROWSING
+            select(0, nowNanos)
+        }
+    }
+
+    private fun conservativeReplacementIndex(
+        prior: SpatialFocusItem,
+        candidates: List<SpatialFocusItem>,
+    ): Int {
+        val matching = candidates.withIndex().filter { (_, candidate) ->
+            candidate.classId == prior.classId &&
+                candidate.sourceFrameId >= prior.sourceFrameId &&
+                directionCosine(prior.headVectorMeters, candidate.headVectorMeters) >=
+                MINIMUM_REACQUISITION_DIRECTION_COSINE &&
+                kotlin.math.abs(candidate.distanceMeters - prior.distanceMeters) <=
+                maximumReacquisitionDistanceDelta(prior, candidate) &&
+                imageCentersRemainClose(prior.imageGeometry, candidate.imageGeometry)
+        }
+        return matching.singleOrNull()?.index ?: -1
+    }
+
+    private fun directionCosine(first: MetricVector3, second: MetricVector3): Double {
+        val denominator = first.lengthMeters * second.lengthMeters
+        if (!denominator.isFinite() || denominator <= 0.0) return -1.0
+        return ((first.x * second.x + first.y * second.y + first.z * second.z) / denominator)
+            .coerceIn(-1.0, 1.0)
+    }
+
+    private fun maximumReacquisitionDistanceDelta(
+        first: SpatialFocusItem,
+        second: SpatialFocusItem,
+    ): Double {
+        val uncertainty = kotlin.math.sqrt(
+            (first.uncertaintyMeters ?: 0.0).let { it * it } +
+                (second.uncertaintyMeters ?: 0.0).let { it * it },
+        ) * REACQUISITION_UNCERTAINTY_SIGMAS
+        return max(
+            MINIMUM_REACQUISITION_DISTANCE_METERS,
+            max(minOf(first.distanceMeters, second.distanceMeters) * REACQUISITION_DISTANCE_FRACTION, uncertainty),
+        )
+    }
+
+    private fun imageCentersRemainClose(
+        first: InstanceMaskGeometry?,
+        second: InstanceMaskGeometry?,
+    ): Boolean {
+        if (first == null || second == null) return true
+        if (first.imageWidthPixels != second.imageWidthPixels ||
+            first.imageHeightPixels != second.imageHeightPixels
+        ) return false
+        val dx = (first.centroidXPixels - second.centroidXPixels) / first.imageWidthPixels
+        val dy = (first.centroidYPixels - second.centroidYPixels) / first.imageHeightPixels
+        return sqrt(dx * dx + dy * dy) <= MAXIMUM_REACQUISITION_NORMALIZED_IMAGE_DELTA
+    }
+
+    private fun expirePendingBrowse(nowNanos: Long) {
+        if (pendingBrowseUntilNs > 0L && nowNanos > pendingBrowseUntilNs) pendingBrowseUntilNs = 0L
+        if (pendingBrowsingReacquisition?.let { nowNanos > it.validUntilTimestampNanos } == true) {
+            pendingBrowsingReacquisition = null
+        }
+    }
+
+    private fun hasPendingBrowse(nowNanos: Long): Boolean =
+        (pendingBrowseUntilNs > 0L && nowNanos <= pendingBrowseUntilNs) ||
+            pendingBrowsingReacquisition?.let { nowNanos <= it.validUntilTimestampNanos } == true
+
+    private fun clearPendingBrowse() {
+        pendingBrowseUntilNs = 0L
+        pendingBrowsingReacquisition = null
+    }
+
     private fun clearSelection() {
         vqaGate.cancel()?.let { correlation -> runCatching { vqaGateway.cancel(correlation) } }
         mode = SpatialFocusMode.INACTIVE
@@ -910,6 +1086,7 @@ class SpatialFocusManager(
         vqaStateUntilNs = 0L
         operatorNotice = SpatialFocusOperatorNotice.None
         activeBeacon = null
+        clearPendingBrowse()
         focusGeneration += 1L
     }
 
@@ -961,6 +1138,7 @@ class SpatialFocusManager(
     }
 
     private fun toItem(track: LightweightTrackState, nowNanos: Long): SpatialFocusItem? {
+        if (!track.confirmedForPublication) return null
         val head = track.headRelativeVectorMeters ?: return null
         val depth = track.metricDepth ?: return null
         return SpatialFocusItem(
@@ -1036,6 +1214,11 @@ class SpatialFocusManager(
     )
 
     private companion object {
+        const val MINIMUM_REACQUISITION_DIRECTION_COSINE = 0.9659258262890683 // cos(15 degrees)
+        const val MINIMUM_REACQUISITION_DISTANCE_METERS = 0.35
+        const val REACQUISITION_DISTANCE_FRACTION = 0.25
+        const val REACQUISITION_UNCERTAINTY_SIGMAS = 3.0
+        const val MAXIMUM_REACQUISITION_NORMALIZED_IMAGE_DELTA = 0.18
         val MENU = SpatialFocusMenuOption.entries
         val ITEM_ORDER = compareBy<SpatialFocusItem> { it.distanceMeters }
             .thenBy { SpatialFocusSpeechFormatter.clockHour(it.headVectorMeters) }

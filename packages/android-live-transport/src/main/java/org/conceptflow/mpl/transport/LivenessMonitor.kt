@@ -95,8 +95,11 @@ class LivenessMonitor(
 
     companion object {
         const val DEFAULT_KEEPALIVE_INTERVAL_NS = 1_000_000_000L
-        // Tolerate brief Android scheduling stalls and Wi-Fi roaming without treating them as a
-        // dead peer. Sensor TTLs independently reject stale perception while this link recovers.
-        const val DEFAULT_MISSED_INTERVALS = 15
+        // YodaOS-Sprite has physically exhibited occasional whole-process/radio stalls slightly
+        // longer than 15 seconds while its foreground runtime and bounded queues remain healthy.
+        // Allow a 30-second authenticated-session grace before reconnecting. Sensor TTLs
+        // independently reject stale perception throughout the pause, so this does not make old
+        // frames, poses, audio, or touch input current again.
+        const val DEFAULT_MISSED_INTERVALS = 30
     }
 }

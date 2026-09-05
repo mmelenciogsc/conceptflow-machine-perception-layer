@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+
+readonly ROKID_PACKAGE="org.conceptflow.mpl.rokidclient"
+readonly ANDROID_PACKAGE="org.conceptflow.mpl.androidhost"
+readonly ROKID_URI="content://org.conceptflow.mpl.rokidclient.codec-fidelity"
+readonly ANDROID_URI="content://org.conceptflow.mpl.androidhost.debug-control/codec-fidelity"
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/avc-fidelity-probe --rokid-serial SERIAL --android-serial SERIAL [OPTIONS]
+
+Options:
+  --fixture-i420 PATH  Optional packed 640x640 I420 fixture (exactly 614400 bytes).
+  --bit-rate BPS      Allow-listed AVC bitrate: 1500000, 3000000, 6000000,
+                      9000000, or 12000000. Default: 1500000.
+
+Runs a content-free cross-device fidelity gate using the Rokid hardware AVC
+encoder, Poco hardware decoder, and the Poco's provisioned YOLOE plus indoor
+and outdoor DepthAnything QNN graphs. Android Node must be stopped first.
+EOF
+}
+
+rokid_serial=""
+android_serial=""
+fixture_i420=""
+bit_rate="1500000"
+while (($#)); do
+    case "$1" in
+        --rokid-serial) rokid_serial="${2:-}"; shift 2 ;;
+        --android-serial) android_serial="${2:-}"; shift 2 ;;
+        --fixture-i420) fixture_i420="${2:-}"; shift 2 ;;
+        --bit-rate) bit_rate="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'error: unsupported argument; use --help\n' >&2; exit 2 ;;
+    esac
+done
+
+[[ -n "$rokid_serial" && -n "$android_serial" ]] || { usage >&2; exit 2; }
+case "$bit_rate" in
+    1500000|3000000|6000000|9000000|12000000) ;;
+    *) printf 'error: unsupported AVC bitrate\n' >&2; exit 2 ;;
+esac
+if [[ -n "$fixture_i420" ]]; then
+    [[ -f "$fixture_i420" && "$(stat -c %s "$fixture_i420")" == "614400" ]] || {
+        printf 'error: fixture must be a 614400-byte packed 640x640 I420 file\n' >&2
+        exit 2
+    }
+    fixture_sha="$(sha256sum "$fixture_i420" | cut -d' ' -f1)"
+else
+    fixture_sha=""
+fi
+for value in "$rokid_serial" "$android_serial"; do
+    [[ "$value" != *$'\n'* ]] || { printf 'error: malformed serial\n' >&2; exit 2; }
+    [[ "$(adb -s "$value" get-state 2>/dev/null || true)" == "device" ]] || {
+        printf 'error: selected device is not authorized and online\n' >&2
+        exit 1
+    }
+done
+
+tmp_file="$(mktemp)"
+remote_tmp="/data/local/tmp/conceptflow-codec-fidelity-$$.avc"
+rokid_reference_tmp="/data/local/tmp/conceptflow-codec-reference-$$.i420"
+android_reference_tmp="/data/local/tmp/conceptflow-codec-reference-$$.i420"
+# shellcheck disable=SC2317
+cleanup() {
+    rm -f -- "$tmp_file"
+    adb -s "$android_serial" shell rm -f -- "$remote_tmp" >/dev/null 2>&1 || true
+    adb -s "$rokid_serial" shell rm -f -- "$rokid_reference_tmp" >/dev/null 2>&1 || true
+    adb -s "$android_serial" shell rm -f -- "$android_reference_tmp" >/dev/null 2>&1 || true
+    adb -s "$rokid_serial" shell content query --user 0 --uri "$ROKID_URI/clear" >/dev/null 2>&1 || true
+    adb -s "$android_serial" exec-out run-as "$ANDROID_PACKAGE" \
+        rm -f no_backup/codec-fidelity/fixture.avc no_backup/codec-fidelity/reference.i420 \
+        >/dev/null 2>&1 || true
+    adb -s "$android_serial" shell am force-stop "$ANDROID_PACKAGE" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+rokid_root="$(adb -s "$rokid_serial" shell run-as "$ROKID_PACKAGE" pwd | tr -d '\r')"
+android_root="$(adb -s "$android_serial" shell run-as "$ANDROID_PACKAGE" pwd | tr -d '\r')"
+[[ "$rokid_root" == /data/* && "$android_root" == /data/* ]] || {
+    printf 'error: debug run-as access is unavailable\n' >&2
+    exit 1
+}
+
+if [[ -n "$fixture_i420" ]]; then
+    adb -s "$rokid_serial" push "$fixture_i420" "$rokid_reference_tmp" >/dev/null
+    adb -s "$android_serial" push "$fixture_i420" "$android_reference_tmp" >/dev/null
+    adb -s "$rokid_serial" shell chmod 644 "$rokid_reference_tmp"
+    adb -s "$android_serial" shell chmod 644 "$android_reference_tmp"
+    adb -s "$rokid_serial" shell run-as "$ROKID_PACKAGE" \
+        mkdir -p "$rokid_root/no_backup/codec-fidelity"
+    adb -s "$android_serial" shell run-as "$ANDROID_PACKAGE" \
+        mkdir -p "$android_root/no_backup/codec-fidelity"
+    adb -s "$rokid_serial" shell run-as "$ROKID_PACKAGE" \
+        cp "$rokid_reference_tmp" "$rokid_root/no_backup/codec-fidelity/reference.i420"
+    adb -s "$android_serial" shell run-as "$ANDROID_PACKAGE" \
+        cp "$android_reference_tmp" "$android_root/no_backup/codec-fidelity/reference.i420"
+    adb -s "$rokid_serial" shell rm -f -- "$rokid_reference_tmp"
+    adb -s "$android_serial" shell rm -f -- "$android_reference_tmp"
+fi
+
+node_status="$(timeout --foreground 10s adb -s "$android_serial" shell content query --user 0 \
+    --uri "content://org.conceptflow.mpl.androidhost.debug-control/status" 2>/dev/null || true)"
+case "$node_status" in
+    *"status=node_idle"*|*"status=Live Machine Vision status: Stopped."*) ;;
+    *)
+        printf 'error: stop Android Node before running the codec fidelity probe\n' >&2
+        exit 1
+        ;;
+esac
+# Each profile gets a fresh process and fresh QNN contexts. Reusing many sequential native
+# contexts in one debug process can turn a profile sweep into a test of driver residue rather
+# than codec fidelity; force-stop is safe because the probe requires Android Node to be idle.
+adb -s "$android_serial" shell am force-stop "$ANDROID_PACKAGE"
+
+export_status="$(timeout --foreground 20s adb -s "$rokid_serial" shell content query --user 0 \
+    --uri "$ROKID_URI/export/$bit_rate" 2>/dev/null || true)"
+[[ "$export_status" == *"codec_fidelity_export_ready"* ]] || {
+    printf 'error: Rokid hardware encoder export failed: %s\n' "$export_status" >&2
+    exit 1
+}
+[[ "$export_status" == *"bitrate_$bit_rate"* ]] || {
+    printf 'error: Rokid encoder did not confirm the requested bitrate\n' >&2
+    exit 1
+}
+if [[ -n "$fixture_sha" && "$export_status" != *"reference_sha256_$fixture_sha"* ]]; then
+    printf 'error: Rokid reference fixture digest mismatch\n' >&2
+    exit 1
+fi
+
+adb -s "$rokid_serial" exec-out run-as "$ROKID_PACKAGE" \
+    cat "$rokid_root/no_backup/codec-fidelity/fixture.avc" >"$tmp_file"
+[[ -s "$tmp_file" && "$(stat -c %s "$tmp_file")" -le 4194304 ]] || {
+    printf 'error: exported AVC fixture is empty or too large\n' >&2
+    exit 1
+}
+encoded_sha="$(sha256sum "$tmp_file" | cut -d' ' -f1)"
+[[ "$export_status" == *"encoded_sha256_$encoded_sha"* ]] || {
+    printf 'error: exported AVC digest does not match Rokid report\n' >&2
+    exit 1
+}
+
+adb -s "$android_serial" push "$tmp_file" "$remote_tmp" >/dev/null
+adb -s "$android_serial" shell run-as "$ANDROID_PACKAGE" \
+    mkdir -p "$android_root/no_backup/codec-fidelity"
+adb -s "$android_serial" shell run-as "$ANDROID_PACKAGE" \
+    cp "$remote_tmp" "$android_root/no_backup/codec-fidelity/fixture.avc"
+adb -s "$android_serial" shell rm -f -- "$remote_tmp"
+
+start_status="$(timeout --foreground 10s adb -s "$android_serial" shell content query --user 0 \
+    --uri "$ANDROID_URI/start" 2>/dev/null || true)"
+[[ "$start_status" == *"codec_fidelity_queued"* ]] || {
+    printf 'error: Poco fidelity probe did not start: %s\n' "$start_status" >&2
+    exit 1
+}
+
+deadline=$((SECONDS + 180))
+while ((SECONDS < deadline)); do
+    result="$(timeout --foreground 10s adb -s "$android_serial" shell content query --user 0 \
+        --uri "$ANDROID_URI/status" 2>/dev/null || true)"
+    case "$result" in
+        *codec_fidelity_passed*)
+            if [[ -n "$fixture_sha" && "$result" != *"reference_sha256_$fixture_sha"* ]]; then
+                printf 'error: Poco reference fixture digest mismatch\n' >&2
+                exit 1
+            fi
+            printf '%s\n%s\n' "$export_status" "$result"
+            exit 0
+            ;;
+        *codec_fidelity_rejected*|*codec_fidelity_failed*)
+            if [[ -n "$fixture_sha" && "$result" == *codec_fidelity_rejected* && \
+                "$result" != *"reference_sha256_$fixture_sha"* ]]; then
+                printf 'error: Poco reference fixture digest mismatch\n' >&2
+                exit 1
+            fi
+            printf '%s\n%s\n' "$export_status" "$result" >&2
+            exit 1
+            ;;
+    esac
+    sleep 1
+done
+printf 'error: Poco fidelity probe timed out\n' >&2
+exit 1

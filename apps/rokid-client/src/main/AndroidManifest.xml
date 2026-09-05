@@ -51,7 +51,8 @@
             android:description="@string/input_accessibility_service_description"
             android:exported="true"
             android:label="@string/input_accessibility_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:process=":input_observer">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>

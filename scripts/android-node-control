@@ -20,6 +20,9 @@ Commands:
   start-outdoor    Start it with the outdoor depth profile forced.
   microphone       Request one bounded on-demand glasses microphone lease.
   ambient-profile  Request one bounded, content-free ambient sound profile.
+  speech-timeout-probe Run a debug-only, content-free native Whisper deadline probe.
+  speech-timeout-probe-status Return the native Whisper deadline-probe result.
+  avc-decode-fault Arm one debug-only AVC decode failure to validate automatic I420 fallback.
   wifi-direct-recover Explicitly replace an empty phone-owned Wi-Fi Direct group.
   wifi-direct-recover-5ghz Replace an empty group on the previously validated 5-GHz band.
   wifi-direct-negotiate Remove an empty autonomous group and await ordinary peer negotiation.
@@ -42,7 +45,7 @@ while (($#)); do
     case "$1" in
         --serial) serial="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
-        start-automatic|start-indoor|start-outdoor|microphone|ambient-profile|wifi-direct-recover|wifi-direct-recover-5ghz|wifi-direct-negotiate|wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa|stop)
+        start-automatic|start-indoor|start-outdoor|microphone|ambient-profile|speech-timeout-probe|speech-timeout-probe-status|avc-decode-fault|wifi-direct-recover|wifi-direct-recover-5ghz|wifi-direct-negotiate|wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa|stop)
             [[ -z "$command_name" ]] || { printf 'error: only one command is allowed\n' >&2; exit 2; }
             command_name="$1"
             shift
@@ -66,13 +69,14 @@ case "$command_name" in
     start-automatic) action="org.conceptflow.mpl.host.debug.START_AUTOMATIC" ;;
     start-indoor) action="org.conceptflow.mpl.host.debug.START_INDOOR" ;;
     start-outdoor) action="org.conceptflow.mpl.host.debug.START_OUTDOOR" ;;
-    microphone) action="org.conceptflow.mpl.host.debug.REQUEST_MICROPHONE" ;;
+    microphone) action="" ;;
     ambient-profile) action="org.conceptflow.mpl.host.debug.REQUEST_AMBIENT_PROFILE" ;;
+    speech-timeout-probe) action="org.conceptflow.mpl.host.debug.SPEECH_TIMEOUT_PROBE" ;;
     wifi-direct-recover) action="org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT" ;;
     wifi-direct-recover-5ghz) action="org.conceptflow.mpl.host.debug.RECOVER_WIFI_DIRECT_5GHZ" ;;
     wifi-direct-negotiate) action="org.conceptflow.mpl.host.debug.PREPARE_WIFI_DIRECT_NEGOTIATION" ;;
     stop) action="org.conceptflow.mpl.host.debug.STOP" ;;
-    wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa) action="" ;;
+    speech-timeout-probe-status|avc-decode-fault|wifi-direct-recovery-status|status|focus-status|focus-next|focus-previous|focus-activate|focus-back|focus-beacon|focus-vqa) action="" ;;
 esac
 if [[ -n "$action" ]]; then
     adb -s "$serial" shell am start --user 0 -W -n "$CONTROL_ACTIVITY" -a "$action" >/dev/null
@@ -81,7 +85,10 @@ if [[ -n "$action" ]]; then
 fi
 
 case "$command_name" in
+    microphone) control_path="microphone" ;;
     status) control_path="status" ;;
+    speech-timeout-probe-status) control_path="speech-timeout-probe-status" ;;
+    avc-decode-fault) control_path="avc-decode-fault" ;;
     wifi-direct-recovery-status) control_path="wifi-direct-recovery-status" ;;
     focus-status) control_path="focus-status" ;;
     focus-next) control_path="focus/next" ;;
@@ -91,7 +98,8 @@ case "$command_name" in
     focus-beacon) control_path="focus/beacon" ;;
     focus-vqa) control_path="focus/vqa" ;;
 esac
-result="$(adb -s "$serial" shell content query --user 0 --uri "$CONTROL_URI/$control_path" 2>/dev/null || true)"
+result="$(timeout --foreground 10s adb -s "$serial" shell content query --user 0 \
+    --uri "$CONTROL_URI/$control_path" 2>/dev/null || true)"
 [[ "$result" == *"Row: 0 status="* ]] || {
     printf 'error: Android Node debug control did not return a result\n' >&2
     exit 1
