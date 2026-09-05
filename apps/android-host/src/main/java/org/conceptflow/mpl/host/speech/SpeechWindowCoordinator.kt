@@ -235,6 +235,9 @@ class SpeechWindowCoordinator(
                     } else {
                         vadInference
                     }
+                    samples?.fill(0f)
+                    samples = null
+                    captured.zeroize()
                     val completion = synchronized(this) {
                         if (closed.get() || token != operationToken) return@synchronized null
                         lastInference = inference

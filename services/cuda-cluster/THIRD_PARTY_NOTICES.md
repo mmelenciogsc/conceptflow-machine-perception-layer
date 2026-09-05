@@ -23,6 +23,7 @@ repository's `MIT OR Apache-2.0` license does not relicense it.
 | Android | grpc-protobuf-lite | 1.68.1 | Apache-2.0 |
 | Android | grpc-stub | 1.68.1 | Apache-2.0 |
 | Android compile-only | javax.annotation-api | 1.3.2 | CDDL-1.0 OR GPL-2.0-with-classpath-exception |
+| Android native, optional | whisper.cpp | `eacbd8234c6654cdbf2c377f72b2106875479bdc` | MIT |
 | .NET | Google.Protobuf | 3.28.3 | BSD-3-Clause |
 | .NET | Grpc.Net.Client | 2.67.0 | Apache-2.0 |
 | .NET build | Grpc.Tools | 2.67.0 | Apache-2.0 |
@@ -64,6 +65,35 @@ identifiers were reviewed from installed package metadata and upstream
 Maven/NuGet package metadata. Before distributing binaries, regenerate the
 complete dependency graph and retain all notices required by transitive
 dependencies.
+
+### whisper.cpp notice
+
+The optional Android speech build statically links whisper.cpp. The same notice
+is packaged in Android Node as `res/raw/whisper_cpp_license.txt`:
+
+```text
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## External platforms and optional integrations
 
