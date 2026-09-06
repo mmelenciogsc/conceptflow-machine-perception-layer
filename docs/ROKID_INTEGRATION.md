@@ -807,6 +807,8 @@ Shortcuts is disabled, append both of these arguments:
 ```
 
 Omitting the confirmation fails before either device configuration is changed.
+The field is written only to Android Node; Rokid Node's private configuration
+remains compatible with previously installed builds.
 The top physical button and every ordinary one-finger gesture remain outside
 the mapping.
 
