@@ -112,6 +112,69 @@ default and provisioning-script default remain I420. No deployment should
 select AVC merely because it sends fewer bytes: untethered matched-workload
 energy, thermal, visual-fidelity, and model-output comparisons remain required.
 
+Protocol 1.6 adds `camera_transport=i420_lz4` and
+`camera_transport=i420_zstd`. Both operate only after the protected gate and
+640×640 I420 conversion, reset for every frame, and reconstruct byte-identical
+I420 on Android Node before the sensor timeline and QNN preprocessing. LZ4 uses
+its safe Java block implementation; Zstandard uses its Android arm64 runtime at
+compression level 1. A frame is sent as raw I420 when compression is unavailable
+or would increase payload size. Raw I420 remains the configuration default and
+the negotiated failure fallback until a matched untethered comparison selects
+a replacement.
+
+With a debug Rokid Node attached, run the content-free on-device codec check:
+
+```bash
+./scripts/lossless-i420-probe --rokid-serial "$ROKID_SERIAL"
+```
+
+The probe reports exact round-trip status, compressed/raw byte totals, and
+encode/decode p50/p95 for 30 deterministic frames. It is a codec functional
+and timing check, not a camera, radio, thermal, or battery result.
+
+### Lossless-I420 screening
+
+On 2026-09-06, the final debug Rokid build exercised both lossless codecs on
+the physical glasses. Each codec independently round-tripped 30/30
+deterministic 640×640 I420 frames byte-for-byte and then proved the per-frame
+raw-I420 fallback with deterministic incompressible input. LZ4 reduced the
+18,432,000-byte fixture total to 2,806,620 bytes; encode p50/p95 was
+9.646/21.980 ms and decode p50/p95 was 5.312/5.931 ms. Zstandard reduced it to
+899,760 bytes; encode p50/p95 was 3.353/3.636 ms and decode p50/p95 was
+1.462/1.688 ms. These unusually high ratios describe only the synthetic
+fixture.
+
+Three consecutive attached 30-second sessions then held the glasses in the
+same indoor position and ran the real camera, IMU, transport, Poco QNN/HTP
+YOLOE-26S, and forced-indoor metric-depth graph:
+
+| Transport | Emitted frames | Camera-lane bytes | Reduction from same-run raw payload | Rokid listener p95 | Capture-to-receive p95 | HTP completions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Raw I420 | 82 | 50,578,868 | baseline | 4.4 ms | 240.7 ms | 61 |
+| I420 LZ4 | 85 | 42,095,526 | 19.4% | 56.5 ms | 292.0 ms | 56 |
+| I420 Zstandard | 84 | 37,734,060 | 26.9% | 47.3 ms | 299.5 ms | 53 |
+
+All three sessions completed with authenticated close, zero link
+interruptions, zero camera/IMU queue loss, finite YOLO/depth tensors, and stable
+current detections. Because both compressed transports reconstruct exact I420
+before QNN preprocessing, they introduce no lossy semantic-fidelity path. The
+short sessions show that Zstandard dominates LZ4 on this hardware for both
+live-scene byte reduction and Rokid listener cost, while raw I420 retains the
+lowest transport latency.
+
+The first 600-second untethered Zstandard trial then completed from a
+100-percent start. It reconstructed 2,166 frames, selected 42,238 IMU samples,
+completed 1,273 of 1,274 HTP attempts, and sent 927,398,487 camera-lane bytes,
+or approximately 12.365 Mbit/s. Link interruptions and all sensor queue-loss
+counters remained zero. The timed endpoint was 76 percent and 34.5 C; the
+delayed post-reconnect gauge was 73 percent and 31.5 C. Compared with the prior
+two-run raw-I420 mean of 17.831 Mbit/s and 34 reported percentage points, this
+single Zstandard screen used 30.7 percent fewer camera-wire bytes and reported
+a 24-point timed drop. The result is directionally favorable, not a calibrated
+energy claim: it is not yet counterbalanced, the battery gauge is nonlinear,
+and movement was human rather than mechanically repeated. Raw I420 therefore
+remains the production default and mandatory fallback.
+
 The power governor, fixed 15 FPS requests, adaptive Wi-Fi-lock policy, and I420
 transport are implemented. They reduce known risk; they do not establish a
 battery-life claim from a single test.

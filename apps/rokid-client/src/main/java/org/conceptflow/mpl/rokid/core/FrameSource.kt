@@ -427,19 +427,60 @@ internal fun buildI420Frame(
     intrinsics: CameraIntrinsics? = null,
     takeOwnership: Boolean = false,
 ): FramePayload {
+    return buildI420WireFrame(
+        requestId = requestId,
+        sessionId = sessionId,
+        streamId = streamId,
+        frameId = frameId,
+        timestampNanos = timestampNanos,
+        wallTimeMillis = wallTimeMillis,
+        width = width,
+        height = height,
+        bytes = bytes,
+        encoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+        mediaType = "application/x-conceptflow-i420",
+        synthetic = synthetic,
+        intrinsics = intrinsics,
+        takeOwnership = takeOwnership,
+    )
+}
+
+internal fun buildI420WireFrame(
+    requestId: String,
+    sessionId: String,
+    streamId: String,
+    frameId: Long,
+    timestampNanos: Long,
+    wallTimeMillis: Long,
+    width: Int,
+    height: Int,
+    bytes: ByteArray,
+    encoding: ImageEncoding,
+    mediaType: String,
+    synthetic: Boolean,
+    intrinsics: CameraIntrinsics? = null,
+    takeOwnership: Boolean = false,
+): FramePayload {
     require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0) {
         "I420 dimensions must be positive and even"
     }
     val lumaBytes = Math.multiplyExact(width, height)
     val expectedBytes = Math.addExact(lumaBytes, lumaBytes / 2)
-    require(bytes.size == expectedBytes) { "I420 payload size does not match dimensions" }
+    val raw = encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420
+    require(raw || encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK ||
+        encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD) {
+        "unsupported I420 wire encoding"
+    }
+    require(if (raw) bytes.size == expectedBytes else bytes.isNotEmpty() && bytes.size < expectedBytes) {
+        "I420 wire payload size does not match its encoding"
+    }
     val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
     val descriptor = ImageDescriptor.newBuilder()
         .setWidth(width)
         .setHeight(height)
         .setRowStrideBytes(width)
-        .setEncoding(ImageEncoding.IMAGE_ENCODING_YUV420_I420)
-        .setMediaType("application/x-conceptflow-i420")
+        .setEncoding(encoding)
+        .setMediaType(mediaType)
         .setPayloadBytes(bytes.size.toLong())
         .setSha256(ByteString.copyFrom(digest))
         .build()

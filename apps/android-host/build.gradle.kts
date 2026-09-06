@@ -76,6 +76,7 @@ android {
     packaging {
         // GenieX resolves its runtime plug-ins through applicationInfo.nativeLibraryDir.
         jniLibs.useLegacyPackaging = true
+        resources.excludes += "/net/jpountz/util/darwin/**"
     }
     sourceSets.getByName("main").resources.srcDir(rootProject.file("config/machine-vision"))
 }

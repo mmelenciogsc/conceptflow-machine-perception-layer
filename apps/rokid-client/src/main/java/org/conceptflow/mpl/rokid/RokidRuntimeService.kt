@@ -684,6 +684,10 @@ class RokidRuntimeService : Service() {
                         when (lease.cameraEncoding) {
                             org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ->
                                 CameraTransferPixelFormat.AVC_INTRA
+                            org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK ->
+                                CameraTransferPixelFormat.I420_LZ4
+                            org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD ->
+                                CameraTransferPixelFormat.I420_ZSTD
                             else -> CameraTransferPixelFormat.I420
                         }
                     } else {

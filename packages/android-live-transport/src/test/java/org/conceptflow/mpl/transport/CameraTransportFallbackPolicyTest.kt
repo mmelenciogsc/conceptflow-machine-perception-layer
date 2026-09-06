@@ -18,6 +18,18 @@ class CameraTransportFallbackPolicyTest {
     }
 
     @Test
+    fun losslessCodecDemotesOnceToRawI420() {
+        val policy = CameraTransportFallbackPolicy(LiveCameraTransport.I420_ZSTD)
+        assertTrue(policy.allowsI420Zstd())
+        assertEquals(
+            CameraTransportFallbackDispatch.DEMOTED_RECONNECT_REQUIRED,
+            policy.requestI420Demotion(),
+        )
+        assertFalse(policy.allowsI420Zstd())
+        assertEquals(LiveCameraTransport.I420, policy.snapshot().activeTransport)
+    }
+
+    @Test
     fun avcDemotionIsOneWayForProcessLifetime() {
         val policy = CameraTransportFallbackPolicy(LiveCameraTransport.AVC_INTRA)
         assertTrue(policy.allowsAvcIntra())

@@ -55,7 +55,8 @@ data class NegotiatedLiveLease(
         require(cameraRelaxedFps == 3 && cameraMotionFps == 5)
         require(imuMaximumBatchDelayMs in 1..20 && imuMaximumSilenceMs in 1..1_000)
         require(cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
-            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ||
+            cameraEncoding.isIndependentLosslessI420Encoding())
     }
 }
 

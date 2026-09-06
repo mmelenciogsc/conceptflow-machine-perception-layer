@@ -20,6 +20,7 @@ lint_repository() {
         scripts/android-qnn-jni-build scripts/android-qnn-private-provision \
         scripts/android-whisper-build scripts/android-whisper-provision scripts/android-node-control \
         scripts/android-live-link-pair scripts/avc-fidelity-probe scripts/avc-semantic-sweep \
+        scripts/lossless-i420-probe \
         scripts/rokid-install scripts/rokid-control \
         scripts/lib/common.sh scripts/lib/rokid-adb.sh
 }

@@ -22,6 +22,8 @@ repository's `MIT OR Apache-2.0` license does not relicense it.
 | Android | grpc-okhttp | 1.68.1 | Apache-2.0 |
 | Android | grpc-protobuf-lite | 1.68.1 | Apache-2.0 |
 | Android | grpc-stub | 1.68.1 | Apache-2.0 |
+| Android | lz4-java | 1.8.0 | Apache-2.0 |
+| Android | zstd-jni | 1.5.7-10 | BSD-2-Clause |
 | Android compile-only | javax.annotation-api | 1.3.2 | CDDL-1.0 OR GPL-2.0-with-classpath-exception |
 | Android native, optional | whisper.cpp | `eacbd8234c6654cdbf2c377f72b2106875479bdc` | MIT |
 | .NET | Google.Protobuf | 3.28.3 | BSD-3-Clause |

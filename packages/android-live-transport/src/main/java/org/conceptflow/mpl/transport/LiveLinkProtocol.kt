@@ -93,7 +93,7 @@ internal class LiveEnvelopeFactory(
 internal object LiveControlMessages {
     const val CLOCK_PROBES = 8
     const val PROTOCOL_MAJOR = 1
-    const val PROTOCOL_MINOR = 5
+    const val PROTOCOL_MINOR = 6
 
     fun hello(role: LiveTransportPeerRole, nonce: ByteArray): LiveLinkControl = LiveLinkControl.newBuilder()
         .setHello(
@@ -109,6 +109,8 @@ internal object LiveControlMessages {
         role: LiveTransportPeerRole,
         supportsDiagnosticSpool: Boolean = false,
         supportsAvcIntra: Boolean = false,
+        supportsI420Lz4: Boolean = false,
+        supportsI420Zstd: Boolean = false,
     ): LiveLinkControl {
         require(role == LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES ||
             role == LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST
@@ -137,6 +139,12 @@ internal object LiveControlMessages {
             .setSupportsDiagnosticSpool(supportsDiagnosticSpool)
         if (supportsAvcIntra) {
             builder.addCameraEncodings(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+        }
+        if (supportsI420Lz4) {
+            builder.addCameraEncodings(ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK)
+        }
+        if (supportsI420Zstd) {
+            builder.addCameraEncodings(ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD)
         }
         return LiveLinkControl.newBuilder().setCapabilities(builder).build()
     }
@@ -234,7 +242,8 @@ internal object LiveControlMessages {
         cameraEncoding: ImageEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420,
     ): LiveLinkControl {
         require(cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
-            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+            cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ||
+            cameraEncoding.isIndependentLosslessI420Encoding())
         return LiveLinkControl.newBuilder()
         .setLeaseRequest(
             StreamLeaseRequest.newBuilder()
@@ -297,6 +306,8 @@ internal object LiveControlMessages {
     fun leaseGrant(
         request: StreamLeaseRequest,
         allowAvcIntra: Boolean = false,
+        allowI420Lz4: Boolean = false,
+        allowI420Zstd: Boolean = false,
     ): LiveLinkControl {
         require(request.operation == StreamLeaseOperation.STREAM_LEASE_OPERATION_OPEN &&
             !request.userRequestedMicrophone &&
@@ -309,6 +320,12 @@ internal object LiveControlMessages {
         val requestedEncoding = when (request.requestedCameraEncoding) {
             ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ->
                 if (allowAvcIntra) ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA
+                else ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK ->
+                if (allowI420Lz4) ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK
+                else ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD ->
+                if (allowI420Zstd) ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD
                 else ImageEncoding.IMAGE_ENCODING_YUV420_I420
             ImageEncoding.IMAGE_ENCODING_UNSPECIFIED,
             ImageEncoding.IMAGE_ENCODING_YUV420_I420,
@@ -622,7 +639,8 @@ internal fun StreamLeaseGrant.isAcceptedOpenGrant(binding: LiveSessionBinding): 
             SensorStreamKind.SENSOR_STREAM_KIND_TOUCH,
         ) && (grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_UNSPECIFIED ||
             grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
-            grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA)
+            grantedCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ||
+            grantedCameraEncoding.isIndependentLosslessI420Encoding())
 
 /** Four-hour production epoch plus a bounded authenticated shutdown envelope. */
 // A production epoch spans normal wearable use without periodic Camera2 teardown. The ten-second

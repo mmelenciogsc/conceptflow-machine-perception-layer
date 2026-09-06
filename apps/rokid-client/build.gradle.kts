@@ -58,6 +58,7 @@ android {
         // Rokid Style is an arm64-only appliance target, not a ChromeOS-distributed APK.
         disable += "ChromeOsAbiSupport"
     }
+    packaging.resources.excludes += "/net/jpountz/util/darwin/**"
 }
 
 dependencies {

@@ -18,6 +18,8 @@ relicense tools, plug-ins, model code, checkpoints, fonts, brands, or datasets.
 | whisper.cpp | Source remains external and is pinned to commit `eacbd8234c6654cdbf2c377f72b2106875479bdc`; no source or binary is committed | MIT license; retain upstream copyright/license notice when distributing a linked binary |
 | Whisper `small.en-q5_1` converted weight | External app-private artifact; hash-pinned but not committed; checked `ggerganov/whisper.cpp` revision `5359861c739e955e79d9a303bcbc70fb988958b1` declares MIT and upstream OpenAI Whisper declares MIT | Retain both applicable MIT notices and recheck the exact artifact revision before redistribution |
 | Silero VAD v6.2.0 GGML artifact | External app-private artifact; hash-pinned but not committed; checked `ggml-org/whisper-vad` revision `9ffd54a1e1ee413ddf265af9913beaf518d1639b` declares MIT | Retain the repository's MIT notice and recheck the exact artifact revision before redistribution |
+| lz4-java 1.8.0 | Pinned Android runtime dependency for independent-frame I420 block compression; no upstream source vendored | Apache-2.0; retain dependency notice and locked artifact digest |
+| zstd-jni 1.5.7-10 | Pinned Android AAR for independent-frame I420 Zstandard level-1 compression; no upstream source vendored | BSD-2-Clause; retain dependency notice and locked AAR/JAR digests |
 | Unity | Project source/settings only; no editor/runtime redistribution in Git | Unity editor/runtime license for target distribution |
 | Rokid/Android/NVIDIA SDKs | Platform boundary only; no proprietary SDK or driver binaries committed | Vendor terms for each deployed component |
 

@@ -24,5 +24,9 @@ android {
 
 dependencies {
     api(project(":packages:android-protocol"))
+    implementation(libs.lz4.java)
+    compileOnly(libs.zstd.jni)
+    runtimeOnly(variantOf(libs.zstd.jni) { artifactType("aar") })
     testImplementation(libs.junit)
+    testRuntimeOnly(libs.zstd.jni)
 }

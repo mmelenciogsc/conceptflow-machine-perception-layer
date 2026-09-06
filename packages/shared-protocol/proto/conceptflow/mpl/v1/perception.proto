@@ -37,6 +37,12 @@ enum ImageEncoding {
   // must contain SPS, PPS, and an IDR slice so camera latest-frame dropping
   // and reconnect never depend on an earlier frame.
   IMAGE_ENCODING_AVC_ANNEX_B_INTRA = 7;
+  // One independently decodable LZ4 block whose decoded representation is
+  // tightly packed I420. row_stride_bytes describes the decoded Y plane.
+  IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK = 8;
+  // One independently decodable Zstandard frame whose decoded representation
+  // is tightly packed I420. Production encoding uses compression level 1.
+  IMAGE_ENCODING_YUV420_I420_ZSTD = 9;
 }
 
 enum CueModality {

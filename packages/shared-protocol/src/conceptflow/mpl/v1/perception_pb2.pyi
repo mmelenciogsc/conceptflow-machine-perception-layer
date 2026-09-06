@@ -22,6 +22,8 @@ class ImageEncoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     IMAGE_ENCODING_PNG: _ClassVar[ImageEncoding]
     IMAGE_ENCODING_YUV420_I420: _ClassVar[ImageEncoding]
     IMAGE_ENCODING_AVC_ANNEX_B_INTRA: _ClassVar[ImageEncoding]
+    IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK: _ClassVar[ImageEncoding]
+    IMAGE_ENCODING_YUV420_I420_ZSTD: _ClassVar[ImageEncoding]
 
 class CueModality(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -198,6 +200,8 @@ IMAGE_ENCODING_JPEG: ImageEncoding
 IMAGE_ENCODING_PNG: ImageEncoding
 IMAGE_ENCODING_YUV420_I420: ImageEncoding
 IMAGE_ENCODING_AVC_ANNEX_B_INTRA: ImageEncoding
+IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK: ImageEncoding
+IMAGE_ENCODING_YUV420_I420_ZSTD: ImageEncoding
 CUE_MODALITY_UNSPECIFIED: CueModality
 CUE_MODALITY_EARCON: CueModality
 CUE_MODALITY_SPEECH: CueModality

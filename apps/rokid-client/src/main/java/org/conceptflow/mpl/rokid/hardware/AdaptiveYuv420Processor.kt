@@ -91,6 +91,8 @@ enum class CameraTransferPixelFormat {
     RGB8,
     I420,
     AVC_INTRA,
+    I420_LZ4,
+    I420_ZSTD,
 }
 
 /** Applies the protected gate in capture order, then converts only admitted frames. */

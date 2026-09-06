@@ -347,6 +347,8 @@ class RokidLiveLinkClient(
                     LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
                     supportsDiagnosticSpool = spoolProvider !== EmptyRokidSpoolProvider,
                     supportsAvcIntra = config.cameraTransport == LiveCameraTransport.AVC_INTRA,
+                    supportsI420Lz4 = config.cameraTransport == LiveCameraTransport.I420_LZ4,
+                    supportsI420Zstd = config.cameraTransport == LiveCameraTransport.I420_ZSTD,
                 ),
             ),
             metrics,
@@ -372,11 +374,7 @@ class RokidLiveLinkClient(
                 LiveTransportLane.LIVE_TRANSPORT_LANE_REALTIME_CONTROL,
                 LiveControlMessages.leaseRequest(
                     binding,
-                    if (config.cameraTransport == LiveCameraTransport.AVC_INTRA) {
-                        org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA
-                    } else {
-                        org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420
-                    },
+                    config.cameraTransport.imageEncoding,
                 ),
             ),
             metrics,
