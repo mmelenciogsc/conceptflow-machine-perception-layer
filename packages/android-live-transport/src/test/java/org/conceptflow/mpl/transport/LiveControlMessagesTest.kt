@@ -64,6 +64,17 @@ class LiveControlMessagesTest {
             supportsAvcIntra = true,
         ).capabilities
         assertTrue(avc.cameraEncodingsList.contains(ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA))
+        val lossless = LiveControlMessages.capabilities(
+            LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_GLASSES,
+            supportsI420Lz4 = true,
+            supportsI420Zstd = true,
+        ).capabilities
+        assertTrue(lossless.cameraEncodingsList.contains(
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK,
+        ))
+        assertTrue(lossless.cameraEncodingsList.contains(
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD,
+        ))
     }
 
     @Test
@@ -170,6 +181,33 @@ class LiveControlMessagesTest {
         assertEquals(
             ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
             accepted.toNegotiatedLease(MonotonicLeaseDeadline.fromDurationMillis(1L, 1_000)).cameraEncoding,
+        )
+    }
+
+    @Test
+    fun `lossless I420 codecs are selected only when both ends opt in`() {
+        val lz4Request = LiveControlMessages.leaseRequest(
+            binding,
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK,
+        ).leaseRequest
+        val zstdRequest = LiveControlMessages.leaseRequest(
+            binding,
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD,
+        ).leaseRequest
+
+        assertEquals(
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420,
+            LiveControlMessages.leaseGrant(lz4Request).leaseGrant.grantedCameraEncoding,
+        )
+        assertEquals(
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK,
+            LiveControlMessages.leaseGrant(lz4Request, allowI420Lz4 = true)
+                .leaseGrant.grantedCameraEncoding,
+        )
+        assertEquals(
+            ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD,
+            LiveControlMessages.leaseGrant(zstdRequest, allowI420Zstd = true)
+                .leaseGrant.grantedCameraEncoding,
         )
     }
 

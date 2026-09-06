@@ -16,8 +16,8 @@ data class CameraTransportFallbackSnapshot(
 )
 
 /**
- * One-way process-lifetime AVC circuit breaker. A service restart may probe AVC again, but a
- * failing live process cannot oscillate between codecs and repeatedly lose frames.
+ * One-way process-lifetime camera-codec circuit breaker. A service restart may probe the selected
+ * codec again, but a failing live process cannot oscillate between codecs and repeatedly lose frames.
  */
 class CameraTransportFallbackPolicy(
     private val configuredTransport: LiveCameraTransport,
@@ -27,8 +27,14 @@ class CameraTransportFallbackPolicy(
     fun allowsAvcIntra(): Boolean =
         configuredTransport == LiveCameraTransport.AVC_INTRA && !demoted.get()
 
+    fun allowsI420Lz4(): Boolean =
+        configuredTransport == LiveCameraTransport.I420_LZ4 && !demoted.get()
+
+    fun allowsI420Zstd(): Boolean =
+        configuredTransport == LiveCameraTransport.I420_ZSTD && !demoted.get()
+
     fun requestI420Demotion(): CameraTransportFallbackDispatch = when {
-        configuredTransport != LiveCameraTransport.AVC_INTRA ->
+        configuredTransport == LiveCameraTransport.I420 ->
             CameraTransportFallbackDispatch.CONFIGURED_I420
         demoted.compareAndSet(false, true) ->
             CameraTransportFallbackDispatch.DEMOTED_RECONNECT_REQUIRED
@@ -39,8 +45,8 @@ class CameraTransportFallbackPolicy(
         val isDemoted = demoted.get()
         return CameraTransportFallbackSnapshot(
             configuredTransport = configuredTransport,
-            activeTransport = if (configuredTransport == LiveCameraTransport.AVC_INTRA && !isDemoted) {
-                LiveCameraTransport.AVC_INTRA
+            activeTransport = if (configuredTransport != LiveCameraTransport.I420 && !isDemoted) {
+                configuredTransport
             } else {
                 LiveCameraTransport.I420
             },

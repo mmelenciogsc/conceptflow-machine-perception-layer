@@ -11,10 +11,14 @@ import android.os.Process
 import android.os.SystemClock
 import java.io.File
 import java.security.MessageDigest
+import java.util.Random
 import java.util.concurrent.atomic.AtomicBoolean
 import org.conceptflow.mpl.transport.DeterministicI420Fixture
+import org.conceptflow.mpl.transport.IndependentI420Compression
+import org.conceptflow.mpl.transport.IndependentI420FrameEncoder
+import org.conceptflow.mpl.v1.ImageEncoding
 
-/** Shell-only debug exporter for the synthetic hardware-AVC fidelity fixture. */
+/** Shell-only debug probes for independently decodable camera transports. */
 class CodecFidelityDebugProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
@@ -30,6 +34,8 @@ class CodecFidelityDebugProvider : ContentProvider() {
                 uri.pathSegments == listOf(EXPORT_PATH) -> exportFixture(DEFAULT_BIT_RATE)
                 uri.pathSegments.size == 2 && uri.pathSegments.first() == EXPORT_PATH ->
                     exportFixture(parseBitRate(uri.pathSegments.last()))
+                uri.pathSegments.size == 2 && uri.pathSegments.first() == LOSSLESS_PATH ->
+                    benchmarkLossless(uri.pathSegments.last())
                 uri.pathSegments == listOf(CLEAR_PATH) -> clearFixture()
                 else -> "codec_fidelity_unknown_path"
             }
@@ -113,6 +119,70 @@ class CodecFidelityDebugProvider : ContentProvider() {
         return if (deleted) "codec_fidelity_cleared" else "codec_fidelity_clear_failed"
     }
 
+    private fun benchmarkLossless(codecName: String): String {
+        val encoding = when (codecName) {
+            LZ4_NAME -> ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK
+            ZSTD_NAME -> ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD
+            else -> return "lossless_codec_invalid"
+        }
+        if (!running.compareAndSet(false, true)) return "lossless_codec_busy"
+        val source = DeterministicI420Fixture.create()
+        return try {
+            val encoder = IndependentI420FrameEncoder(encoding)
+            val encodeNanos = ArrayList<Long>(LOSSLESS_ITERATIONS)
+            val decodeNanos = ArrayList<Long>(LOSSLESS_ITERATIONS)
+            var wireBytes = 0L
+            var compressedFrames = 0
+            repeat(LOSSLESS_ITERATIONS) {
+                val encodeStart = SystemClock.elapsedRealtimeNanos()
+                val wire = encoder.encode(source)
+                encodeNanos += SystemClock.elapsedRealtimeNanos() - encodeStart
+                wireBytes = Math.addExact(wireBytes, wire.bytes.size.toLong())
+                val decodeStart = SystemClock.elapsedRealtimeNanos()
+                val decoded = if (wire.compressed) {
+                    compressedFrames += 1
+                    IndependentI420Compression.decompress(encoding, wire.bytes, source.size)
+                } else {
+                    wire.bytes
+                }
+                decodeNanos += SystemClock.elapsedRealtimeNanos() - decodeStart
+                check(MessageDigest.isEqual(source, decoded))
+            }
+            val incompressible = ByteArray(source.size).also { Random(47L).nextBytes(it) }
+            val rawFallback = try {
+                encoder.encode(incompressible).let { wire ->
+                    !wire.compressed &&
+                        wire.encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 &&
+                        wire.bytes === incompressible
+                }
+            } finally {
+                incompressible.fill(0)
+            }
+            check(rawFallback)
+            "lossless_codec_ready codec_$codecName frames_$LOSSLESS_ITERATIONS " +
+                "compressed_frames_$compressedFrames codec_enabled_${encoder.isCodecEnabled} " +
+                "raw_bytes_${source.size.toLong() * LOSSLESS_ITERATIONS} wire_bytes_$wireBytes " +
+                "encode_p50_us_${percentileMicros(encodeNanos, 0.50)} " +
+                "encode_p95_us_${percentileMicros(encodeNanos, 0.95)} " +
+                "decode_p50_us_${percentileMicros(decodeNanos, 0.50)} " +
+                "decode_p95_us_${percentileMicros(decodeNanos, 0.95)} " +
+                "exact_true raw_fallback_true"
+        } catch (error: RuntimeException) {
+            "lossless_codec_failed_${error.javaClass.simpleName}"
+        } catch (error: LinkageError) {
+            "lossless_codec_failed_${error.javaClass.simpleName}"
+        } finally {
+            source.fill(0)
+            running.set(false)
+        }
+    }
+
+    private fun percentileMicros(samples: List<Long>, fraction: Double): Long {
+        val sorted = samples.sorted()
+        val index = kotlin.math.ceil(sorted.size * fraction).toInt().coerceIn(1, sorted.size) - 1
+        return sorted[index] / 1_000L
+    }
+
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes)
         .joinToString("") { "%02x".format(it) }
@@ -128,6 +198,10 @@ class CodecFidelityDebugProvider : ContentProvider() {
         const val REFERENCE_FILE_NAME = "reference.i420"
         const val EXPORT_PATH = "export"
         const val CLEAR_PATH = "clear"
+        const val LOSSLESS_PATH = "lossless"
+        const val LZ4_NAME = "lz4"
+        const val ZSTD_NAME = "zstd"
+        const val LOSSLESS_ITERATIONS = 30
         const val STATUS_COLUMN = "status"
         const val MIME_TYPE = "vnd.android.cursor.item/vnd.conceptflow.codec-fidelity"
         const val FRAME_RATE = 5

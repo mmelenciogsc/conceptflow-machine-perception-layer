@@ -6,7 +6,7 @@ It replaces routine JPEG/PCM/JSON spool coordination with bounded RAM
 publication after the existing Rokid gates. The app-private spool remains an
 explicit, disabled-by-default diagnostic mode.
 
-The current implementation identifies itself as protocol version `1.5`. A
+The current implementation identifies itself as protocol version `1.6`. A
 production transport epoch is bounded to 14,410 seconds: at most four hours of
 sensor workload plus a separate 10-second authenticated-shutdown envelope. The
 ordinary development command deliberately closes after 30 seconds; the
@@ -59,7 +59,7 @@ and socket timeouts and accepts coalesced records.
 
 ## Version 1.1 record framing
 
-The typed HELLO/capabilities contract is version 1.5. Its outer binary record
+The typed HELLO/capabilities contract is version 1.6. Its outer binary record
 framing remains version 1.1 because the telemetry extension uses
 forward-compatible Protocol Buffers fields and does not alter the 38-byte
 record header or payload placement.
@@ -138,6 +138,19 @@ AVC until Android Node is explicitly restarted. Debug builds expose a
 shell-only one-shot fault injector; release builds expose no external fault
 command. Aggregate status reports the negotiated camera encoding, failure
 count, and fallback count.
+
+Protocol 1.6 adds two lossless, independently decodable packed-I420 wire
+encodings: one LZ4 block per frame and one Zstandard frame per frame at level
+1. Neither codec changes capture, gating, resize, timestamps, intrinsics, or
+the decoded 640×640 I420 bytes. The sender selects a codec only through the
+authenticated capability and lease exchange. If compression fails or does not
+reduce that particular frame, the sender publishes canonical raw I420 for that
+frame; a 1.6 receiver explicitly permits this bounded fallback. A compressed
+frame with an invalid digest, media type, dimensions, decompressed length, or
+codec stream is rejected. A receiver codec failure opens the existing one-way
+process-lifetime circuit breaker, closes the current attempt, and renegotiates
+raw I420. Compression is never applied across frames, so latest-frame eviction
+and reconnect remain independent.
 
 ## Modality contracts
 

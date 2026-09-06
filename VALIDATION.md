@@ -6,6 +6,46 @@ public baseline on 2026-08-21. A build, unit test, cross-target compilation, or
 synthetic demonstration is not presented as physical-device, production-model,
 accessibility, safety, or performance validation.
 
+## Independent lossless I420 transport — 2026-09-06
+
+Protocol 1.6 adds independently decodable LZ4-block and Zstandard-level-1
+representations of the existing protected post-gate 640×640 I420 frame. The
+camera gate, resize, timestamp, intrinsics, IMU, microphone, and touch paths
+were not changed. A frame that is not smaller or whose encoder is unavailable
+falls back to raw I420; any receiver codec failure opens the existing one-way
+raw-I420 circuit breaker.
+
+The final physical Rokid codec probe independently round-tripped 30/30 frames
+for each codec with exact decoded bytes and also passed the incompressible-frame
+raw fallback. LZ4 reduced the deterministic fixture total from 18,432,000 to
+2,806,620 bytes with 9.646/21.980 ms encode p50/p95 and 5.312/5.931 ms decode
+p50/p95. Zstandard reduced it to 899,760 bytes with 3.353/3.636 ms encode
+p50/p95 and 1.462/1.688 ms decode p50/p95. These compression ratios are fixture
+results, not camera-scene claims.
+
+Matching attached 30-second live sessions then exercised raw I420, LZ4, and
+Zstandard through the real camera, private WLAN, synchronized timeline, and
+provisioned QNN/HTP YOLOE-26S plus forced-indoor depth graph. Every session had
+zero link interruption and zero camera/IMU queue loss, finite model output, and
+authenticated close. Raw I420 sent 50,578,868 camera-lane bytes for 82 emitted
+frames with 4.4 ms Rokid listener p95 and 240.7 ms capture-to-receive p95. LZ4
+sent 42,095,526 bytes for 85 frames, a 19.4-percent reduction from that run's
+raw payload, with 56.5 and 292.0 ms respectively. Zstandard sent 37,734,060
+bytes for 84 frames, a 26.9-percent reduction, with 47.3 and 299.5 ms.
+Zstandard therefore dominated LZ4 in this screen; raw remained the lowest-
+latency mode.
+
+A 600-second untethered Zstandard run completed with 2,166 reconstructed
+frames, 42,238 selected IMU samples, 1,273/1,274 HTP completions, zero
+interruptions, and zero sensor queue loss. Camera-lane traffic was 927,398,487
+bytes (about 12.365 Mbit/s). Battery telemetry moved from 100 to 76 percent at
+the timed endpoint; temperature ended at 34.5 C. The delayed post-reconnect
+gauge read 73 percent and 31.5 C. Relative to the prior two-run raw-I420 mean,
+the Zstandard screen sent 30.7 percent fewer camera bytes and reported ten
+fewer timed percentage points. This is a single, non-counterbalanced screen
+with a nonlinear fuel gauge, not a calibrated battery-life claim. Raw I420
+remains the default and mandatory fallback pending an alternated repeat.
+
 ## Representative semantic AVC profile sweep — 2026-09-05
 
 The attached Rokid and Poco physically exercised a debug-only, process-isolated

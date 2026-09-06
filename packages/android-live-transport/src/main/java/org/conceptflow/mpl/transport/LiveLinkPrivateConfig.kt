@@ -27,7 +27,17 @@ enum class LiveLinkNetworkTopology(val configValue: String) {
 
 enum class LiveCameraTransport(val configValue: String) {
     I420("i420"),
-    AVC_INTRA("avc_intra");
+    AVC_INTRA("avc_intra"),
+    I420_LZ4("i420_lz4"),
+    I420_ZSTD("i420_zstd");
+
+    val imageEncoding: org.conceptflow.mpl.v1.ImageEncoding
+        get() = when (this) {
+            I420 -> org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420
+            AVC_INTRA -> org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA
+            I420_LZ4 -> org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK
+            I420_ZSTD -> org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD
+        }
 
     companion object {
         fun parse(value: String): LiveCameraTransport = entries.singleOrNull { it.configValue == value }

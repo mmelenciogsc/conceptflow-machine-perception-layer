@@ -67,6 +67,7 @@ SCRIPT_NAMES = {
     "fmod-lab",
     "generate",
     "lint",
+    "lossless-i420-probe",
     "perception-benchmark",
     "perception-calibration",
     "perception-demo",

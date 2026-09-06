@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+set -euo pipefail
+# shellcheck source=lib/common.sh
+source "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source=lib/rokid-adb.sh
+source "$SCRIPT_DIRECTORY/lib/rokid-adb.sh"
+cd "$REPOSITORY_ROOT"
+
+readonly PACKAGE_NAME="org.conceptflow.mpl.rokidclient"
+readonly PROVIDER_URI="content://org.conceptflow.mpl.rokidclient.codec-fidelity/lossless"
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/lossless-i420-probe [--rokid-serial SERIAL]
+
+Runs bounded, content-free LZ4-block and Zstandard-level-1 benchmarks against
+30 deterministic 640x640 packed-I420 frames inside the directly sideloaded
+Rokid Node. It reports only aggregate byte counts and timing percentiles.
+EOF
+}
+
+serial=""
+while (($#)); do
+    case "$1" in
+        --rokid-serial) serial="${2:-}"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unsupported argument; use --help" ;;
+    esac
+done
+
+select_rokid_target "$serial"
+verify_rokid_target
+adb -s "$ROKID_SERIAL" shell pm path "$PACKAGE_NAME" >/dev/null 2>&1 ||
+    fail "debug Rokid Node is not installed"
+
+for codec in lz4 zstd; do
+    result="$(timeout --foreground 30s adb -s "$ROKID_SERIAL" shell content query --user 0 \
+        --uri "$PROVIDER_URI/$codec" 2>/dev/null || true)"
+    [[ "$result" == *"lossless_codec_ready"* && "$result" == *"exact_true"* && \
+        "$result" == *"compressed_frames_30"* && "$result" == *"codec_enabled_true"* ]] || {
+        printf 'error: %s probe failed: %s\n' "$codec" "${result:-no response}" >&2
+        exit 1
+    }
+    [[ "$result" == *"raw_fallback_true"* ]] || {
+        printf 'error: %s raw-I420 fallback probe failed: %s\n' "$codec" "$result" >&2
+        exit 1
+    }
+    printf '%s\n' "$result"
+done

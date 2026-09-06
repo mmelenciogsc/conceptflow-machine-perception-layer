@@ -32,6 +32,8 @@ class LiveLinkPrivateConfigTest {
     fun `camera transport is explicit and strict`() {
         assertEquals(LiveCameraTransport.I420, LiveCameraTransport.parse("i420"))
         assertEquals(LiveCameraTransport.AVC_INTRA, LiveCameraTransport.parse("avc_intra"))
+        assertEquals(LiveCameraTransport.I420_LZ4, LiveCameraTransport.parse("i420_lz4"))
+        assertEquals(LiveCameraTransport.I420_ZSTD, LiveCameraTransport.parse("i420_zstd"))
         assertThrows(IllegalArgumentException::class.java) {
             LiveCameraTransport.parse("avc")
         }

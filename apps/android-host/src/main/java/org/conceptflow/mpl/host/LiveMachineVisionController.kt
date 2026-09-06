@@ -108,6 +108,8 @@ import org.conceptflow.mpl.transport.MicrophoneRequestDispatch
 import org.conceptflow.mpl.transport.PocoLiveLinkObserver
 import org.conceptflow.mpl.transport.PocoLiveLinkServer
 import org.conceptflow.mpl.transport.CameraTransportFallbackDispatch
+import org.conceptflow.mpl.transport.IndependentI420Compression
+import org.conceptflow.mpl.transport.isIndependentLosslessI420Encoding
 import org.conceptflow.mpl.transport.AndroidPrivateLanDiscoveryEndpointResolver
 import org.conceptflow.mpl.transport.AndroidWifiDirectEndpointResolver
 import org.conceptflow.mpl.transport.PrivateLanDiscoveryRole
@@ -504,10 +506,11 @@ data class LiveMachineVisionStatus(
         append("; replaced: ").append(framesDroppedBeforeInference).append(". ")
         append("Current camera transport: ")
             .append(
-                if (currentCameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA) {
-                    "AVC intra"
-                } else {
-                    "I420"
+                when (currentCameraEncoding) {
+                    ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA -> "AVC intra"
+                    ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK -> "I420 LZ4"
+                    ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD -> "I420 Zstandard"
+                    else -> "I420"
                 },
             ).append(". ")
         if (avcFramesDecoded > 0L || avcDecodeFailures > 0L) {
@@ -794,7 +797,8 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     fun sessionReady(cameraEncoding: ImageEncoding = ImageEncoding.IMAGE_ENCODING_YUV420_I420) {
         require(
             cameraEncoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420 ||
-                cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
+                cameraEncoding == ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA ||
+                cameraEncoding.isIndependentLosslessI420Encoding(),
         )
         val diagnostic = lastLinkDiagnostic
         if (!sessionIsReady && !lastDiagnosticOccurredDuringSession &&
@@ -1870,7 +1874,9 @@ class LiveMachineVisionController(
         }
         if (disposition != StreamIngressDisposition.CAMERA_READY) return
         val wireFrame = ingress.takeLatestCamera() ?: return
-        if (wireFrame.image.encoding != currentCameraEncoding) {
+        val rawFallbackForLossless = currentCameraEncoding.isIndependentLosslessI420Encoding() &&
+            wireFrame.image.encoding == ImageEncoding.IMAGE_ENCODING_YUV420_I420
+        if (wireFrame.image.encoding != currentCameraEncoding && !rawFallbackForLossless) {
             status?.perceptionUnavailable("CAMERA_ENCODING_MISMATCH", frameSkipped = true)
             clearCameraCorrelation()
             publish()
@@ -1901,6 +1907,20 @@ class LiveMachineVisionController(
                     avcDecoderLogged = true
                     Log.i(TAG, "state=avc_camera_decoder_ready codec=${avcDecoder.codecName}")
                 }
+            }
+        } else if (wireFrame.image.encoding.isIndependentLosslessI420Encoding()) {
+            runCatching { IndependentI420Compression.decodeFrame(wireFrame) }.getOrElse { error ->
+                val fallback = server?.requestCameraTransportFallbackToI420()
+                Log.e(
+                    TAG,
+                    "state=lossless_camera_decode_failed encoding=${wireFrame.image.encoding.name} " +
+                        "exception=${error.javaClass.simpleName} " +
+                        "fallback=${fallback?.name?.lowercase() ?: "server_unavailable"}",
+                )
+                status?.perceptionUnavailable("LOSSLESS_DECODE_FAILED", frameSkipped = true)
+                clearCameraCorrelation()
+                publish()
+                return
             }
         } else {
             wireFrame

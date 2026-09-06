@@ -38,8 +38,11 @@ import org.conceptflow.mpl.rokid.core.PixelDimensions
 import org.conceptflow.mpl.rokid.core.SquareAspectFillTransform
 import org.conceptflow.mpl.rokid.core.SystemWallClock
 import org.conceptflow.mpl.rokid.core.buildI420Frame
+import org.conceptflow.mpl.rokid.core.buildI420WireFrame
 import org.conceptflow.mpl.rokid.core.buildRgbFrame
 import org.conceptflow.mpl.rokid.core.buildAvcIntraFrame
+import org.conceptflow.mpl.transport.IndependentI420FrameEncoder
+import org.conceptflow.mpl.v1.ImageEncoding
 import org.conceptflow.mpl.v1.CameraIntrinsics
 import java.util.UUID
 import java.util.concurrent.Executor
@@ -78,6 +81,13 @@ class Camera2FrameSource(
     private var teardownInProgress = false
     private var outputPipelineLogged = false
     private var avcEncoder: HardwareAvcIntraFrameEncoder? = null
+    private val losslessEncoder = when (outputFormat) {
+        CameraTransferPixelFormat.I420_LZ4 ->
+            IndependentI420FrameEncoder(ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK)
+        CameraTransferPixelFormat.I420_ZSTD ->
+            IndependentI420FrameEncoder(ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD)
+        else -> null
+    }
 
     override val isRunning: Boolean get() = lifecycle.isRunning
 
@@ -772,20 +782,44 @@ class Camera2FrameSource(
                     intrinsics = intrinsics,
                 )
             } else if (processed.i420 != null) {
-                buildI420Frame(
-                    requestId = "camera-$frameId",
-                    sessionId = sessionId,
-                    streamId = "camera2-yuv-i420",
-                    frameId = frameId,
-                    timestampNanos = acquired.timestamp,
-                    wallTimeMillis = SystemWallClock.nowMillis(),
-                    width = processed.outputDimensions.width,
-                    height = processed.outputDimensions.height,
-                    bytes = output,
-                    synthetic = false,
-                    takeOwnership = true,
-                    intrinsics = intrinsics,
-                )
+                val wire = losslessEncoder?.encode(output)
+                if (wire == null) {
+                    buildI420Frame(
+                        requestId = "camera-$frameId",
+                        sessionId = sessionId,
+                        streamId = "camera2-yuv-i420",
+                        frameId = frameId,
+                        timestampNanos = acquired.timestamp,
+                        wallTimeMillis = SystemWallClock.nowMillis(),
+                        width = processed.outputDimensions.width,
+                        height = processed.outputDimensions.height,
+                        bytes = output,
+                        synthetic = false,
+                        takeOwnership = true,
+                        intrinsics = intrinsics,
+                    )
+                } else {
+                    buildI420WireFrame(
+                        requestId = "camera-$frameId",
+                        sessionId = sessionId,
+                        streamId = if (wire.compressed) {
+                            "camera2-yuv-${outputFormat.name.lowercase()}"
+                        } else {
+                            "camera2-yuv-i420"
+                        },
+                        frameId = frameId,
+                        timestampNanos = acquired.timestamp,
+                        wallTimeMillis = SystemWallClock.nowMillis(),
+                        width = processed.outputDimensions.width,
+                        height = processed.outputDimensions.height,
+                        bytes = wire.bytes,
+                        encoding = wire.encoding,
+                        mediaType = wire.mediaType,
+                        synthetic = false,
+                        takeOwnership = true,
+                        intrinsics = intrinsics,
+                    )
+                }
             } else {
                 buildRgbFrame(
                     requestId = "camera-$frameId",

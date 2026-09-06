@@ -452,6 +452,8 @@ class PocoLiveLinkServer(
         val output = LiveEnvelopeFactory(binding, state, clock)
         var peerSupportsDiagnosticSpool = false
         var peerSupportsAvcIntra = false
+        var peerSupportsI420Lz4 = false
+        var peerSupportsI420Zstd = false
         if (hello.hello.protocolVersion.minor >= 1) {
             val capabilitiesEnvelope = readTracked(lane, metrics)
                 ?: throw java.io.EOFException("realtime lane closed during capability negotiation")
@@ -466,6 +468,12 @@ class PocoLiveLinkServer(
             peerSupportsAvcIntra = peerCapabilities.cameraEncodingsList.contains(
                 org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_AVC_ANNEX_B_INTRA,
             )
+            peerSupportsI420Lz4 = peerCapabilities.cameraEncodingsList.contains(
+                org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_LZ4_BLOCK,
+            )
+            peerSupportsI420Zstd = peerCapabilities.cameraEncodingsList.contains(
+                org.conceptflow.mpl.v1.ImageEncoding.IMAGE_ENCODING_YUV420_I420_ZSTD,
+            )
             writeTracked(
                 lane,
                 output.control(
@@ -474,6 +482,8 @@ class PocoLiveLinkServer(
                             LiveTransportPeerRole.LIVE_TRANSPORT_PEER_ROLE_HOST,
                             supportsDiagnosticSpool = true,
                             supportsAvcIntra = cameraFallbackPolicy.allowsAvcIntra(),
+                            supportsI420Lz4 = cameraFallbackPolicy.allowsI420Lz4(),
+                            supportsI420Zstd = cameraFallbackPolicy.allowsI420Zstd(),
                     ),
                 ),
                 metrics,
@@ -503,6 +513,8 @@ class PocoLiveLinkServer(
         val grant = LiveControlMessages.leaseGrant(
             leaseEnvelope.control.leaseRequest,
             allowAvcIntra = cameraFallbackPolicy.allowsAvcIntra() && peerSupportsAvcIntra,
+            allowI420Lz4 = cameraFallbackPolicy.allowsI420Lz4() && peerSupportsI420Lz4,
+            allowI420Zstd = cameraFallbackPolicy.allowsI420Zstd() && peerSupportsI420Zstd,
         )
         writeTracked(
             lane,
