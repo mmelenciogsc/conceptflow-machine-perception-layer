@@ -12,6 +12,7 @@ import org.conceptflow.mpl.host.vision.SemanticMaskObservation
 import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkFailureLane
+import org.conceptflow.mpl.transport.LiveFocusTouchProfile
 import org.conceptflow.mpl.transport.RokidNodeCommandDelivery
 import org.conceptflow.mpl.v1.RokidNodeCommandOperation
 import org.conceptflow.mpl.v1.BatteryChargeState
@@ -23,6 +24,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveMachineVisionStatusAccumulatorTest {
+    @Test
+    fun `focus touch profile is explicit in accessible status`() {
+        val status = LiveMachineVisionStatusAccumulator("automatic-pending")
+
+        assertEquals(LiveFocusTouchProfile.DISABLED, status.snapshot().focusTouchProfile)
+        assertTrue(status.snapshot().accessibleSummary().contains("Focus touch profile: disabled"))
+
+        status.focusTouchProfile(LiveFocusTouchProfile.TWO_FINGER_HOLD_BURST_V1)
+        assertEquals(
+            LiveFocusTouchProfile.TWO_FINGER_HOLD_BURST_V1,
+            status.snapshot().focusTouchProfile,
+        )
+        assertTrue(
+            status.snapshot().accessibleSummary().contains(
+                "Focus touch profile: two finger hold burst v1",
+            ),
+        )
+    }
+
     @Test
     fun `AVC fallback is counted separately from decoder failures`() {
         val status = LiveMachineVisionStatusAccumulator("depth-indoor-392")

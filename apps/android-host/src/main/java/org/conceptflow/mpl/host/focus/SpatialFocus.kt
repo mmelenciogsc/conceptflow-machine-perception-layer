@@ -28,8 +28,17 @@ enum class BeaconAnchorMode(val wireValue: Int) {
 }
 
 fun interface SpatialFocusTouchAdmission {
-    /** Receives the complete raw event; production remains disabled until mappings are validated. */
+    /** Receives the complete raw event; production mappings must be explicit and fail closed. */
     fun commandFor(event: TimedTouchEvent): SpatialFocusCommand?
+
+    /** Resolves a time-delimited gesture sequence without blocking the transport callback. */
+    fun commandAt(nowNanos: Long): SpatialFocusCommand? = null
+
+    /** Host-monotonic deadline for the current pending sequence, if one exists. */
+    fun pendingDeadlineNanos(): Long? = null
+
+    /** Clears all session-scoped input state. */
+    fun reset() = Unit
 }
 
 object DisabledSpatialFocusTouchAdmission : SpatialFocusTouchAdmission {

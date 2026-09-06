@@ -26,6 +26,7 @@ import org.conceptflow.mpl.host.focus.SpatialFocusDwell
 import org.conceptflow.mpl.host.focus.SpatialFocusManager
 import org.conceptflow.mpl.host.focus.SpatialFocusState
 import org.conceptflow.mpl.host.focus.SpatialFocusTouchAdmission
+import org.conceptflow.mpl.host.focus.TwoFingerHoldBurstFocusAdmission
 import org.conceptflow.mpl.host.realtime.SensorTimeline
 import org.conceptflow.mpl.host.realtime.AndroidPerceptionBridge
 import org.conceptflow.mpl.host.realtime.PerceptionBus
@@ -97,6 +98,7 @@ import org.conceptflow.mpl.transport.LiveLinkDisconnectReason
 import org.conceptflow.mpl.transport.LiveLinkCloseEvidence
 import org.conceptflow.mpl.transport.LiveLinkDiagnosticCode
 import org.conceptflow.mpl.transport.LiveLinkEndpointRole
+import org.conceptflow.mpl.transport.LiveFocusTouchProfile
 import org.conceptflow.mpl.transport.LiveLinkNetworkTopology
 import org.conceptflow.mpl.transport.LiveLinkPrivateConfig
 import org.conceptflow.mpl.transport.LIVE_LINK_DIAGNOSTIC_SCHEMA_VERSION
@@ -455,6 +457,7 @@ data class LiveMachineVisionStatus(
     val speechRuntime: SpeechRuntimeStatus,
     val privateSpeechResult: PrivateSpeechResultSummary,
     val touchEventsReceived: Long,
+    val focusTouchProfile: LiveFocusTouchProfile,
     val peerPressure: LivePeerPressure?,
     val peerPower: LivePeerPower?,
     val nodeCommandPhase: LiveRokidNodeCommandPhase,
@@ -554,6 +557,8 @@ data class LiveMachineVisionStatus(
         append("; transcript characters: ").append(privateSpeechResult.transcriptCharacterCount)
         append("; transcription timed out: ").append(privateSpeechResult.transcriptionTimedOut).append(". ")
         append("Touch events received: ").append(touchEventsReceived).append(". ")
+        append("Focus touch profile: ")
+            .append(focusTouchProfile.configValue.replace('_', ' ')).append(". ")
         peerPressure?.let {
             append("Rokid queue telemetry: samples ").append(it.samplesReceived)
             append("; pending camera ").append(it.pendingCameraFrames)
@@ -719,6 +724,7 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     private var speechRuntime = SpeechRuntimeStatus(SpeechRuntimePhase.STOPPED)
     private var privateSpeechResult = PrivateSpeechResultSummary()
     private var touchEvents = 0L
+    private var focusTouchProfile = LiveFocusTouchProfile.DISABLED
     private var peerPressure: LivePeerPressure? = null
     private var peerPower: LivePeerPower? = null
     private var nodeCommandPhase = LiveRokidNodeCommandPhase.IDLE
@@ -888,6 +894,11 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
     @Synchronized fun touchReceived(count: Int = 1) {
         require(count > 0)
         touchEvents = Math.addExact(touchEvents, count.toLong())
+    }
+
+    @Synchronized
+    fun focusTouchProfile(value: LiveFocusTouchProfile) {
+        focusTouchProfile = value
     }
 
     @Synchronized
@@ -1062,6 +1073,7 @@ class LiveMachineVisionStatusAccumulator(selectedProfile: String) {
         speechRuntime,
         privateSpeechResult,
         touchEvents,
+        focusTouchProfile,
         peerPressure,
         peerPower,
         nodeCommandPhase,
@@ -1141,7 +1153,7 @@ class LiveMachineVisionController(
     private val perceptionBus: PerceptionBus = AndroidPerceptionBridge.runtimeBus,
     private val resultFreshnessGate: LivePerceptionResultFreshnessGate = LivePerceptionResultFreshnessGate(),
     private val onFocusState: (SpatialFocusState) -> Unit = {},
-    private val focusTouchAdmission: SpatialFocusTouchAdmission = DisabledSpatialFocusTouchAdmission,
+    private val focusTouchAdmissionOverride: SpatialFocusTouchAdmission? = null,
     private val onStatus: (LiveMachineVisionStatus) -> Unit,
 ) : AutoCloseable {
     private val active = AtomicBoolean(false)
@@ -1201,6 +1213,9 @@ class LiveMachineVisionController(
     private var pendingSpeechWindowPurpose: SpeechWindowPurpose? = null
     private var scheduledDwellGeneration = 0L
     private var scheduledFocusedVqaCorrelation: FocusedVqaCorrelation? = null
+    private var focusTouchAdmission: SpatialFocusTouchAdmission =
+        focusTouchAdmissionOverride ?: DisabledSpatialFocusTouchAdmission
+    private var scheduledFocusTouchGeneration = 0L
     private var lastPublishedNs = 0L
     private var lastEnvironmentDecisionDiagnostic: String? = null
     @Volatile private var latestDepthProfileId = ""
@@ -1221,6 +1236,7 @@ class LiveMachineVisionController(
         ambientSoundProfiler.reset()
         ambientClassificationProfileGate.reset()
         privateSpeechResults.clear()
+        resetFocusTouchAdmission()
         ambientProfileRequested = false
         ambientProfilePrior = when (spec.environmentMode) {
             EnvironmentSelectionMode.FORCE_INDOOR -> AmbientEnvironmentPrior.INDOOR
@@ -1288,6 +1304,14 @@ class LiveMachineVisionController(
         try {
             val configuration = context.noBackupFilesDir.resolve("live-link/live-link.properties")
                 .inputStream().buffered().use { LiveLinkPrivateConfig.parse(it, LiveLinkEndpointRole.POCO_HOST) }
+            val configuredFocusTouchAdmission = focusTouchAdmissionOverride ?: when (
+                configuration.focusTouchProfile
+            ) {
+                LiveFocusTouchProfile.DISABLED -> DisabledSpatialFocusTouchAdmission
+                LiveFocusTouchProfile.TWO_FINGER_HOLD_BURST_V1 ->
+                    TwoFingerHoldBurstFocusAdmission(ElapsedHostClock::nowNanos)
+            }
+            accumulator.focusTouchProfile(configuration.focusTouchProfile)
             openedServer = PocoLiveLinkServer.fromConfig(
                 configuration,
                 acceptSequentialSessions = spec.runMode == LiveMachineVisionRunMode.PERSISTENT_NODE,
@@ -1310,6 +1334,7 @@ class LiveMachineVisionController(
                 qnn = openedQnn
                 server = openedServer
                 environmentVlm = openedVlm
+                focusTouchAdmission = configuredFocusTouchAdmission
                 openedServer = null
             }
             accumulator.phase(LiveMachineVisionPhase.LISTENING)
@@ -1719,6 +1744,7 @@ class LiveMachineVisionController(
         automaticEnvironmentVlmBootstrapPending =
             environmentCoordinator.mode() == EnvironmentSelectionMode.AUTOMATIC
         sensorTimeline.reset()
+        clearFocusTouchSequence()
         qnn?.resetTracking()
         currentIngressGeneration = sessionGeneration.advance()
         focusedVqaFrames.beginSession(currentIngressGeneration)
@@ -1789,6 +1815,7 @@ class LiveMachineVisionController(
         automaticEnvironmentVlmBootstrapPending =
             environmentCoordinator.mode() == EnvironmentSelectionMode.AUTOMATIC
         sensorTimeline.reset()
+        clearFocusTouchSequence()
         val disconnectedNow = ElapsedHostClock.nowNanos()
         perceptionBus.invalidate(PerceptionValidityReason.DISCONNECTED, disconnectedNow)
         publishFocusTransition(
@@ -2088,7 +2115,13 @@ class LiveMachineVisionController(
             if (!perceptionBus.publishTouch(normalized)) {
                 status?.linkDiagnostic(LiveLinkDiagnosticCode.SENSOR_TOUCH_OVERFLOW)
             }
-            focusTouchAdmission.commandFor(normalized)?.let(::handleFocusCommand)
+            val command = focusTouchAdmission.commandFor(normalized)
+            if (command != null) {
+                scheduledFocusTouchGeneration = Math.addExact(scheduledFocusTouchGeneration, 1L)
+                handleFocusCommand(command)
+            } else {
+                schedulePendingFocusTouchCommand()
+            }
         }
         status?.touchReceived(events.size)
         publish()
@@ -2622,6 +2655,7 @@ class LiveMachineVisionController(
         latestDepthProfileId = ""
         automaticEnvironmentVlmBootstrapPending = false
         sensorTimeline.reset()
+        resetFocusTouchAdmission()
         closeResourceStage("speech_runtime") { speechRuntime?.close() }
         speechRuntime = null
         val stoppedNow = ElapsedHostClock.nowNanos()
@@ -2634,6 +2668,46 @@ class LiveMachineVisionController(
         startupExecutor?.shutdownNow()
         startupExecutor = null
         Log.i(TAG, "state=resource_close stage=complete")
+    }
+
+    @Synchronized
+    private fun schedulePendingFocusTouchCommand() {
+        val deadlineNanos = focusTouchAdmission.pendingDeadlineNanos()
+        if (deadlineNanos == null) {
+            scheduledFocusTouchGeneration = Math.addExact(scheduledFocusTouchGeneration, 1L)
+            return
+        }
+        val scheduled = executor ?: return
+        scheduledFocusTouchGeneration = Math.addExact(scheduledFocusTouchGeneration, 1L)
+        val generation = scheduledFocusTouchGeneration
+        val delayNanos = (deadlineNanos - ElapsedHostClock.nowNanos()).coerceAtLeast(0L)
+        scheduled.schedule(
+            {
+                synchronized(this) {
+                    if (!active.get() || generation != scheduledFocusTouchGeneration) {
+                        return@synchronized
+                    }
+                    val command = focusTouchAdmission.commandAt(ElapsedHostClock.nowNanos())
+                    if (command != null) {
+                        handleFocusCommand(command)
+                    } else if (focusTouchAdmission.pendingDeadlineNanos() != null) {
+                        schedulePendingFocusTouchCommand()
+                    }
+                }
+            },
+            delayNanos,
+            TimeUnit.NANOSECONDS,
+        )
+    }
+
+    private fun resetFocusTouchAdmission() {
+        clearFocusTouchSequence()
+        focusTouchAdmission = focusTouchAdmissionOverride ?: DisabledSpatialFocusTouchAdmission
+    }
+
+    private fun clearFocusTouchSequence() {
+        scheduledFocusTouchGeneration = Math.addExact(scheduledFocusTouchGeneration, 1L)
+        focusTouchAdmission.reset()
     }
 
     private fun closeResourceStage(stage: String, action: () -> Unit) {

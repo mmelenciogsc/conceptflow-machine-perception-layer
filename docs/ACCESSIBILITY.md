@@ -108,6 +108,14 @@ observe-only by default. The PSOC Android keycode translation, OEM Talk-to-AI
 coexistence, off-head silence, and accessibility-origin foreground-service
 start must all be validated on the target before `commands-enable` is used.
 
+Focused-object navigation has a separate disabled-by-default Android admission
+profile. It accepts only the typed broad two-finger-hold semantic event, after
+pairing-time confirmation that Hi Rokid Shortcuts is disabled, and resolves
+bounded one-, two-, three-, and four-hold bursts to Next, Previous, Activate,
+and Back. The selected profile appears in Android Node's screenreader-readable
+status. The physical top button and ordinary one-finger gestures are never
+mapped.
+
 `InspectableCueRenderer` records disposition, frame, stereo balance, and
 haptic use. It rejects invalid, stale, duplicate, and older-frame cues. These
 properties make behavior auditable but do not establish that a particular

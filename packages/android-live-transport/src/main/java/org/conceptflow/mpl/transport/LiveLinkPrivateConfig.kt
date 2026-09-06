@@ -45,6 +45,17 @@ enum class LiveCameraTransport(val configValue: String) {
     }
 }
 
+enum class LiveFocusTouchProfile(val configValue: String) {
+    DISABLED("disabled"),
+    TWO_FINGER_HOLD_BURST_V1("two_finger_hold_burst_v1");
+
+    companion object {
+        fun parse(value: String): LiveFocusTouchProfile = entries.singleOrNull {
+            it.configValue == value
+        } ?: throw IllegalArgumentException("focus_touch_profile is unsupported")
+    }
+}
+
 /**
  * Validated app-private live-link configuration. The peer certificate is public material, while
  * the local private key remains non-exportable in Android Keystore under [identityAlias].
@@ -64,6 +75,7 @@ class LiveLinkPrivateConfig private constructor(
     val cameraTicketLifetimeMs: Int,
     val networkTopology: LiveLinkNetworkTopology,
     val cameraTransport: LiveCameraTransport,
+    val focusTouchProfile: LiveFocusTouchProfile,
 ) {
     override fun toString(): String =
         "LiveLinkPrivateConfig(role=$role,address=<redacted>,ports=<redacted>,identityAlias=<redacted>,peerCertificate=<public-redacted>)"
@@ -89,6 +101,7 @@ class LiveLinkPrivateConfig private constructor(
             "camera_ticket_lifetime_ms",
             "network_topology",
             "camera_transport",
+            "focus_touch_profile",
         )
 
         fun parse(input: InputStream, role: LiveLinkEndpointRole): LiveLinkPrivateConfig {
@@ -154,6 +167,11 @@ class LiveLinkPrivateConfig private constructor(
                     ?.takeIf(String::isNotEmpty)
                     ?.let(LiveCameraTransport::parse)
                     ?: LiveCameraTransport.I420,
+                focusTouchProfile = properties.getProperty("focus_touch_profile")
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(LiveFocusTouchProfile::parse)
+                    ?: LiveFocusTouchProfile.DISABLED,
             )
         }
 
