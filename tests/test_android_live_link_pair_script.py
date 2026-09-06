@@ -116,6 +116,51 @@ exit 1
     assert len(installed) == 2
     assert all("schema_version=1" in path.read_text(encoding="utf-8") for path in installed)
     assert all("network_topology=private_lan" in path.read_text(encoding="utf-8") for path in installed)
+    assert all("focus_touch_profile=disabled" in path.read_text(encoding="utf-8") for path in installed)
+
+    unconfirmed_focus_result = subprocess.run(
+        [
+            str(repository / "scripts/android-live-link-pair"),
+            "--rokid-serial",
+            "rokid-test",
+            "--poco-serial",
+            "poco-test",
+            "--poco-address",
+            "192.168.100.89",
+            "--focus-touch-profile",
+            "two-finger-hold-burst-v1",
+        ],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert unconfirmed_focus_result.returncode == 1
+    assert "requires explicit confirmation" in unconfirmed_focus_result.stderr
+    assert all("focus_touch_profile=disabled" in path.read_text(encoding="utf-8") for path in installed)
+
+    confirmed_focus_result = subprocess.run(
+        [
+            str(repository / "scripts/android-live-link-pair"),
+            "--rokid-serial",
+            "rokid-test",
+            "--poco-serial",
+            "poco-test",
+            "--poco-address",
+            "192.168.100.89",
+            "--focus-touch-profile",
+            "two-finger-hold-burst-v1",
+            "--confirm-rokid-shortcuts-disabled",
+        ],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert confirmed_focus_result.returncode == 0, confirmed_focus_result.stderr
+    assert all("focus_touch_profile=two_finger_hold_burst_v1" in path.read_text(encoding="utf-8") for path in installed)
 
     discovery_result = subprocess.run(
         [

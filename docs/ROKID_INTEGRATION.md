@@ -586,9 +586,14 @@ physically recognized two-finger hold is published as one typed
 `TWO_FINGER_LONG_PRESS`/`TRIGGERED` event with its glasses monotonic observation
 time. It is not converted into invented key-down/key-up edges. Publication is
 non-buffered before an authenticated live touch lease, and Android's existing
-bounded ordered touch ingress remains authoritative. No command is assigned to
-this event until the OEM Shortcuts-disabled precondition has a durable
-operator-visible enforcement mechanism.
+bounded ordered touch ingress remains authoritative. Android Node defaults to
+no focus command. Its optional `two_finger_hold_burst_v1` profile is written
+only after an explicit pairing-time assertion that Hi Rokid Shortcuts is
+disabled, is shown in screenreader-readable status, and maps one through four
+bounded holds to Next, Previous, Activate, and Back. The assertion cannot be
+independently verified through a public Rokid API on this firmware, so changing
+the Hi Rokid setting or firmware requires disabling or revalidating the
+profile. See [Accessible reality interaction](ACCESSIBLE_REALITY_INTERACTION.md).
 
 The command gate defaults to observe-only. Install the APK, then use the
 reversible helper:
@@ -791,6 +796,19 @@ current public certificates are exported and installed together:
   --poco-address "$POCO_PRIVATE_IP" \
   --network-topology private-lan-discovery
 ```
+
+The helper leaves focus touch disabled unless the experimental two-finger
+profile is explicitly selected. After manually confirming that Hi Rokid
+Shortcuts is disabled, append both of these arguments:
+
+```text
+--focus-touch-profile two-finger-hold-burst-v1
+--confirm-rokid-shortcuts-disabled
+```
+
+Omitting the confirmation fails before either device configuration is changed.
+The top physical button and every ordinary one-finger gesture remain outside
+the mapping.
 
 The helper transfers only public certificates, verifies each private config
 byte for byte, and never exports a private key. Its values and certificate

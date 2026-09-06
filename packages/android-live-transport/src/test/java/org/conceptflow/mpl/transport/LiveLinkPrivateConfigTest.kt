@@ -40,6 +40,18 @@ class LiveLinkPrivateConfigTest {
     }
 
     @Test
+    fun `focus touch profile is disabled by default vocabulary and strict when selected`() {
+        assertEquals(LiveFocusTouchProfile.DISABLED, LiveFocusTouchProfile.parse("disabled"))
+        assertEquals(
+            LiveFocusTouchProfile.TWO_FINGER_HOLD_BURST_V1,
+            LiveFocusTouchProfile.parse("two_finger_hold_burst_v1"),
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            LiveFocusTouchProfile.parse("one_finger_swipe")
+        }
+    }
+
+    @Test
     fun `accepts only private or link-local numeric addresses without DNS`() {
         assertEquals("10.4.3.2", LiveLinkPrivateConfig.parsePrivateIpLiteral("10.4.3.2").hostAddress)
         assertEquals("172.31.9.8", LiveLinkPrivateConfig.parsePrivateIpLiteral("172.31.9.8").hostAddress)

@@ -17,9 +17,9 @@ does not imply physical usability, perceptual accuracy, or release readiness.
 | Android linear focus and accessible phone controls | Focus state machine, four commands, 750 ms dwell, three-option action menu, stale-target rejection, TalkBack-facing state, and shell-only debug controls in debuggable builds | Android JVM tests cover ordering, dwell generations, menu transitions, VQA correlation, beacon admission, expiry, reset, a two-second pending browse command, and exact-ID-only reacquisition | Live focus produced the concise phrase `dryer. 11 o'clock. about 1 foot away.` and retained the exact selected target through a completed VQA request; this is not yet a target-user TalkBack acceptance run |
 | Android focused VQA | Explicit-only typed request, bounded exact-frame retention, aspect-preserved 224-pixel model input, one absolute deadline, controller-wired asynchronous gateway, bounded correlation and text, one shared VLM slot, and QNN-priority cancellation | Android JVM tests cover task parsing, input/output bounds, resizing, exact source lookup, no-callback timeout, exact cancellation, late-response rejection, slot reuse, reset, and HTP admission | A current focused query completed through Qwen3-VL-2B/GenieX on the Poco HTP in 2.342 seconds after the 224-pixel input change; repeated-run and spoken conversational VQA validation remain open |
 | Android-to-Unity Binder | Signature-protected service and bounded `CFWS`, `CFFS`, `CFHP`, and `CFTB` payloads; `CFFS` v3 carries the Android-authored accessibility transition | Android dispatcher/codec tests, strict Java lifecycle/version/announcement-gate tests, and Unity decoder tests exercise valid and malformed packets; the Java cache admits `CFFS` v1 through v3 only | Same-signed Android Node and private licensed-lab builds were installed and remained live together on the Poco; foreground-Unity TalkBack delivery still needs the physical listening check |
-| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, a listener transform driven by the accepted canonical head pose, and a debug-only blinded HRTF trial runner | Unity 6000.3.22f1 ran 40/40 EditMode and 6/6 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks without FMOD/Unity runtime errors; focused-icon localization, loudness, and the 24-trial open-ear protocol remain physically unvalidated |
+| Unity focused sonification | Strict world/focus/head joins, explicit canonical-to-Unity handedness mapping, one active focused icon maximum, a listener transform driven by the accepted canonical head pose, and a debug-only blinded HRTF trial runner | Unity 6000.3.22f1 ran 42/42 EditMode and 7/7 PlayMode tests and produced an ARM64 IL2CPP Android player | A privately staged licensed FMOD 2.03.14 player loaded its banks without FMOD/Unity runtime errors; focused-icon localization, loudness, and the 24-trial open-ear protocol remain physically unvalidated |
 | Beacon | Two-tier admission, immutable bounded anchor, Binder encoding, and Unity/FMOD rendering | Android JVM and Unity tests cover world preference, no-world fallback, reference-pose freshness, source-track expiry, decoder rejection, head-turn stability, pulse cadence, and TTL | The orientation-stabilized relative tier is executable without WORLD translation; it does not track user translation and has not had open-ear localization acceptance testing |
-| Glasses input | Ordered touch transport and separately governed Rokid observation code | Kotlin tests cover device identity, sequence grammar, timing, reset, and observe-only policy | Several raw gestures were observed on one RV203 firmware, but focus-command admission remains disabled because collision-free semantics were not established |
+| Glasses input | Ordered touch transport plus a disabled-by-default, explicitly provisioned two-finger-hold burst profile; one, two, three, and four holds map to Next, Previous, Activate, and Back | Kotlin tests cover exact semantic-event admission, ordering, timing, stale/uncertain/malformed rejection, preamble handling, reset, command resolution, and provisioning fail-closed behavior | The underlying two-finger hold was observed on one RV203 firmware with Hi Rokid Shortcuts disabled. The multi-hold focus vocabulary has not yet had an end-to-end physical acceptance run |
 
 The relevant deterministic suites are `SpatialFocusTest`,
 `PerceptionFocusCodecTest`, `PerceptionIpcDispatcherTest`,
@@ -329,7 +329,7 @@ most every 1.5 seconds, and stops on Back, focus movement, session change, or
 expiry. Object-facing pose is not inferred because the current perception
 contract does not measure it. See [Spatial beacon anchoring](BEACON_ANCHORING.md).
 
-## Why glasses focus gestures are disabled
+## Opt-in glasses focus gesture profile
 
 The Rokid input work provides physical observations, not a safe focus mapping.
 On the tested RV203 firmware:
@@ -350,18 +350,59 @@ The top-right physical button is wholly excluded. Its camera/photo, video,
 power, and pairing behavior is system-owned; raw scan 139 is overridden by
 YodaOS to vendor `SPRITE_FUNCTION` and is not mapped to focus.
 
-Accordingly, `LiveMachineVisionController` defaults to
+Accordingly, `LiveMachineVisionController` still defaults to
 `DisabledSpatialFocusTouchAdmission`, and the Unity controller does not
-interpret `CFTB` events. Glasses events may still be transported for bounded,
-ordered inspection, but none currently means `Next`, `Previous`, `Activate`,
-or `Back`. The existing Rokid command recognizer is a separate, observe-only by
-default path for Node and microphone control; it must not be repurposed as
-focus input without collision-free physical evidence and an explicit policy.
+interpret `CFTB` events. The only opt-in production candidate is the already
+typed `TWO_FINGER_LONG_PRESS` / `TRIGGERED` event generated from scan 149. A
+bounded burst resolves after a 2.5-second inter-hold gap:
 
-Current focus control is therefore the accessible Android phone UI and its
-attached-key equivalents. A future hardware mapping must preserve native
-Talk-to-AI, volume, Settings, camera, video, power, pairing, accessibility, and
-immediate-stop behavior before it can be enabled.
+1. one hold means `Next`;
+2. two holds mean `Previous`;
+3. three holds mean `Activate`; and
+4. four holds mean `Back` immediately.
+
+After the immediate four-hold command, additional holds are suppressed until
+the same 2.5-second gap has elapsed, preventing an accidental fifth contact
+from becoming a new `Next` command.
+
+The recognizer ignores only the exact scan-204 preamble edges belonging to the
+same firmware gesture. Any ordinary one-finger terminal event, timestamp
+regression, duplicate or out-of-order event ID, malformed semantic event,
+event older than 1.5 seconds, or clock uncertainty over 250 ms cancels the
+pending burst. A session change, reconnect, shutdown, or controller reset also
+cancels it, so an old partial burst cannot become a command later. There is no
+unbounded queue and no replay after reconnect.
+
+Provisioning refuses to enable this profile without explicit confirmation that
+Hi Rokid Shortcuts is disabled:
+
+```bash
+./scripts/android-live-link-pair \
+  --rokid-serial "$ROKID_SERIAL" \
+  --poco-serial "$POCO_SERIAL" \
+  --poco-address "$POCO_PRIVATE_IP" \
+  --network-topology private-lan-discovery \
+  --focus-touch-profile two-finger-hold-burst-v1 \
+  --confirm-rokid-shortcuts-disabled
+```
+
+The Rokid observer also has to be explicitly enabled with
+`scripts/rokid-accessibility-control enable`; that helper preserves all other
+accessibility services and the observer never consumes a key or reads screen
+content.
+
+That confirmation is an operator assertion, not a public Rokid API result: the
+tested firmware exposes no readable public setting for this state. If Hi Rokid
+Shortcuts is enabled or its behavior changes after a firmware update, re-pair
+with the default `--focus-touch-profile disabled` before using the touch
+surface. Android Node exposes the selected profile in its screenreader-readable
+aggregate status. The physical top button and all ordinary one-finger gestures
+remain excluded.
+
+The existing Rokid command recognizer is a separate, observe-only by default
+path for Node and microphone control; it is not silently repurposed as focus
+input. The accessible Android phone UI and its attached-key equivalents remain
+the authoritative fallback and test controls.
 
 For physical diagnosis only, a debuggable Android Node also exposes
 `focus-status`, `focus-next`, `focus-previous`, `focus-activate`, and
@@ -376,8 +417,9 @@ Do not describe this work as collision avoidance, wayfinding, safe navigation,
 object truth, or autonomous assistance. Before a release claim, run the full
 TalkBack workflow with blind and low-vision participants; exercise the signed
 two-APK Binder path; measure focused-icon localization and masking with the
-actual open-ear output; establish a collision-free glasses input vocabulary;
-validate relative-beacon localization and, separately, WORLD translation and beacon uncertainty; and run focused VQA through
+actual open-ear output; physically validate the opt-in glasses vocabulary and
+revalidate it after relevant firmware changes; validate relative-beacon
+localization and, separately, WORLD translation and beacon uncertainty; and run focused VQA through
 GenieX/HTP under representative latency, cancellation, thermal, and failure
 conditions.
 
