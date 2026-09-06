@@ -114,9 +114,12 @@ exit 1
     assert "public-cert" not in result.stdout
     installed = list(state.glob("*-no_backup_live-link_live-link.properties"))
     assert len(installed) == 2
+    rokid_config = next(path for path in installed if "rokidclient" in path.name)
+    poco_config = next(path for path in installed if "androidhost" in path.name)
     assert all("schema_version=1" in path.read_text(encoding="utf-8") for path in installed)
     assert all("network_topology=private_lan" in path.read_text(encoding="utf-8") for path in installed)
-    assert all("focus_touch_profile=disabled" in path.read_text(encoding="utf-8") for path in installed)
+    assert "focus_touch_profile" not in rokid_config.read_text(encoding="utf-8")
+    assert "focus_touch_profile=disabled" in poco_config.read_text(encoding="utf-8")
 
     unconfirmed_focus_result = subprocess.run(
         [
@@ -138,7 +141,8 @@ exit 1
     )
     assert unconfirmed_focus_result.returncode == 1
     assert "requires explicit confirmation" in unconfirmed_focus_result.stderr
-    assert all("focus_touch_profile=disabled" in path.read_text(encoding="utf-8") for path in installed)
+    assert "focus_touch_profile" not in rokid_config.read_text(encoding="utf-8")
+    assert "focus_touch_profile=disabled" in poco_config.read_text(encoding="utf-8")
 
     confirmed_focus_result = subprocess.run(
         [
@@ -160,7 +164,8 @@ exit 1
         text=True,
     )
     assert confirmed_focus_result.returncode == 0, confirmed_focus_result.stderr
-    assert all("focus_touch_profile=two_finger_hold_burst_v1" in path.read_text(encoding="utf-8") for path in installed)
+    assert "focus_touch_profile" not in rokid_config.read_text(encoding="utf-8")
+    assert "focus_touch_profile=two_finger_hold_burst_v1" in poco_config.read_text(encoding="utf-8")
 
     discovery_result = subprocess.run(
         [

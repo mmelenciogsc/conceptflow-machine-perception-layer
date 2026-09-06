@@ -210,6 +210,7 @@ write_config() {
     local output="$1"
     local identity_alias="$2"
     local peer_certificate="$3"
+    local android_focus_touch_profile="${4:-}"
     {
         printf 'schema_version=1\n'
         printf 'address=%s\n' "$poco_address"
@@ -223,13 +224,19 @@ write_config() {
         printf 'camera_ticket_lifetime_ms=10000\n'
         printf 'network_topology=%s\n' "$network_topology"
         printf 'camera_transport=%s\n' "$camera_transport"
-        printf 'focus_touch_profile=%s\n' "$focus_touch_profile"
+        if [[ -n "$android_focus_touch_profile" ]]; then
+            printf 'focus_touch_profile=%s\n' "$android_focus_touch_profile"
+        fi
     } >"$output"
     chmod 600 "$output"
 }
 
 write_config "$temporary_directory/rokid.properties" "$ROKID_ALIAS" "$temporary_directory/poco.der"
-write_config "$temporary_directory/poco.properties" "$POCO_ALIAS" "$temporary_directory/rokid.der"
+write_config \
+    "$temporary_directory/poco.properties" \
+    "$POCO_ALIAS" \
+    "$temporary_directory/rokid.der" \
+    "$focus_touch_profile"
 
 install_config() {
     local serial="$1"

@@ -386,6 +386,10 @@ Hi Rokid Shortcuts is disabled:
   --confirm-rokid-shortcuts-disabled
 ```
 
+The profile is written only to Android Node's private configuration. Rokid
+Node's configuration remains backward-compatible and unchanged because the
+Rokid capture/publisher does not interpret focus commands.
+
 The Rokid observer also has to be explicitly enabled with
 `scripts/rokid-accessibility-control enable`; that helper preserves all other
 accessibility services and the observer never consumes a key or reads screen
